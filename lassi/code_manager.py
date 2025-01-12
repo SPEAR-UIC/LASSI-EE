@@ -10,8 +10,8 @@ import threading
 from queue import Queue
 import queue
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage, nvmlShutdown
-import lassi.getpower
-from lassi.formatcolors import color
+import lassi.get_power
+from lassi.format_colors import color
 
 def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
        
@@ -152,7 +152,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     #    end_power_time = time.time()
                     stop_power_event.set()
                     power_thread.join()
-                    total_energy_joules, ave_power = lassi.getpower.power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time)
+                    total_energy_joules, ave_power = lassi.get_power.power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time)
 
                     # Shutdown NVML
                     nvmlShutdown()

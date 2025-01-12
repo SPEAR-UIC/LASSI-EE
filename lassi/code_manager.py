@@ -97,17 +97,17 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     stop_power_event = threading.Event()
     
                     # Start power collection thread
-                    power_thread = Thread(target=lassi.getpower.power_collection_thread, args=(power_queue, stop_power_event, handle))
+                    power_thread = Thread(target=lassi.get_power.power_collection_thread, args=(power_queue, stop_power_event, handle))
                     power_thread.start()
                     time.sleep(15)
     
                 # Start the process
                 start_exe_time = time.time() - start_power_time
                 repeat = 1
+                stdout_lines = []
+                stderr_lines = []
                 for i in range(0, repeat):
                     process = subprocess.Popen(execute_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                    stdout_lines = []
-                    stderr_lines = []
                     exception_error = ""
                     
                     # Print the output in real-time
@@ -152,7 +152,12 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     #    end_power_time = time.time()
                     stop_power_event.set()
                     power_thread.join()
-                    total_energy_joules, ave_power = lassi.get_power.power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time)
+                    total_energy_joules, ave_power = lassi.get_power.power_collect_data(
+                        power_queue, 
+                        code_source, 
+                        target_lang, 
+                        start_exe_time, 
+                        end_exe_time)
 
                     # Shutdown NVML
                     nvmlShutdown()

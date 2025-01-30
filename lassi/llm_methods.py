@@ -6,7 +6,7 @@ from lassi.format_colors import color
 def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context, target_lang, display_response):
 
     content_prompt = """
-    Before refactoring the code, please provide a summary description the following background knowledge and context on the programming language.
+    Please provide a summary description the following background knowledge and context on the programming language.
     """
 
     if target_lang == "OMP":
@@ -15,7 +15,7 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
         """
         
     content_prompt = content_prompt + """ 
-    Only respond with your summary description and avoid repeating the code: 
+    Only respond with your summary description and avoid repeating the provided source code: 
     """
 
     content_prompt = content_prompt + input_context
@@ -38,11 +38,12 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
 def code_description_llm(llm_source, model, num_ctx, system_prompt, input_code, display_response):
 
     content_prompt = """
-    Without refactoring the code now, please first provide a detailed summary that describes the functionality of the following code. 
-    Only respond with your summary description and avoid repeating the code: 
+    Please provide a detailed summary describing the functionality of the following source code. 
+    Only respond with your summary description and avoid repeating the provided source code: \n\n
+    [BEGIN SOURCE CODE] \n\n
     """
     
-    content_prompt = content_prompt + input_code
+    content_prompt = content_prompt + input_code + " \n\n[/END SOURCE CODE]"
     
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt)

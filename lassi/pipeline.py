@@ -6,12 +6,13 @@ import lassi.code_manager
 import lassi.llm_methods
 import lassi.token_analysis
 import lassi.llm_config
+import lassi.get_power
 from lassi.format_colors import color
 
 
 def auto_code_llmgeneration_pipeline(prompts,
                                      this_llm_systemcode_prompt,
-                                     this_llm_prompt,
+                                     this_llm_prompt,  # The refactoring instruction prompt
                                      llm_source, 
                                      model,
                                      num_ctx,
@@ -41,6 +42,10 @@ def auto_code_llmgeneration_pipeline(prompts,
                                     ):
     
     # Test compile and execute the source code to validate compiler and execution environment
+    actual_energy = 0
+    actual_ave_power = 0
+    idle_energy_joules = 0
+    idle_ave_power = 0
     if test_code_first:
         code_source = "source"  # generated
         print("\n\n----- " + color.BLUE + "SOURCE CODE: Test compile and execute" + color.END + " -----")
@@ -51,12 +56,16 @@ def auto_code_llmgeneration_pipeline(prompts,
         if yes_execute:
             print("\nTest executing the compiled original source code: " + str(execute_file))
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_source, total_energy_joules, ave_power = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang)
+            execute_result, exe_output_source, total_energy_joules, ave_power, duration = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang)
             # Save source code energy metrics:
             sourcecode_total_energy_joules = total_energy_joules
             sourcecode_ave_power = ave_power
             if execute_result != "0":
                 return False
+            print("\n\nMeasure system idle power...")
+            idle_energy_joules, idle_ave_power = lassi.get_power.idlepower(duration)
+            actual_energy = sourcecode_total_energy_joules - idle_energy_joules
+            actual_ave_power = sourcecode_ave_power - idle_ave_power
     
     print("\n\n")
 
@@ -75,18 +84,22 @@ def auto_code_llmgeneration_pipeline(prompts,
     
     # Augmented prompting to handle processing of provided knowledge context
     if use_context:
-        content = "[BEGIN CONTEXT KNOWLEDGE] " + input_context + " [END CONTEXT KNOWLEDGE]\n "
+        
+        # Inject provided knowledge context--must be provided.
+        content = "[BEGIN CONTEXT KNOWLEDGE] " + input_context + " [/END CONTEXT KNOWLEDGE]\n\n "
     
+        # Request LLM summarization of provided context knowledge
+        print("\n--> ... prompt LLM to summarize context knowledge.")
         llm_code_knowledge_summary_response = lassi.llm_methods.code_knowledge_llm(llm_source, model, num_ctx, general_system_prompt, input_context, target_lang, display_response)
+        content = content + "[BEGIN CONTEXT KNOWLEDGE SUMMARY] " + llm_code_knowledge_summary_response + " [/END CONTEXT KNOWLEDGE SUMMARY]\n "
         
-        content = content + "[BEGIN CONTEXT KNOWLEDGE SUMMARY] " + llm_code_knowledge_summary_response + " [END CONTEXT KNOWLEDGE SUMMARY]\n "
-        
-        content = content + "Using the above background context with your summarization, "
-        # content = content + "Using your above summarization of the knowledge context, "
+        content = content + "Using the above background context knowledge along with your summarization of this content, "
 
+        # Requet LLM summary description of the provided source code
+        print("\n--> ... prompt LLM to describe the source code.")
         llm_code_description_response = lassi.llm_methods.code_description_llm(llm_source, model, num_ctx, general_system_prompt, input_code, display_response)
     
-        content = content + "Think carefully before developing the following code that you describe as: "
+        content = content + "think carefully before refactoring the source code that you describe as: \n"
 
         content = content + llm_code_description_response
     else:
@@ -97,16 +110,18 @@ def auto_code_llmgeneration_pipeline(prompts,
     original_context_content_prompt = content
     original_prompt_tokens = lassi.token_analysis.token_count(original_context_content_prompt)
     
-    content = content + "\n\n [BEGIN ENERGY EFFICIENCY REFACTORING TASK] Now, " + this_llm_prompt
-    content = content + "\n\nFor reference, the source code was previously executed on this system and consumed a total energy of " + str(round(total_energy_joules, 2)) + " Joules at an average power of " + str(round(ave_power, 2)) + " Watts. Your goal is to refactor the code to consume less power."
-    # print("\n\n----- " + color.BOLD + "TASK PROMPT (not including source code )" + color.END + " (initial, token count: " + str(original_prompt_tokens) + "): \n" + content + "\n")
+    # Append the source code to the prompt
+    content = content + " \n\n [BEGIN SOURCE CODE]\n" + input_code + "\n[/END SOURCE CODE]"
     
+    content = content + "\n\n [BEGIN ENERGY EFFICIENCY REFACTORING TASK] Now, " + this_llm_prompt
+    content = content + "\n\nFor reference, the source code provided above was executed on this system and consumed a total energy of " + str(round(actual_energy, 2)) + " Joules at an average power of " + str(round(actual_ave_power, 2)) + " Watts.\n"
+    content = content + "[/END ENERGY EFFICIENCY REFACTORING TASK]\n"
+     
     # Save the original context + energy efficiency context for re-use during energy efficiency correction
     original_ee_context_content_prompt = content
     original_ee_prompt_tokens = lassi.token_analysis.token_count(original_ee_context_content_prompt)
 
-    # Append the source code to the prompt
-    content = content + " " + input_code
+    print("\n\n----- " + color.BOLD + "REVIEW THE FULL TASK PROMPT " + color.END + " (initial, token count: " + str(original_ee_prompt_tokens) + "): \n\n" + content + "\n")
     
     print("\n\n----- " + color.BLUE + "STARTING CODE GENERATION PIPELINE" + color.END + " -----\n\n")
         
@@ -120,6 +135,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             # CALL THE LLM
             content = re.sub(' +', ' ', content)
             # DONT PRINT THE FULL PROMPT: print("\n\n----- " + color.BOLD + "PROMPT" + color.END + " (initial, token count: " + str(original_prompt_tokens) + "): \n" + content + "\n")
+            print("\n--> ... prompt the LLM to generate code.")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model, num_ctx, this_llm_systemcode_prompt, content, display_response)
         elif compile_result != "energy_efficiency":
             # CALL THE LLM WITH ERROR CORRECTION
@@ -141,6 +157,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             print("\n\n----- " + color.BOLD + color.RED + "ERROR SELF-CORRECTION" + color.END + " -----")
             print("\nPROMPT (error correction, token count: " + str(error_prompt_tokens) + "): " + error_prompt[0:1000] + "... \n")
             error_prompt = re.sub('\n', '', error_prompt)
+            print("\n--> ... prompt LLM to generate code following an error.")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model, num_ctx, this_llm_systemcode_prompt, error_prompt, display_response)
 
         elif compile_result == "energy_efficiency":
@@ -153,6 +170,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             print("\n\n----- " + color.BOLD + color.RED + "ENERGY EFFICIENCY SELF-CORRECTION" + color.END + " -----")
             print("\nPROMPT (energy efficiency correction, token count: " + str(ee_prompt_tokens) + "): " + ee_prompt[0:1000] + "... \n")
             ee_prompt = re.sub('\n', '', ee_prompt)
+            print("\n--> ... prompt LLM to generage code for energy efficiency.")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model, num_ctx, this_llm_systemcode_prompt, ee_prompt, display_response)        
 
         if code_block.startswith('c++') or code_block.startswith('cpp'):
@@ -180,18 +198,23 @@ def auto_code_llmgeneration_pipeline(prompts,
                 lassi.llm_config.unload_ollama_model(model)
             
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules, ave_power = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang)
+            execute_result, exe_output_generated, total_energy_joules, ave_power, duration_refactor = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
 
         # Begin POWER METRICS feedback loop
         if yes_power_feedback and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= 7:
             self_correction_power_counter = self_correction_power_counter + 1
+            # Substract out idle metrics
+            total_energy_joules = total_energy_joules - idle_energy_joules
+            ave_power = ave_power - idle_ave_power
             print("Power and Energy Feedback data: ")
             print("  sourcecode_total_energy_joules: " + str(sourcecode_total_energy_joules))
             print("  total_energy_joules: " + str(total_energy_joules))
             print("  sourcecode_ave_power: " + str(sourcecode_ave_power))
             print("  ave_power: " + str(ave_power))
+            print("  runtime_sourcecode: " + str(duration))
+            print("  runtime_refactored: " + str(duraction_refactor))
                                     
             if total_energy_joules < sourcecode_total_energy_joules and ave_power < sourcecode_ave_power:
                 print("\n\n***** Generated refactored code is more energy efficient than source code! *****\n\n")

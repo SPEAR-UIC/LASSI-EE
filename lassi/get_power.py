@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage, nvmlShutdown
 from lassi.format_colors import color
 
-
+     
+       
 def get_gpu_power():
     try:
         result = subprocess.run(['nvidia-smi', '--id=0', '--query-gpu=power.draw', '--format=csv,noheader,nounits'],
@@ -39,29 +40,6 @@ def power_collection_thread(power_queue, stop_event, handle, interval=0.01):
             print(f"Error querying power: {e}")
             break 
         # time.sleep(0.01)
-
-# Function to read CSV and plot the GPU power usage
-def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time):
-    # Collect power data
-    power_data = []
-    while not power_queue.empty():
-        power_data.append(power_queue.get())
-    
-    # Write results to CSV
-    filename = f"{code_source}_{target_lang}_gpu_power_results.csv"
-    with open(filename, 'w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(['Time', 'GPU Power (W)'])
-        for time_elapsed, power in power_data:
-            writer.writerow([f"{time_elapsed:.2f}", power])
-    
-    # print(f"\nMODEL TRIAL: {experiment}")
-    # print(f"Inference time: {inference_duration:.2f} seconds")
-    print(f"GPU power data has been written to {filename}")
-    
-    total_energy_joules, ave_power = display_energy_results(filename, start_exe_time, end_exe_time)
-    
-    return total_energy_joules, ave_power
 
 
 def plot_gpu_power(file_name, start_time, end_time):
@@ -99,23 +77,23 @@ def calculate_total_energy(file_name, start_time, end_time):
         time_interval = code_execution_data['Time'].diff().mean()
     else:
         print("Not enough data points to calculate energy consumption.")
-        return 0, 0
+        return 0, 0, 0
 
     # Calculate total energy consumption in joules
     total_energy = sum(code_execution_data['GPU Power (W)'] * time_interval)
     ave_power = code_execution_data['GPU Power (W)'].mean()
 
     # Get baseline energy consumption for same duration
-    print("\n... Capturing baseline energy consumed for same duration...") 
-    baseline_energy = lassi.getidlepower.GetGPUpower.baselinepower(int(end_time - start_time))
+    print("\n... Capturing idle energy consumed for same duration...") 
+    #idle_energy, ave_idle_power = idlepower(int(end_time - start_time))
     print("... Complete.")
     
-    return total_energy, ave_power, baseline_energy
+    return total_energy, ave_power
 
-
+    
 def display_energy_results(file_name, start_time, end_time):
     plot_gpu_power(file_name, start_time, end_time)
-    total_energy_joules, ave_power, baseline_energy = calculate_total_energy(file_name, start_time, end_time)
+    total_energy_joules, ave_power = calculate_total_energy(file_name, start_time, end_time)
     
     # Convert energy units
     total_energy_wh = total_energy_joules / 3600  # Convert from Joules to Watt-hours
@@ -129,37 +107,85 @@ def display_energy_results(file_name, start_time, end_time):
     print(f"  {total_energy_joules:.2f} J")
     print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W" + color.END)
     print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
-    print("Idle Energy (same duration): " + f"  {baseline_energy:.2f} J")
+    # print("Idle Energy (same duration): " + f"  {idle_energy:.2f} J")
     print("----------------------------------------------------------------------------------------------------------------------------------------")
     
     return total_energy_joules, ave_power
-        
-class GetGPUpower:
-      
-    def idlepower(duration):
 
-        nvmlInit()
-        handle = nvmlDeviceGetHandleByIndex(0)  # Assuming GPU 0
     
-        start_power_time = time.time()
-        power_queue = queue.Queue()
-        stop_power_event = threading.Event()
+# Function to read CSV and plot the GPU power usage
+def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time):
+    # Collect power data
+    power_data = []
+    while not power_queue.empty():
+        power_data.append(power_queue.get())
     
-        # Start power collection thread
-        power_thread = Thread(target=power_collection_thread, args=(power_queue, stop_power_event, handle))
-        power_thread.start()
-        # time.sleep(2)
+    # Write results to CSV
+    if code_source == "" and target_lang == "":
+        code_source = "idle"
+    filename = f"{code_source}_{target_lang}_gpu_power_results.csv"
+    with open(filename, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Time', 'GPU Power (W)'])
+        for time_elapsed, power in power_data:
+            writer.writerow([f"{time_elapsed:.2f}", power])
+    
+    # print(f"\nMODEL TRIAL: {experiment}")
+    # print(f"Inference time: {inference_duration:.2f} seconds")
+    print(f"GPU power data has been written to {filename}")
+    
+    total_energy_joules, ave_power = display_energy_results(filename, start_exe_time, end_exe_time)
+    
+    return total_energy_joules, ave_power
+
+    
+def idlepower(duration):
+    nvmlInit()
+    handle = nvmlDeviceGetHandleByIndex(0)  # Assuming GPU 0
+    
+    start_power_time = time.time()
+    power_queue = queue.Queue()
+    stop_power_event = threading.Event()
+    
+    # Start power collection thread
+    power_thread = Thread(target=power_collection_thread, args=(power_queue, stop_power_event, handle))
+    power_thread.start()
+    # time.sleep(2)))
          
-        # Continue collecting power data for a short time after inference
-        end_power_time = time.time()            
-        while (end_power_time - start_power_time) < duration:
-            # time.sleep(0.001)
-            end_power_time = time.time()
-        stop_power_event.set()
-        power_thread.join()
-        total_energy_joules = power_collect_data(power_queue, "", "")
+    # Continue collecting power data for a short time after inference
+    print("... Duration for idle time measurement: " + str(duration))
+    # end_power_time = time.time()
+    time.sleep(duration)
+    end_power_time = time.time()
+    # while (end_power_time - start_power_time) < duration:
+        # time.sleep(0.001)
+    #    end_power_time = time.time()
+        #print("... idle duration increment: " + str(end_power_time - start_power_time))
+    stop_power_event.set()
+    power_thread.join()
+    # print("... idle duration increment: " + str(end_power_time - start_power_time))
+    total_energy_joules, ave_power = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time)
 
-        # Shutdown NVML
-        nvmlShutdown()
+    # Shutdown NVML
+    nvmlShutdown()
 
-        return round(total_energy_joules, 2)
+    return round(total_energy_joules, 2), round(ave_power, 2)
+
+    
+
+
+
+
+
+
+    
+
+
+
+    
+
+
+
+
+        
+

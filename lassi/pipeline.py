@@ -15,7 +15,9 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      this_llm_prompt,  # The refactoring instruction prompt
                                      llm_source, 
                                      model,
+                                     model_coder,
                                      num_ctx,
+                                     num_ctx_coder,
                                      # arrayormatrix_size_range,
                                      # thread_count_range,
                                      use_context,
@@ -46,6 +48,8 @@ def auto_code_llmgeneration_pipeline(prompts,
     actual_ave_power = 0
     idle_energy_joules = 0
     idle_ave_power = 0
+    duration_refactor = 0
+    
     if test_code_first:
         code_source = "source"  # generated
         print("\n\n----- " + color.BLUE + "SOURCE CODE: Test compile and execute" + color.END + " -----")
@@ -124,7 +128,14 @@ def auto_code_llmgeneration_pipeline(prompts,
     print("\n\n----- " + color.BOLD + "REVIEW THE FULL TASK PROMPT " + color.END + " (initial, token count: " + str(original_ee_prompt_tokens) + "): \n\n" + content + "\n")
     
     print("\n\n----- " + color.BLUE + "STARTING CODE GENERATION PIPELINE" + color.END + " -----\n\n")
-        
+
+    # CHANGE MODEL FOR CODE GENERATION
+    print("(... changing LLM for code gen)")
+    
+    # Unload model first if we want a different coding model
+    if model_coder != model:
+        lassi.llm_config.unload_ollama_model(model)
+    
     start_time = time.time()
     
     # INITIATE LLM CODE GENERATION ITERATIVE PIPELINE
@@ -136,7 +147,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             content = re.sub(' +', ' ', content)
             # DONT PRINT THE FULL PROMPT: print("\n\n----- " + color.BOLD + "PROMPT" + color.END + " (initial, token count: " + str(original_prompt_tokens) + "): \n" + content + "\n")
             print("\n--> ... prompt the LLM to generate code.")
-            code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model, num_ctx, this_llm_systemcode_prompt, content, display_response)
+            code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, this_llm_systemcode_prompt, content, display_response)
         elif compile_result != "energy_efficiency":
             # CALL THE LLM WITH ERROR CORRECTION
             print("\n\n----- " + color.BOLD + color.RED + "SELF-CORRECTION: " + str(self_correction_counter) + color.END + " -----")
@@ -158,7 +169,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             print("\nPROMPT (error correction, token count: " + str(error_prompt_tokens) + "): " + error_prompt[0:1000] + "... \n")
             error_prompt = re.sub('\n', '', error_prompt)
             print("\n--> ... prompt LLM to generate code following an error.")
-            code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model, num_ctx, this_llm_systemcode_prompt, error_prompt, display_response)
+            code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, this_llm_systemcode_prompt, error_prompt, display_response)
 
         elif compile_result == "energy_efficiency":
             '''Self-correction feedback for improving energy efficiency.'''
@@ -171,7 +182,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             print("\nPROMPT (energy efficiency correction, token count: " + str(ee_prompt_tokens) + "): " + ee_prompt[0:1000] + "... \n")
             ee_prompt = re.sub('\n', '', ee_prompt)
             print("\n--> ... prompt LLM to generage code for energy efficiency.")
-            code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model, num_ctx, this_llm_systemcode_prompt, ee_prompt, display_response)        
+            code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, this_llm_systemcode_prompt, ee_prompt, display_response)        
 
         if code_block.startswith('c++') or code_block.startswith('cpp'):
             code_block = code_block[3:]

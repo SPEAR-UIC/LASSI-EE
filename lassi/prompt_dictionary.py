@@ -31,7 +31,7 @@ class PromptDictionary:
         
         # Code Refactoring for Energy Efficiency TASK Prompts
         self.code_ee_refactoring_prompt_dict = {
-            "CUDA": "You already understand how the above source code works. Next, please refactor the SOURCE CODE that was provided above so that it performs the same functions and produces the same output but consumes less total energy. Avoid describing the source code or explaining your plan to refactor the code. Only provide the complete refactored CUDA code without any placeholders or unnecessary comments. Every part of the refactored code should be explicitly included so the code can be compiled. Avoid explaining the code. Avoid explaining your code refactoring plan. Only provide the final code in your response.",
+            "CUDA": "You already understand how the above source code works. Next, refactor the SOURCE CODE that was provided above so that it performs all the same functions and produces the same output but consumes less total energy. Avoid describing the source code or explaining your plan to refactor the code. Only provide the complete refactored CUDA code without any placeholders or unnecessary comments. Every part of the refactored code should be explicitly included so the code can be compiled. Avoid explaining the code. Avoid explaining your code refactoring plan. Only provide the complete final refactored code in your response.",
         }
         # Following this goal, please refactor the following parallelized CUDA program (the SOURCE CODE) to be more energy efficient.
         

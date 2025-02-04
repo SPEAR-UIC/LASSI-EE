@@ -7,9 +7,13 @@ class PromptDictionary:
         self.system_prompt_dict = {
             "general_system": "You are a professional coding AI assistant that specializes in translating parallelized code between coding frameworks.",
 
-            "general_system_ee": "You are a professional coding AI assistant that specializes in refactoring parallelized code to improve energy efficiency by reducing GPU and CPU powerr consumption.",
+            "general_system_ee_v1": "You are a professional coding AI assistant that specializes in refactoring parallelized code to improve energy efficiency by reducing GPU and CPU power consumption.",
+
+            "general_system_ee": "You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents.",
             
-            "CUDA_ee": "You are a professional coding AI assistant that specializes in refactoring parallelized code to improve energy efficiency by reducing GPU and CPU power consumption. When refactoring provided code, do not leave out any details or code needed from the source code other than what you change. Always provide the complete and fully functional refactored code without placeholders, comments, or commented references suggesting that parts of the original code should be included. Ensure every part of the refactored code is explicitly written out. Surround your new generated code with the three characters ```.",
+            "CUDA_ee_v1": "You are a professional coding AI assistant that specializes in refactoring parallelized code to improve energy efficiency by reducing GPU and CPU power consumption. When refactoring provided code, do not leave out any details or code needed from the source code other than what you change. Always provide the complete and fully functional refactored code without placeholders, comments, or commented references suggesting that parts of the original code should be included. Ensure every part of the refactored code is explicitly written out. Surround your new generated code with the three characters ```.",
+
+            "CUDA_ee": "You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents. You always surround your generated code with the three characters ```.",
             
             "OMP_to_SYCL": "You are a professional coding AI assistant that specializes in translating parallelized C++ code using OpenMP directives to C++ code using SYCL. Provide only complete code without explanation. Surround your new generated code with the three characters ```.",
             
@@ -31,8 +35,20 @@ class PromptDictionary:
         
         # Code Refactoring for Energy Efficiency TASK Prompts
         self.code_ee_refactoring_prompt_dict = {
-            "CUDA": "You already understand how the above source code works. Next, refactor the SOURCE CODE that was provided above so that it performs all the same functions and produces the same output but consumes less total energy. Avoid describing the source code or explaining your plan to refactor the code. Only provide the complete refactored CUDA code without any placeholders or unnecessary comments. Every part of the refactored code should be explicitly included so the code can be compiled. Avoid explaining the code. Avoid explaining your code refactoring plan. Only provide the complete final refactored code in your response.",
+            "CUDA_v1": "You already understand how the above source code works. Next, refactor the SOURCE CODE that was provided above so that it performs all the same functions and produces the same output but consumes less total energy. Avoid describing the source code or explaining your plan to refactor the code. Only provide the complete refactored CUDA code without any placeholders or unnecessary comments. Every part of the refactored code should be explicitly included so the code can be compiled. Avoid explaining the code. Avoid explaining your code refactoring plan. Only provide the complete final refactored code in your response.",
+
+            "CUDA": "Carefully follow all these instructions step-by-step: \nSTEP 1. Read the background knowledge and your background knowledge summaries about programming and energy-efficiency strategies. \nSTEP 2. Read your description and analysis of the source code's functions, classes, and overall program flow.\nSTEP 3. Analyze inefficiencies in the code: identify redundant computations, inefficient memory usage, unnecessary synchronizations, thread divergence issues, and any other issues you find. \nSTEP 4. Output a summary of any identified inefficiencies. \nSTEP 5. Propose a refactoring plan that applies optimizations and specific best practices from the background knowledge to reduce energy usage.",
+
+            "CUDA_refactor": "Using the refactoring plan and source code above, select one and only inefficiency to improve. Then, generate a refactoring of the source code to implement this single improvement, while ensuring all the original functionality and expected output remains intact. Include commenting in the code for the rationale of your change. REMINDER: Be sure to maintain all function signatures, class structures, and kernel logic in your refactored code while improving the energy efficiency (i.e., reducing power consumption) without removing required behavior. Avoid repeating the plan. Avoid describing the code. Only respond with the refactored code.",
+
+            "CUDA_refactor_iteration": "Using the refactoring plan and source code above, select one and only inefficiency to improve, if any remain. Then, generate a refactoring of the source code to implement this single improvement, while ensuring all the original functionality and expected output remains intact. Include commenting in the code for the rationale of your change. REMINDER: Be sure to maintain all function signatures, class structures, and kernel logic in your refactored code while improving the energy efficiency (i.e., reducing power consumption) without removing required behavior. Avoid repeating the plan. Avoid describing the code. Only respond with the refactored code.",
+    
+            
+            # \nSTEP 6. Generate refactored code with all original functionality intact, providing rationale for each significant change as comments within the code. \nREMINDER: Be sure to maintain all function signatures, class structures, and kernel logic in your refactored code while improving the energy efficiency (i.e., reducing power consumption) without removing required behavior.",
+        
+            #\nSTEP 8. Confirm that each function from the original code is present (or replaced, if you intentionally merged functionality, and explain why).",
         }
+                       
         # Following this goal, please refactor the following parallelized CUDA program (the SOURCE CODE) to be more energy efficient.
         
         # Code Translation TASK Prompts

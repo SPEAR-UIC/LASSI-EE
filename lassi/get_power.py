@@ -8,11 +8,31 @@ from queue import Queue
 import queue
 import pandas as pd
 import matplotlib.pyplot as plt
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage, nvmlShutdown
+from pynvml import nvmlInit, nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetPowerUsage, NVMLError, nvmlShutdown
 from lassi.format_colors import color
 
-     
-       
+  
+def report_gpu_memory():
+    try:
+        nvmlInit()
+        device_count = nvmlDeviceGetCount()
+        print("GPU Memory Status:")
+        for i in range(device_count):
+            handle = nvmlDeviceGetHandleByIndex(i)
+            info = nvmlDeviceGetMemoryInfo(handle)
+            used = info.used // (1024 * 1024)
+            free = info.free // (1024 * 1024)
+            total = info.total // (1024 * 1024)
+            print(f" GPU {i}: {used} MiB used, {free} MiB free, {total} MiB total")
+    except NVMLError as error:
+        print("Failed to query GPU memory:", error)
+    finally:
+        try:
+            nvmlShutdown()
+        except:
+            pass
+
+            
 def get_gpu_power():
     try:
         result = subprocess.run(['nvidia-smi', '--id=0', '--query-gpu=power.draw', '--format=csv,noheader,nounits'],
@@ -84,7 +104,7 @@ def calculate_total_energy(file_name, start_time, end_time):
     ave_power = code_execution_data['GPU Power (W)'].mean()
 
     # Get baseline energy consumption for same duration
-    print("\n... Capturing idle energy consumed for same duration...") 
+    print("\nCapturing idle energy consumed for same duration...") 
     #idle_energy, ave_idle_power = idlepower(int(end_time - start_time))
     print("... Complete.")
     
@@ -153,7 +173,7 @@ def idlepower(duration):
     # time.sleep(2)))
          
     # Continue collecting power data for a short time after inference
-    print("... Duration for idle time measurement: " + str(duration))
+    print("Duration for idle time measurement: " + str(round(duration, 2)))
     # end_power_time = time.time()
     time.sleep(duration)
     end_power_time = time.time()

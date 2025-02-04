@@ -1,4 +1,5 @@
 import ollama
+from ollama import ResponseError
 import json
 import subprocess
 import re
@@ -15,6 +16,40 @@ ollama.list() [preview what is available to use on the server]
 
 Example: model='codestral:latest'
 """
+
+
+def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt):
+    response_text = ""
+
+    # Ollama serve must already be running on a port on this server 
+    response = ollama.chat(
+        model=model, 
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {'role': 'user', 'content': content_prompt}
+        ],
+        stream=False,
+        options=dict(
+            temperature=0.2,
+            top_p=0.9,
+            num_ctx=num_ctx
+        )
+    )
+
+    response_text = response['message']['content']
+
+    print(response_text)
+    
+    # Final cleaning of the complete response
+    # Conditional cleaning only if <think> tags exist
+    if re.search(r'<think>.*?</think>', response_text, flags=re.DOTALL):
+        cleaned_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
+    else:
+        cleaned_response = response_text.strip()
+    
+    return cleaned_response  # response_text
+
+
 def ollama_llm(model, num_ctx, system_prompt, content_prompt):
     # Create an HTML display object with a <pre> tag for formatted text
     html_display = display(HTML(""), display_id=True)
@@ -30,51 +65,56 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt):
         ],
         stream=True,
         options=dict(
-            temperature=0.1,
+            temperature=0.2,
             top_p=0.9
-            #num_ctx=num_ctx
-        )
+            # num_ctx=num_ctx  # including this parameter seems to slow down the streaming response
+        ),
+        keep_alive=0
     )
 
-    # response_text = response['message']['content']
-
     # Process each chunk in the stream
-    for chunk in stream:
-        # print(chunk['message']['content'], end='', flush=True)
-        chunk_content = chunk['message']['content']
-        response_text += chunk_content
-
-        # Escape HTML and highlight <think> tags
-        escaped_text = html.escape(response_text)
-
-        # Style opening tags
-        styled_text = re.sub(
-            r'&lt;think&gt;',
-            '<span style="color: #d32f2f; font-weight: bold;">&lt;think&gt;</span>',
-            escaped_text
-        )
-        # Style closing tags
-        styled_text = re.sub(
-            r'&lt;/think&gt;',
-            '<span style="color: #d32f2f; font-weight: bold;">&lt;/think&gt;</span>',
-            styled_text
-        )
-        
-        # Create typewriter effect with cursor
-        display_text = f"{styled_text}<span style='border-right:2px solid;animation:blink 1s infinite'> </span>"  
-        html_display.update(HTML(f"""
-            <pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;
-                          white-space:pre-wrap;font-family:monospace'>
-            {display_text}
-            </pre>
-            <style>
-            @keyframes blink {{
-                0% {{ opacity:1 }}
-                50% {{ opacity:0 }}
-                100% {{ opacity:1 }}
-            }}
-            </style>
-        """))
+    try:
+        for chunk in stream:
+            chunk_content = chunk['message']['content']
+            response_text += chunk_content
+    
+            # Escape HTML and highlight <think> tags
+            escaped_text = html.escape(response_text)
+    
+            # Style opening tags
+            styled_text = re.sub(
+                r'&lt;think&gt;',
+                '<span style="color: #d32f2f; font-weight: bold;">&lt;think&gt;</span>',
+                escaped_text
+            )
+            # Style closing tags
+            styled_text = re.sub(
+                r'&lt;/think&gt;',
+                '<span style="color: #d32f2f; font-weight: bold;">&lt;/think&gt;</span>',
+                styled_text
+            )
+            
+            # Create typewriter effect with cursor
+            display_text = f"{styled_text}<span style='border-right:2px solid;animation:blink 1s infinite'> </span>"  
+            html_display.update(HTML(f"""
+                <pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;
+                              white-space:pre-wrap;font-family:monospace'>
+                {display_text}
+                </pre>
+                <style>
+                @keyframes blink {{
+                    0% {{ opacity:1 }}
+                    50% {{ opacity:0 }}
+                    100% {{ opacity:1 }}
+                }}
+                </style>
+            """))
+    except ResponseError as e:
+        if "unexpected EOF" in str(e):
+            # Log the event, check if the output seems complete, and continue
+            print("Stream ended unexpectedly but continuing with received output.")
+        else:
+            raise
     
     # Clear the streaming display after completion
     # clear_output(wait=True)

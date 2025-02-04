@@ -56,6 +56,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # time.sleep(20)
     # print("...DONE WAITING.")
 
+    duration = 0
+
     # Simulating a progress bar while sleeping for 5 seconds
     for _ in tqdm(range(10), desc="Waiting for the system to settle down..."):
         time.sleep(1)
@@ -144,6 +146,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                 ave_power = 0
                 if power_measure:            
                     end_exe_time = time.time() - start_power_time
+                    duration = end_exe_time - start_exe_time
                     # Continue collecting power data for a short time after inference
                     time.sleep(15)
                     end_power_time = time.time()            
@@ -194,5 +197,5 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     os.chdir(initial_dir)
 
     stdout_output = ''.join(stdout_lines)
-    
-    return return_result, stdout_output, total_energy_joules, ave_power, end_exe_time - start_exe_time
+
+    return return_result, stdout_output, total_energy_joules, ave_power, duration

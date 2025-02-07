@@ -106,7 +106,8 @@ def code_generator_llm(llm_source, model, num_ctx, system_prompt, content_prompt
         
     print("\n\n----- " + color.BLUE + "GENERATED CODE" + color.END + " -----\n\n")
     if display_response:
-        display(Markdown(response_text))
+        print("(hidden)\n\n")
+        # display(Markdown(response_text))
 
     # Extract only the code block - 
     # Search for the ``` pattern in the text

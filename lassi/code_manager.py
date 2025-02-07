@@ -57,6 +57,9 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # print("...DONE WAITING.")
 
     duration = 0
+    start_power_time = 0
+    total_energy_joules = 0
+    ave_power = 0
 
     # Simulating a progress bar while sleeping for 5 seconds
     for _ in tqdm(range(10), desc="Waiting for the system to settle down..."):

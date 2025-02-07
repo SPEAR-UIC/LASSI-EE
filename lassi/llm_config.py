@@ -65,7 +65,7 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt):
         ],
         stream=True,
         options=dict(
-            temperature=0.2,
+            temperature=0.7,
             top_p=0.9
             # num_ctx=num_ctx  # including this parameter seems to slow down the streaming response
         ),
@@ -145,3 +145,36 @@ def unload_ollama_model(model):
     result_unload_LLM = subprocess.run(curl_command_unload_LLM, capture_output=True, text=True)
     print("\nUnload LLM:\n", result_unload_LLM.stdout)
     print(result_unload_LLM.stderr)
+
+
+"""
+Argo Gateway API call for OpenAI LLMs, GPT-class
+
+Only accessible from within Argonne National Laboratory network.
+"""
+def argo_llm(model, system_prompt, content_prompt):
+    # Argo Gateway API endpoint to POST
+    url = "https://apps.inside.anl.gov/argoapi/api/v1/resource/chat/"
+    
+    # Data to be sent as a POST in JSON format
+    data = {
+        "user": "mdearing",
+        "model": model,   # gpt35, gpt4turbo
+        "system": system_prompt,
+        "prompt": [content_prompt],
+        "stop": [],
+        "temperature": 0.2,
+        "top_p": 0.9,
+    }
+
+    # Convert the dict to JSON
+    payload = json.dumps(data)
+
+    # Add a header stating that the content type is JSON
+    headers = {"Content-Type": "application/json"}
+
+    # Send POST request
+    response = requests.post(url, data=payload, headers=headers)
+    response_text = response.json()['response']
+
+    return response_text

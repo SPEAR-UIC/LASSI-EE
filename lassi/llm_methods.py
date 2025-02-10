@@ -1,6 +1,6 @@
 from IPython.display import display, Markdown
 import re
-from lassi.llm_config import ollama_llm, ollama_llm_nostream
+from lassi.llm_config import argo_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
 
 

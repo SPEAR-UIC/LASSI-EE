@@ -1,6 +1,7 @@
 import ollama
 from ollama import ResponseError
 import json
+import requests
 import subprocess
 import re
 import html
@@ -155,6 +156,9 @@ Only accessible from within Argonne National Laboratory network.
 def argo_llm(model, system_prompt, content_prompt):
     # Argo Gateway API endpoint to POST
     url = "https://apps.inside.anl.gov/argoapi/api/v1/resource/chat/"
+    
+    if model == "gpto1preview":
+        content_prompt = system_prompt + "\n\n" + content_prompt
     
     # Data to be sent as a POST in JSON format
     data = {

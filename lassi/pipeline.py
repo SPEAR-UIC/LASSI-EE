@@ -329,8 +329,27 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     # Prompt the LLM to compare the codes
     if energy_efficiency_refactor_success:
+
+        with open(source_file_path, 'r') as file:
+            source_code = file.read()
+        
         print("\n-----" + color.BLUE + "BEGIN CODE COMPARISON" + color.END + "-----\n")
-        compare_code = "\n\n" + prompts.get_code_comparison("cuda_cpp")
+        compare_code = prompts.get_code_comparison("cuda_cpp")
+        compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + source_code
+        compare_code = compare_code + "\n\nOUTPUT: \n\n" + exe_output_source
+        compare_code = compare_code + "\n\nCode execution duration: " + str(round(duration,2)) + " s"
+        compare_code = compare_code + "\nTotal Energy Consumed: " + str(round(sourcecode_total_energy_joules,2)) + " J" + "\nAverage Power: " + str(round(sourcecode_ave_power,2)) + " W"
+        compare_code = compare_code + "\n\n[END SOURCE CODE AND RESULTS]"
+        
+        compare_code = compare_code + "\n\n" + "[BEGIN REFACTORED CODE AND RESULTS]\n\n" + code_block
+        compare_code = compare_code + "\n\nOUTPUT: \n\n" + exe_output_generated
+        compare_code = compare_code + "\n\nCode execution duration: " + str(round(duration_refactor,2)) + " s"
+        compare_code = compare_code + "\nTotal Energy Consumed: " + str(round(total_energy_joules_refactor,2)) + " J" + "\nAverage Power: " + str(round(ave_power_refactor,2)) + " W"
+        compare_code = compare_code + "\n\n[END REFACTORED CODE AND RESULTS]"
+
+        # Send prompt to LLM endpoint
+        print("\n\n-----> LLM prompt to compare codes:\n\n" + compare_code)
+        code_comparison_response = lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, compare_code, display_response)
         
 
     # MEASURE SIMILARITY BETWEEN GENERATED TRANSLATION CODE AND ORIGINAL TARGET CODE

@@ -56,6 +56,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     ave_power_refactor = 0
     duration_refactor = 0
     exe_output_source = ""
+    energy_efficiency_refactor_success = False
     
     report_gpu_memory()
     
@@ -156,6 +157,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     
     # Call LLM to generate a refactoring plan
     refactoring_plan = lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
+    refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
     refactoring_plan_original = refactoring_plan  # Save for self-correction iterations.
     refactoring_plan = refactoring_plan + "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
     refactoring_plan = refactoring_plan + "\n\n" + prompts.get_code_ee_refactoring_prompt("CUDA_refactor")
@@ -294,6 +296,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                                     
             if total_energy_joules_refactor < sourcecode_total_energy_joules or ave_power_refactor < sourcecode_ave_power:
                 print("\n\n***** Generated refactored code is more energy efficient than source code! *****\n\n")
+                energy_efficiency_refactor_success = True
                 break
             else:
                 print("\n\n -- ENERGY EFFICIENCY REVIEW: Let's provide feedback on the energy consumption. --")
@@ -323,6 +326,12 @@ def auto_code_llmgeneration_pipeline(prompts,
     end_time_minutes = round(end_time/60, 2)
     print("CODE GENERATION TIME: " + str(end_time_minutes) + " minutes.\n")
     print("Self-correction count: " + str(self_correction_counter) + "\n")
+
+    # Prompt the LLM to compare the codes
+    if energy_efficiency_refactor_success:
+        print("\n-----" + color.BLUE + "BEGIN CODE COMPARISON" + color.END + "-----\n")
+        compare_code = "\n\n" + prompts.get_code_comparison("cuda_cpp")
+        
 
     # MEASURE SIMILARITY BETWEEN GENERATED TRANSLATION CODE AND ORIGINAL TARGET CODE
     # similarity_tokens = lassi.token_analysis.token_similarity(target_code, code_block, "tokenize")

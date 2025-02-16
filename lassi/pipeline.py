@@ -297,6 +297,11 @@ def auto_code_llmgeneration_pipeline(prompts,
             if total_energy_joules_refactor < sourcecode_total_energy_joules or ave_power_refactor < sourcecode_ave_power:
                 print("\n\n***** Generated refactored code is more energy efficient than source code! *****\n\n")
                 energy_efficiency_refactor_success = True
+                # TODO: self-review for multiple attempts to further improve energy efficiency
+                # We need to set a flag that we had success at least one time.
+                # Then, if follow-up is not a success, then STOP and return the latest success.
+                # We need to track the refactor VERSION, so may need to have a list
+                # May want a list for each code vesion as well. Whew. We are going to be tracking a lot here.
                 break
             else:
                 print("\n\n -- ENERGY EFFICIENCY REVIEW: Let's provide feedback on the energy consumption. --")
@@ -329,26 +334,28 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     # Prompt the LLM to compare the codes
     if energy_efficiency_refactor_success:
-
-        with open(source_file_path, 'r') as file:
-            source_code = file.read()
-        
+       
         print("\n-----" + color.BLUE + "BEGIN CODE COMPARISON" + color.END + "-----\n")
+        
         compare_code = prompts.get_code_comparison("cuda_cpp")
-        compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + source_code
+        compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_code
         compare_code = compare_code + "\n\nOUTPUT: \n\n" + exe_output_source
         compare_code = compare_code + "\n\nCode execution duration: " + str(round(duration,2)) + " s"
         compare_code = compare_code + "\nTotal Energy Consumed: " + str(round(sourcecode_total_energy_joules,2)) + " J" + "\nAverage Power: " + str(round(sourcecode_ave_power,2)) + " W"
-        compare_code = compare_code + "\n\n[END SOURCE CODE AND RESULTS]"
+        compare_code = compare_code + "\n\n[/END SOURCE CODE AND RESULTS]"
         
         compare_code = compare_code + "\n\n" + "[BEGIN REFACTORED CODE AND RESULTS]\n\n" + code_block
         compare_code = compare_code + "\n\nOUTPUT: \n\n" + exe_output_generated
         compare_code = compare_code + "\n\nCode execution duration: " + str(round(duration_refactor,2)) + " s"
         compare_code = compare_code + "\nTotal Energy Consumed: " + str(round(total_energy_joules_refactor,2)) + " J" + "\nAverage Power: " + str(round(ave_power_refactor,2)) + " W"
-        compare_code = compare_code + "\n\n[END REFACTORED CODE AND RESULTS]"
+        compare_code = compare_code + "\n\n[/END REFACTORED CODE AND RESULTS]"
+
+        compare_code_prompt_tokens = lassi.token_analysis.token_count(compare_code)
+
+        print("\n\n----- " + color.BOLD + "REVIEW THE CODE COMPARISON PROMPT " + color.END + " (prompt token count: " + str(compare_code_prompt_tokens) + "): \n\n" + compare_code + "\n")
 
         # Send prompt to LLM endpoint
-        print("\n\n-----> LLM prompt to compare codes:\n\n" + compare_code)
+        print("\n\n-----> LLM prompt to compare codes:\n\n")
         code_comparison_response = lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, compare_code, display_response)
         
 
@@ -377,13 +384,12 @@ def auto_code_llmgeneration_pipeline(prompts,
     # meta_data_file += "\n"
     meta_data_file += "Self-correction iteration count: " + str(self_correction_counter)
     if yes_execute:
-        meta_data_file += "\n\n\n----- SOURCE: EXECUTION OUTPUT -----"
+        meta_data_file += "\n\n\n----- SOURCE: EXECUTION OUTPUT -----\n"
         meta_data_file += exe_output_source
-        meta_data_file += "\n\n\n----- GENERATED: EXECUTION OUTPUT -----"
+        meta_data_file += "\n\n\n----- GENERATED: EXECUTION OUTPUT -----\n"
         meta_data_file += exe_output_generated
     if yes_power_feedback:
-        meta_data_file += "\n\n\n----- ENERGY EFFICIENCY METRICS -----"
-        meta_data_file += "\n"
+        meta_data_file += "\n\n\n----- ENERGY EFFICIENCY METRICS -----\n"
         meta_data_file += "Total Energy (J): "
         meta_data_file += "  Source code: " + str(round(sourcecode_total_energy_joules, 2))
         meta_data_file += "  Refactored code: " + str(round(total_energy_joules, 2))
@@ -391,6 +397,9 @@ def auto_code_llmgeneration_pipeline(prompts,
         meta_data_file += "Average Power (W): "
         meta_data_file += "  Source code: " + str(round(sourcecode_ave_power, 2))
         meta_data_file += "  Refactored code: " + str(round(ave_power, 2))
+    if energy_efficiency_refactor_success:
+        meta_data_file += "\n\n\n----- CODE COMPARISON -----\n"
+        meta_data_file += code_comparison_response
 
     # Write meta data for this experiment
     filename = directory + "/" + "metadata" + "_" + file_name + "__" + str(dt_string) + ".txt"

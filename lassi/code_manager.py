@@ -13,6 +13,25 @@ from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage
 import lassi.get_power
 from lassi.format_colors import color
 
+
+def build_script_code(folder, code_build_script):
+    print("Build script - current dir: " + str(os.getcwd()))
+    # Execute the build script command
+    result = subprocess.run(str(os.getcwd()) + "/" + folder + "/altis/" + code_build_script + ".sh", capture_output=True, text=True)
+
+    # Check if the compilation was successful
+    return_result = ""
+    if result.returncode == 0:
+        print("\n" + color.BOLD + "Compilation of code successful!" + color.END)
+    else:
+        # If there was an error, print the error message
+        return_result = result.stderr
+        print("\n" + color.BOLD + color.RED + "***** Compilation failed." + color.END)
+        print(" Error message: ")
+        print(return_result)
+
+    return return_result
+
 def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
        
     # Split the compile keywords into a list of arguments
@@ -49,7 +68,7 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     return return_result, output_file
 
 
-def execute_code(executable_file, exe_input_parameters, power_measure, code_source, target_lang):
+def execute_code(executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script):
 
     # Wait 20 seconds for the system to settle down
     # print("...WAITING.")
@@ -81,7 +100,11 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     subprocess.run(['chmod', '+x', executable])
 
     # Build execute command
-    execute_command = ['./' + executable] + exe_input_parameters
+    if build_script:
+        execute_command = ['./' + executable]
+    else:
+        execute_command = ['./' + executable] + exe_input_parameters
+    print("Working directory: " + directory_path)
     print("Execute command: " + str(execute_command) + "\n")
 
     # Execute the binary object with input parameters, if provided

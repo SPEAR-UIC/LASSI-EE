@@ -33,6 +33,8 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      source_lang,
                                      code_compiler,
                                      code_compiler_kwds,
+                                     build_script,
+                                     code_build_script,
                                      directory,
                                      file_name,
                                      source_file_path,
@@ -64,13 +66,18 @@ def auto_code_llmgeneration_pipeline(prompts,
         code_source = "source"  # generated
         print("\n\n----- " + color.BLUE + "SOURCE CODE: Test compile and execute" + color.END + " -----")
         print("\nTest compile the original source code: " + str(source_file_path))
-        compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
+        if build_script:
+            compile_result = lassi.code_manager.build_script_code("source_codes", code_build_script)
+            execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level1/bfs"
+        else:
+            compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
         if compile_result != "":
+            print("\n\nFailed compile result: " + str(compile_result))
             return False
         if yes_execute:
             print("\nTest executing the compiled original source code: " + str(execute_file))
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_source, total_energy_joules, ave_power, duration = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang)
+            execute_result, exe_output_source, total_energy_joules, ave_power, duration = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script)
             # Save source code energy metrics:
             sourcecode_total_energy_joules = total_energy_joules
             sourcecode_ave_power = ave_power
@@ -261,7 +268,11 @@ def auto_code_llmgeneration_pipeline(prompts,
         file.close()
     
         # Compile the generated code, compile_result == "" if no error
-        compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
+        if build_script:
+            compile_result = lassi.code_manager.build_script_code("generated_codes", code_build_script)
+            execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/bfs"
+        else:
+            compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
 
         print("\nExecute file: " + str(execute_file))
 
@@ -276,7 +287,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             report_gpu_memory()
             
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, duration_refactor = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang)
+            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, duration_refactor = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
 
@@ -334,7 +345,7 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     # Prompt the LLM to compare the codes
     if energy_efficiency_refactor_success:
-       
+
         print("\n-----" + color.BLUE + "BEGIN CODE COMPARISON" + color.END + "-----\n")
         
         compare_code = prompts.get_code_comparison("cuda_cpp")

@@ -17,7 +17,9 @@ from lassi.format_colors import color
 def build_script_code(folder, code_build_script):
     print("Build script - current dir: " + str(os.getcwd()))
     # Execute the build script command
-    result = subprocess.run(str(os.getcwd()) + "/" + folder + "/altis/" + code_build_script + ".sh", capture_output=True, text=True)
+    build_script_file = str(os.getcwd()) + "/" + folder + "/altis/" + code_build_script + ".sh"
+    subprocess.run(["chmod", "+x", build_script_file], check=True)
+    result = subprocess.run([build_script_file], capture_output=True, text=True)
 
     # Check if the compilation was successful
     return_result = ""

@@ -1,4 +1,4 @@
-Below are several short CUDA C++ "code pairs," each illustrating a common optimization strategy to improve energy efficiency (and performance) of GPU kernels. For each pair, there is a non-optimized version and an optimized version. The optimized versions demonstrate best practices such as leveraging coalesced memory accesses, shared memory usage, minimizing divergent branches, and reducing unnecessary global memory traffic—all of which can significantly reduce energy consumption on GPU systems.
+[BEGIN OPTIMIZATION EXAMPLES] Below are several short CUDA C++ "code pairs," each illustrating a common optimization strategy to improve energy efficiency (and performance) of GPU kernels. For each pair, there is a non-optimized version and an optimized version. The optimized versions demonstrate best practices such as leveraging coalesced memory accesses, shared memory usage, minimizing divergent branches, and reducing unnecessary global memory traffic—all of which can significantly reduce energy consumption on GPU systems.
 
 # 1. Coalesced vs. Non-Coalesced Memory Access
 
@@ -458,3 +458,5 @@ Key Optimization Point: Consolidate or eliminate unnecessary host-device copies 
 6. Efficient Synchronization: Minimize __syncthreads() calls and ensure they are used only when absolutely necessary.
 
 By systematically applying these strategies, you not only improve performance but also reduce the total energy consumption of your GPU-accelerated applications.
+
+[/END OPTIMIZATION EXAMPLES]

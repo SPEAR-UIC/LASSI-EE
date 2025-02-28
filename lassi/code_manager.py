@@ -18,7 +18,7 @@ def build_script_code(folder, code_build_script):
     print("Build script - current dir: " + str(os.getcwd()))
     # Execute the build script command
     build_script_file = str(os.getcwd()) + "/" + folder + "/altis/" + code_build_script + ".sh"
-    subprocess.run(["chmod", "+x", build_script_file], check=True)
+    subprocess.run(['chmod', '+x', build_script_file], check=True)
     result = subprocess.run([build_script_file], capture_output=True, text=True)
 
     # Check if the compilation was successful
@@ -103,7 +103,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
     # Build execute command
     if build_script:
-        execute_command = ['./' + executable]
+        execute_command = ['./' + executable] + exe_input_parameters[0].split(' ')
     else:
         execute_command = ['./' + executable] + exe_input_parameters
     print("Working directory: " + directory_path)

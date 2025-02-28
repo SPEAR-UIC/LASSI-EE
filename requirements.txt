@@ -5,3 +5,4 @@ nvidia-ml-py
 pandas
 matplotlib
 tiktoken
+aiohttp

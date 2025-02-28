@@ -71,7 +71,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         print("\nTest compile the original source code: " + str(source_file_path))
         if build_script:
             compile_result = lassi.code_manager.build_script_code("source_codes", code_build_script)
-            execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level2/raytracing"
+            execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level1/" + file_name
         else:
             compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
         if compile_result != "":
@@ -313,8 +313,9 @@ def auto_code_llmgeneration_pipeline(prompts,
         # Compile the generated code, compile_result == "" if no error
         if build_script:
             compile_result = lassi.code_manager.build_script_code("generated_codes", code_build_script)
-            #execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/bfs"
-            execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level2/raytracing"
+            # execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/bfs"
+            # execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level2/raytracing"
+            execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/" + file_name
         else:
             compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
 
@@ -383,7 +384,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                     # Stop if at least one metric is stagnant, while the other is not improving by more than 1%
                     # Do NOT stop if both are worsening (negative improvement values)    
                     if (
-                        energy_efficiency_iteration > 2
+                        energy_efficiency_iteration > 1
                         and
                         (energy_stagnant or power_stagnant)
                         and

@@ -105,9 +105,9 @@ def calculate_total_energy(file_name, start_time, end_time):
     ave_power = code_execution_data['GPU Power (W)'].mean()
 
     # Get baseline energy consumption for same duration
-    print("\nCapturing idle energy consumed for same duration...") 
+    # print("\nCapturing idle energy consumed for same duration...") 
     #idle_energy, ave_idle_power = idlepower(int(end_time - start_time))
-    print("... Complete.")
+    # print("... Complete.")
     
     return total_energy, ave_power
 

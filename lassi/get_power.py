@@ -12,25 +12,26 @@ from pynvml import nvmlInit, nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex, nvm
 from lassi.format_colors import color
 
   
-def report_gpu_memory():
-    try:
-        nvmlInit()
-        device_count = nvmlDeviceGetCount()
-        print("GPU Memory Status:")
-        for i in range(device_count):
-            handle = nvmlDeviceGetHandleByIndex(i)
-            info = nvmlDeviceGetMemoryInfo(handle)
-            used = info.used // (1024 * 1024)
-            free = info.free // (1024 * 1024)
-            total = info.total // (1024 * 1024)
-            print(f" GPU {i}: {used} MiB used, {free} MiB free, {total} MiB total")
-    except NVMLError as error:
-        print("Failed to query GPU memory:", error)
-    finally:
+def report_gpu_memory(llm_source):
+    if llm_source != "argo":
         try:
-            nvmlShutdown()
-        except:
-            pass
+            nvmlInit()
+            device_count = nvmlDeviceGetCount()
+            print("GPU Memory Status:")
+            for i in range(device_count):
+                handle = nvmlDeviceGetHandleByIndex(i)
+                info = nvmlDeviceGetMemoryInfo(handle)
+                used = info.used // (1024 * 1024)
+                free = info.free // (1024 * 1024)
+                total = info.total // (1024 * 1024)
+                print(f" GPU {i}: {used} MiB used, {free} MiB free, {total} MiB total")
+        except NVMLError as error:
+            print("Failed to query GPU memory:", error)
+        finally:
+            try:
+                nvmlShutdown()
+            except:
+                pass
 
             
 def get_gpu_power():
@@ -104,9 +105,9 @@ def calculate_total_energy(file_name, start_time, end_time):
     ave_power = code_execution_data['GPU Power (W)'].mean()
 
     # Get baseline energy consumption for same duration
-    print("\nCapturing idle energy consumed for same duration...") 
+    # print("\nCapturing idle energy consumed for same duration...") 
     #idle_energy, ave_idle_power = idlepower(int(end_time - start_time))
-    print("... Complete.")
+    # print("... Complete.")
     
     return total_energy, ave_power
 

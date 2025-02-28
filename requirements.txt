@@ -1,0 +1,8 @@
+ollama
+tqdm
+# DO NOT INSTALL pynvml
+nvidia-ml-py
+pandas
+matplotlib
+tiktoken
+aiohttp

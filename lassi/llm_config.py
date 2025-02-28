@@ -1,10 +1,20 @@
 import ollama
 from ollama import ResponseError
 import json
+import requests
+import httpx
+import aiohttp
+import asyncio
 import subprocess
 import re
 import html
 from IPython.display import display, HTML, clear_output
+import lassi.argostream_curl
+
+import warnings
+from urllib3.exceptions import InsecureRequestWarning
+
+warnings.simplefilter("ignore", InsecureRequestWarning)
 
 """
 Local hosted LLM via OLLAMA API, GGUF quantized models
@@ -65,7 +75,7 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt):
         ],
         stream=True,
         options=dict(
-            temperature=0.2,
+            temperature=0.7,
             top_p=0.9
             # num_ctx=num_ctx  # including this parameter seems to slow down the streaming response
         ),
@@ -145,3 +155,140 @@ def unload_ollama_model(model):
     result_unload_LLM = subprocess.run(curl_command_unload_LLM, capture_output=True, text=True)
     print("\nUnload LLM:\n", result_unload_LLM.stdout)
     print(result_unload_LLM.stderr)
+
+
+"""
+Argo Gateway API call for OpenAI LLMs, GPT-class
+
+Only accessible from within Argonne National Laboratory network.
+"""
+async def fetch_stream(url, data, headers):
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=data, headers=headers, ssl=False) as response:
+            print(f"Status: {response.status}")
+            print("Streaming Response: ")
+
+            async for chunk in response.content.iter_any():
+                text = chunk.decode(errors="replace")
+                print(text, end="", flush=True)  # Print the text live
+                full_response += text  # Store the full response
+                # print(chunk.decode(errors="replace"), end="", flush=True)
+
+    return full_response
+
+
+def fetch_with_curl(url, data):
+
+    headers = [
+        "-H", "Content-Type: application/json",
+        "-H", "Host: apps-dev.inside.anl.gov"
+    ]
+
+    # Run curl as a subprocess, capturing output as it streams
+    process = subprocess.Popen(
+        ["curl", "-k", "-X", "POST", url, *headers, "-d", data],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1  # Line-buffered for real-time output
+    )
+
+    output = ""
+
+    # Read output line by line to maintain real-time streaming
+    for line in iter(process.stdout.readline, ''):
+        print(line, end="", flush=True)  # Print each chunk live
+        output += line  # Capture full response
+
+    process.stdout.close()
+    process.wait()  # Ensure process exits cleanly
+
+    return output  # Store full response for later use
+
+    
+def argo_llm(model, system_prompt, content_prompt):
+    # Argo Gateway API endpoint to POST
+    url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
+    # url = "https://localhost:5000/argoapi/api/v1/resource/chat/"
+    
+    if model == "gpto1preview":
+        content_prompt = system_prompt + "\n\n" + content_prompt
+    
+    # Data to be sent as a POST in JSON format
+    data = {
+        "user": "mdearing",
+        "model": model,   # gpt35, gpt4turbo
+        "system": system_prompt,
+        "prompt": [content_prompt],
+        "stop": [],
+        "temperature": 0.2,
+        "top_p": 0.9,
+    }
+
+    # Convert the dict to JSON string for curl
+    payload = json.dumps(data)
+
+    # Add a header stating that the content type is JSON
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/plain",  # Expect standard text streaming
+        "Accept-Encoding": "identity",  # Prevent gzip compression
+        "Host": "apps-dev.inside.anl.gov",
+    }
+
+    response = lassi.argostream_curl.argo_fetch_with_curl(payload)
+    # response = requests.post(url, json=data, headers=headers, verify=False)
+
+    # print(response.json()['response'])
+
+    # headers = [
+    #     "-H", "Content-Type: application/json",
+    #     "-H", "Accept: text/plain",
+    #     "-H", "Host: apps-dev.inside.anl.gov"
+    # ]
+
+    # Run curl as a subprocess, capturing output as it streams
+    # process = subprocess.Popen(
+    #     ["curl", "-k", "-X", "POST", url, *headers, "-d", payload],
+    #     stdout=subprocess.PIPE,
+    #     stderr=subprocess.PIPE,
+    #     text=True,
+    #     bufsize=1  # Line-buffered for real-time output
+    # )
+
+    # response_text = []
+
+    # Read output line by line and capture everything
+    # with process.stdout:
+    #     for line in iter(process.stdout.readline, ''):
+    #         print(line, end="", flush=True)  # Print each chunk live
+    #         response_text.append(line.strip())  # Store the full response properly
+
+    # Ensure the process is completed
+    # process.wait()
+
+    # Join the response lines properly before returning
+    # final_response = "\n".join(response_text)
+    
+    # Run the async function
+    # response_text = fetch_stream(url, data, headers)
+    #response_text = fetch_with_curl(url, payload)
+
+    # print("response_text: \n\n", response_text)
+
+    # Send POST request
+    # response = requests.post(url, data=payload, headers=headers, stream=True)
+    # response_text = response.json()['response']
+    # Use httpx to send the request with streaming enabled
+    # with httpx.stream("POST", url, json=data, headers=headers) as response:
+    #     print("Status Code: ", response.status_code)
+    #     print("Headers: ", response.headers)
+    #     print("Streaming Response: ")
+    #     # Read chunks as they arrive
+    #     for chunk_content in response.iter_bytes():  # response.iter_content(chunk_size=1):
+    #         if chunk_content:
+    #        = ""      response_text += chunk_content
+    #             print(chunk_content.decode(errors="replace"), end="", flush=True)  # Print each chunk as it arrives
+
+    return response

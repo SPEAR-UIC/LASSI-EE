@@ -75,7 +75,7 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt):
         ],
         stream=True,
         options=dict(
-            temperature=0.7,
+            temperature=0.2,
             top_p=0.9
             # num_ctx=num_ctx  # including this parameter seems to slow down the streaming response
         ),

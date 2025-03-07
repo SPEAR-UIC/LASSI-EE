@@ -25,6 +25,8 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      # arrayormatrix_size_range,
                                      # thread_count_range,
                                      use_context,
+                                     use_context_summaries_only,
+                                     few_shot_learning,
                                      input_context,
                                      input_code,
                                      # target_code,
@@ -97,6 +99,7 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     compile_result = "start"
     content = ""
+    content_summary_only = ""
     execute_result = ""
     error_message = ""
     error_source = ""  # "compiled" or "executed"
@@ -113,7 +116,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Augmented prompting to handle processing of provided knowledge context
     if use_context:
         
-        # Inject provided knowledge context--must be provided.
+        # Inject provided knowledge context--must be provided from top-level LASSI framework script.
         content = "" + input_context + "\n\n"  # [BEGIN CONTEXT KNOWLEDGE]  [/END CONTEXT KNOWLEDGE]
 
         original_context_knowledge = content
@@ -122,17 +125,19 @@ def auto_code_llmgeneration_pipeline(prompts,
         # Note, the input_context object includes all context requested by the user in the LASSI framework.
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to summarize context knowledge." + color.END + "\n")
         llm_code_knowledge_summary_response = lassi.llm_methods.code_knowledge_llm(llm_source, model, num_ctx, general_system_prompt, input_context, target_lang, display_response)
-        content = content + "[YOUR SUMMARY OF BACKGROUND KNOWLEDGE] " + llm_code_knowledge_summary_response + "\n\n"  # [/END CONTEXT KNOWLEDGE SUMMARY]
-        
-        # content = content + "Using the above background context knowledge along with your summarization of this content, "
+        if use_context_summaries_only:
+            # Save only LLM summary as context
+            # NOTE: this resets the content to not include the original context
+            content = "[YOUR SUMMARY OF BACKGROUND KNOWLEDGE] " + llm_code_knowledge_summary_response + "\n\n"
+        else:
+            # Keep the original context in the content to be included in the LLM prompting
+            content = content + "[YOUR SUMMARY OF BACKGROUND KNOWLEDGE] " + llm_code_knowledge_summary_response + "\n\n"  # [/END CONTEXT KNOWLEDGE SUMMARY]
 
         report_gpu_memory(llm_source)
 
         # Requet LLM summary description of the provided source code
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to describe the source code." + color.END + "\n")
         llm_code_description_response = lassi.llm_methods.code_description_llm(llm_source, model, num_ctx, general_system_prompt, input_context, input_code, display_response)
-    
-        # content = content + "think carefully before refactoring the source code that you describe as: \n"
         content = content + "[YOUR ANALYSIS OF THE CODE TO REFACTOR] " + llm_code_description_response + "\n\n"
         
     else:
@@ -146,7 +151,7 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     instructions_prompt = ""
     
-    # Append the background knowledge and LLM-generated summaries
+    # Append the background knowledge and/or LLM-generated summaries
     instructions_prompt = instructions_prompt + "\n\n" + content
     
     # Append the source code to the prompt
@@ -168,11 +173,19 @@ def auto_code_llmgeneration_pipeline(prompts,
     print("\n\n----- " + color.BOLD + color.GREEN + "REVIEW THE INSTRUCTIONS TASK PROMPT " + color.END + " (prompt with code, token count: " + str(original_ee_prompt_tokens) + "): \n" + instructions_prompt + "\n")
     
     # Call LLM to generate a refactoring plan
-    refactoring_plan = lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
-    refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
+    # Prompt structure: GOAL - RETURN FORMAT - WARNINGS - CONTEXT
+    refactoring_plan = prompts.get_code_ee_refactoring_prompt("CUDA_refactor")
+    # Context:
+    refactoring_plan = refactoring_plan + "\n\n" + original_context_content_prompt
+    # Generate the refactoring plan
+    refactoring_plan = refactoring_plan + "\n\n" + lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
+    # Append few-shot learning examples
+    if few_shot_learning:
+        refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
     refactoring_plan_original = refactoring_plan  # Save for self-correction iterations.
+    # Append code to refactor
     refactoring_plan = refactoring_plan + "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
-    refactoring_plan = refactoring_plan + "\n\n" + prompts.get_code_ee_refactoring_prompt("CUDA_refactor")
+    
     refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan)
 
     print("\n\n----- " + color.BOLD + color.GREEN + "REVIEW THE REFACTORING PLAN PROMPT " + color.END + " (prompt with code, token count: " + str(refactoring_plan_tokens) + "): \n\n" + refactoring_plan + "\n")

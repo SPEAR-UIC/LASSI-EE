@@ -34,6 +34,7 @@ def build_script_code(folder, code_build_script):
 
     return return_result
 
+
 def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
        
     # Split the compile keywords into a list of arguments
@@ -70,7 +71,7 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     return return_result, output_file
 
 
-def execute_code(executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script):
+def execute_code(executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=10):
 
     # Wait 20 seconds for the system to settle down
     # print("...WAITING.")
@@ -83,7 +84,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     ave_power = 0
 
     # Simulating a progress bar while sleeping for 5 seconds
-    for _ in tqdm(range(10), desc="Waiting for the system to settle down..."):
+    for _ in tqdm(range(wait), desc="Waiting for the system to settle down for " + str(wait) + " seconds..."):
         time.sleep(1)
 
     return_code = ""
@@ -172,7 +173,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
                 total_energy_joules = 0
                 ave_power = 0
-                if power_measure:            
+                # Only continue power measurements if no exe error
+                if power_measure and return_code == 0:            
                     end_exe_time = time.time() - start_power_time
                     duration = end_exe_time - start_exe_time
                     # Continue collecting power data for a short time after inference

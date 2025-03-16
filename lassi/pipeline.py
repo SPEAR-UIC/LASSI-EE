@@ -48,10 +48,12 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      meta_data_file,
                                      power_measure,
                                      test_code_first,
-                                     yes_power_feedback
+                                     yes_power_feedback,
+                                     dt_string
                                     ):
     
     # Test compile and execute the source code to validate compiler and execution environment
+    code_version = 0
     actual_energy = 0
     actual_ave_power = 0
     idle_energy_joules = 0
@@ -82,7 +84,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         if yes_execute:
             print("\nTest executing the compiled original source code: " + str(execute_file))
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_source, total_energy_joules, ave_power, duration = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script)
+            execute_result, exe_output_source, total_energy_joules, ave_power, duration = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=1)
             # Save source code energy metrics:
             sourcecode_total_energy_joules = total_energy_joules
             sourcecode_ave_power = ave_power
@@ -104,7 +106,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     error_message = ""
     error_source = ""  # "compiled" or "executed"
     code_block = ""
-    self_correction_counter = -1
+    self_correction_counter = 0
     self_correction_power_counter = -1
 
     general_system_prompt = prompts.get_system_prompt("general_system_ee")
@@ -149,21 +151,16 @@ def auto_code_llmgeneration_pipeline(prompts,
     # This token count does not include the source code
     original_prompt_tokens = lassi.token_analysis.token_count(original_context_content_prompt)
 
+    # BUILD INSTRUCTION PROMPT
     instructions_prompt = ""
-    
+    instructions_prompt = instructions_prompt + "\n\n" + "[INSTRUCTIONS TO REFACTOR CODE TO IMPROVE ENERGY EFFICIENCY]\n" + this_llm_prompt
     # Append the background knowledge and/or LLM-generated summaries
-    instructions_prompt = instructions_prompt + "\n\n" + content
-    
+    instructions_prompt = instructions_prompt + "\n\n" + original_context_content_prompt
     # Append the source code to the prompt
     instructions_prompt = instructions_prompt + "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
+    instructions_prompt = instructions_prompt + "\n\nFor reference, the CODE TO REFACTOR provided above was executed on this system and consumed a total energy of " + str(round(sourcecode_total_energy_joules, 2)) + " Joules at an average power of " + str(round(sourcecode_ave_power, 2)) + " Watts, which includes the idle system energy consumption and average power.\n"
     
-    instructions_prompt = instructions_prompt + "\n\nFor reference, the source code provided above was executed on this system and consumed a total energy of " + str(round(actual_energy, 2)) + " Joules at an average power of " + str(round(actual_ave_power, 2)) + " Watts.\n"
-
-    instructions_prompt = instructions_prompt + "\n\n" + "[INSTRUCTIONS TO REFACTOR CODE TO IMPROVE ENERGY EFFICIENCY]\n" + this_llm_prompt
-    
-    # content = content + "\n\n [BEGIN ENERGY EFFICIENCY REFACTORING TASK] Now, " + this_llm_prompt
-    # content = content + "[/END ENERGY EFFICIENCY REFACTORING TASK]\n"
-     
+         
     # Save the original context + energy efficiency context for re-use during energy efficiency correction
     original_ee_context_content_prompt = instructions_prompt
     original_ee_prompt_tokens = lassi.token_analysis.token_count(original_ee_context_content_prompt)
@@ -178,13 +175,13 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Context:
     refactoring_plan = refactoring_plan + "\n\n" + original_context_content_prompt
     # Generate the refactoring plan
-    refactoring_plan = refactoring_plan + "\n\n" + lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
+    refactoring_plan = refactoring_plan + "\n\n" + "[START OF YOUR REFACTORING PLAN]\n" + lassi.llm_methods.llm_call("refactoring plan", llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
     # Append few-shot learning examples
     if few_shot_learning:
         refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
     refactoring_plan_original = refactoring_plan  # Save for self-correction iterations.
     # Append code to refactor
-    refactoring_plan = refactoring_plan + "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
+    refactoring_plan = refactoring_plan_original + "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
     
     refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan)
 
@@ -210,9 +207,8 @@ def auto_code_llmgeneration_pipeline(prompts,
     start_time = time.time()
     
     # INITIATE LLM CODE GENERATION ITERATIVE PIPELINE
-    while compile_result != "" and self_correction_counter <= 7 and self_correction_power_counter <= 7:
-        self_correction_counter = self_correction_counter + 1
-        
+    while compile_result != "" and self_correction_counter <= 15 and self_correction_power_counter <= 15:
+                
         if compile_result == "start":
             # CALL THE LLM
             # refactoring_plan = re.sub(' +', ' ', refactoring_plan)
@@ -226,7 +222,8 @@ def auto_code_llmgeneration_pipeline(prompts,
             #     display_response
             # )
         
-            time.sleep(20)
+            if llm_source != "argo":
+                time.sleep(10)
             report_gpu_memory(llm_source)
             
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt the LLM to generate code." + color.END + "\n\n")
@@ -235,9 +232,11 @@ def auto_code_llmgeneration_pipeline(prompts,
             # CALL THE LLM WITH ERROR CORRECTION
             print("\n\n----- " + color.BOLD + color.RED + "SELF-CORRECTION: " + str(self_correction_counter) + color.END + " -----")
             if compile_result == "execute_error":
+                self_correction_counter = self_correction_counter + 1
                 error_correction_prompt_intro = "\n -- The above CODE TO FIX was executed after a successul compile with " + code_compiler + " " + code_compiler_kwds + " and produced the following execution error: "
                 error_message = execute_result
             else:  # Must be a compiler error
+                self_correction_counter = self_correction_counter + 1
                 # NOTE: Maybe do not provide the original code in the other language when trying to fix code in the target language.
                 error_correction_prompt_intro = "\n\n -- The above CODE TO FIX was compiled with " + code_compiler + " " + code_compiler_kwds + " and produced the following compile error: "
                 error_message = compile_result
@@ -245,8 +244,9 @@ def auto_code_llmgeneration_pipeline(prompts,
             # error_correction_prompt_outro = " Eliminate this specific error by re-factoring the above code with an appropriate fix while also using the following background context: " + original_context_content_prompt
             # error_prompt = code_block + error_correction_prompt_intro + error_message + error_correction_prompt_outro
             # error_correction_prompt_outro = " Eliminate this specific error by re-factoring the above code with an appropriate fix."
-            error_correction_prompt_outro = " Refactor the above code with a fix to eliminate the stated error. Ensure all original functionality and expected output remains intact. REMINDER: Be sure to maintain all function signatures, class structures, and kernel logic in your refactored code while fixing the error. Only provide the final code in your response."
-            error_prompt = original_context_knowledge + "\n\n" + "[START OF CODE TO FIX] " + code_block + "\n\n" + "[/END OF CODE TO FIX] " + "\n\n" + error_correction_prompt_intro + "\n\n" + error_message + "\n\n" + error_correction_prompt_outro
+            error_correction_prompt = prompts.get_code_error_correction_prompt("CUDA_error")
+            # TODO: maybe not include context for the code errors? original_context_content_prompt
+            error_prompt = error_correction_prompt + "\n\n" + "[START OF CODE TO FIX] " + code_block + "\n\n" + "[/END OF CODE TO FIX] " + "\n\n" + error_correction_prompt_intro + "\n\n" + error_message
             error_prompt_tokens = lassi.token_analysis.token_count(error_prompt)
             print("\n\n----- " + color.BOLD + color.RED + "ERROR SELF-CORRECTION" + color.END + " -----")
             print("\n\n" + color.BOLD + "REVIEW PROMPT " + color.END + "(error correction, token count: " + str(error_prompt_tokens) + "): " + error_prompt + "\n\n")
@@ -258,9 +258,17 @@ def auto_code_llmgeneration_pipeline(prompts,
             """Self-correction feedback for improving energy efficiency following no prior improvement."""
             print("\n\n----- " + color.BOLD + color.RED + "SELF-CORRECTION FOR ENERGY EFFICIENCY: " + str(self_correction_power_counter) + color.END + " -----")
             report_gpu_memory(llm_source)
-            refactoring_plan_iteration = refactoring_plan_original + "\n\n" + "[START OF CODE TO REFACTOR]\n" + code_block + "\n[/END OF CODE TO REFACTOR]"
+            refactoring_plan_iteration = prompts.get_code_ee_refactoring_prompt("CUDA_refactor_iteration")
+            # Context:
+            refactoring_plan_iteration = refactoring_plan_iteration + "\n\n" + original_context_content_prompt
+            refactoring_plan_iteration = refactoring_plan_iteration + "\n\n" + refactoring_plan_original
+            # Append few-shot learning examples
+            if few_shot_learning:
+                refactoring_plan_iteration = refactoring_plan_iteration + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
+            # Append code to refactor            
+            refactoring_plan_iteration = refactoring_plan_iteration + "\n\n" + "[START OF CODE TO REFACTOR]\n" + code_block + "\n[/END OF CODE TO REFACTOR]"
             # refactoring_plan_iteration = refactoring_plan_iteration + "\n\n" + "The above code was executed after a successul compile with " + code_compiler + " " + code_compiler_kwds + " and consumed " + str(round(total_energy_joules_refactor, 2)) + " joules of energy with an average power of " + str(round(ave_power_refactor, 2)) + " Watts."
-            refactoring_plan_iteration = refactoring_plan_iteration + "\n\n" + prompts.get_code_ee_refactoring_prompt("CUDA_refactor_iteration")
+
             refactoring_plan_iteration_tokens = lassi.token_analysis.token_count(refactoring_plan_iteration)
                         
             # ee_correction_prompt_intro = "\n -- The above code was executed after a successul compile with " + code_compiler + " " + code_compiler_kwds + " and consumed " + str(round(total_energy_joules_refactor, 2)) + " joules of energy with an average power of " + str(round(ave_power_refactor, 2)) + " Watts."
@@ -288,22 +296,31 @@ def auto_code_llmgeneration_pipeline(prompts,
             """
             instructions_prompt = ""
              # Append the background knowledge and LLM-generated summaries
-            instructions_prompt = instructions_prompt + "\n\n" + content
+            instructions_prompt = instructions_prompt + "\n\n" + original_context_content_prompt
+            # Append the latest refactored code -- as the new source code -- to the prompt
             instructions_prompt = instructions_prompt + "\n\n[START OF CODE TO REFACTOR]\n" + code_block + "\n[/END OF CODE TO REFACTOR]"
             instructions_prompt = instructions_prompt + "\n\nFor reference, the code provided above was executed on this system and consumed a total energy of " + str(round(total_energy_joules, 2)) + " Joules at an average power of " + str(round(ave_power, 2)) + " Watts.\n"
             instructions_prompt = instructions_prompt + "\n\n" + "[INSTRUCTIONS TO REFACTOR CODE TO IMPROVE ENERGY EFFICIENCY]\n" + this_llm_prompt
-            
+            instructions_prompt = instructions_prompt + "\n\nFor reference, the CODE TO REFACTOR provided above was executed on this system and consumed a total energy of " + str(round(total_energy_joules_refactor, 2)) + " Joules at an average power of " + str(round(ave_power_refactor, 2)) + " Watts, which includes the idle system energy consumption and average power.\n"
+    
             # Save the original context + energy efficiency context for re-use during energy efficiency correction
             original_ee_context_content_prompt = instructions_prompt
             original_ee_prompt_tokens = lassi.token_analysis.token_count(original_ee_context_content_prompt)
 
-            # Call LLM to generate a refactoring plan
-            print("\n... llm_call to generate a new refactoring plan ...\n")
-            refactoring_plan = lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
-            refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
+            # Call LLM to generate a NEW refactoring plan
+            # Prompt structure: GOAL - RETURN FORMAT - WARNINGS - CONTEXT
+            print("\n... " + color.GREEN + "llm_call to generate a new refactoring plan " + color.END + "...\n")
+            refactoring_plan = prompts.get_code_ee_refactoring_prompt("CUDA_refactor_iteration")
+            # Context:
+            refactoring_plan = refactoring_plan + "\n\n" + original_context_content_prompt
+            # Generate the NEW refactoring plan
+            refactoring_plan = refactoring_plan + "\n\n" + "[START OF YOUR REFACTORING PLAN]\n" + lassi.llm_methods.llm_call("refactoring plan", llm_source, model, num_ctx, general_system_prompt, instructions_prompt, display_response)
+            # Append few-shot learning examples
+            if few_shot_learning:
+                refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
             refactoring_plan_original = refactoring_plan  # Save for self-correction iterations.
-            refactoring_plan = refactoring_plan + "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
-            refactoring_plan = refactoring_plan + "\n\n" + prompts.get_code_ee_refactoring_prompt("CUDA_refactor")
+            refactoring_plan = refactoring_plan_original + "\n\n[START OF CODE TO REFACTOR]\n" + code_block + "\n[/END OF CODE TO REFACTOR]"
+            
             refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan)
             
             print("\n\n" + color.BOLD + color.GREEN + "----- REVIEW PROMPT " + color.END + "(energy efficiency improvement, token count: " + str(refactoring_plan_tokens) + "): \n\n" + refactoring_plan + "\n\n")
@@ -317,7 +334,8 @@ def auto_code_llmgeneration_pipeline(prompts,
             code_block = code_block[1:]    
     
         # SAVE THE GENERATIVE CODE -- before compiling
-        file_path = directory + "/" + file_name + "." + refactored_code_extension
+        file_name_save = file_name + "_" + dt_string
+        file_path = directory + "/" + file_name_save + "." + refactored_code_extension
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, 'w') as file:
             file.write(code_block)
@@ -328,45 +346,54 @@ def auto_code_llmgeneration_pipeline(prompts,
             compile_result = lassi.code_manager.build_script_code("generated_codes", code_build_script)
             # execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/bfs"
             # execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level2/raytracing"
-            execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/" + file_name
+            execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/" + file_name_save
         else:
             compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
 
         print("\nExecute file: " + str(execute_file))
 
-        if yes_execute and compile_result == "" and self_correction_counter <= 7:
+        if yes_execute and compile_result == "" and self_correction_counter <= 15:
             code_source = "generated"  # target
             # Unload any previously loaded LLMs in the Ollama server 
             # (clear out the memory)
             if llm_source == "ollama":
                 lassi.llm_config.unload_ollama_model(model_coder)
+                time.sleep(10)
 
-            time.sleep(20)
             report_gpu_memory(llm_source)
             
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, duration_refactor = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script)
+            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, duration_refactor = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=5)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
+            else:
+                # Save the generated code as a separate versioned copy
+                file_path = directory + "/" + file_name_save + "_v" + str(code_version) + "." + refactored_code_extension
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                with open(file_path, 'w') as file:
+                    file.write(code_block)
+                file.close()
+                code_version = code_version + 1
+                
 
         # Begin POWER METRICS feedback loop
-        if yes_power_feedback and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= 7:
+        if yes_power_feedback and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= 15:
             self_correction_power_counter = self_correction_power_counter + 1
             # Substract out idle metrics
-            total_energy_joules = total_energy_joules_refactor - idle_energy_joules
+            total_energy_joules_lessidle = total_energy_joules_refactor - idle_energy_joules
             energy_history.append(round(total_energy_joules_refactor, 2))
-            ave_power = ave_power_refactor - idle_ave_power
+            ave_power_lessidle = ave_power_refactor - idle_ave_power
             power_history.append(round(float(ave_power_refactor),2))
             print("\nPower and Energy Feedback data: ")
             print("----- Energy consumed (J) -----")
-            print("  Source code: " + str(round(sourcecode_total_energy_joules,2)))
-            print("  Refactored code: " + str(round(total_energy_joules_refactor,2)))
+            print("  Source code: " + str(round(sourcecode_total_energy_joules, 2)))
+            print("  Refactored code: " + str(round(total_energy_joules_refactor, 2)))
             print("----- Average power (W) -----")
-            print("  Source code: " + str(round(sourcecode_ave_power,2)))
-            print("  Refactored code: " + str(round(ave_power_refactor,2)))
+            print("  Source code: " + str(round(sourcecode_ave_power, 2)))
+            print("  Refactored code: " + str(round(ave_power_refactor, 2)))
             print("----- Runtime (s) -----")
-            print("  Source code: " + str(round(duration,2)))
-            print("  Refactored code: " + str(round(duration_refactor,2)))
+            print("  Source code: " + str(round(duration, 2)))
+            print("  Refactored code: " + str(round(duration_refactor, 2)))
                                     
             if total_energy_joules_refactor < sourcecode_total_energy_joules or ave_power_refactor < sourcecode_ave_power:
                 print("\n\n***** Generated refactored code is more energy efficient than source code! *****")
@@ -411,7 +438,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                         print("\n\n")
                         break
             else:
-                print("\n\n" + color.GREEN + " -- ENERGY EFFICIENCY REVIEW: Let's provide feedback on the energy consumption. --" + color.END + "\n\n")
+                print("\n\n" + color.GREEN + color.BOLD + " ----- ENERGY EFFICIENCY REVIEW: Let's provide feedback on the energy consumption. -----" + color.END + "\n\n")
                 compile_result = "energy_efficiency"
                 energy_efficiency_refactor_success = False
             '''
@@ -431,9 +458,6 @@ def auto_code_llmgeneration_pipeline(prompts,
     # end of while pipeline loop
 
     end_time = time.time() - start_time
-
-    now = datetime.now()
-    dt_string = now.strftime("%m-%d-%Y_t%H_%M_%S")
     
     print("\n-----" + color.BOLD + color.GREEN + "CODE GENERATION COMPLETE" + color.END + "-----\n")
     end_time_minutes = round(end_time/60, 2)
@@ -444,7 +468,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Prompt the LLM to compare the codes
     if energy_efficiency_refactor_success:
 
-        print("\n-----" + color.BOLD + color.BLUE + "BEGIN CODE COMPARISON" + color.END + "-----\n")
+        print("\n----- " + color.BOLD + color.BLUE + "BEGIN CODE COMPARISON" + color.END + " -----\n")
         
         compare_code = prompts.get_code_comparison("cuda_cpp")
         compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_code
@@ -465,7 +489,7 @@ def auto_code_llmgeneration_pipeline(prompts,
 
         # Send prompt to LLM endpoint
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "LLM prompt to compare codes." + color.END + "\n\n")
-        code_comparison_response = lassi.llm_methods.llm_call(llm_source, model, num_ctx, general_system_prompt, compare_code, display_response)
+        code_comparison_response = lassi.llm_methods.llm_call("code comparison", llm_source, model, num_ctx, general_system_prompt, compare_code, display_response)
         
 
     # MEASURE SIMILARITY BETWEEN GENERATED TRANSLATION CODE AND ORIGINAL TARGET CODE
@@ -505,18 +529,25 @@ def auto_code_llmgeneration_pipeline(prompts,
     if yes_power_feedback:
         meta_data_file += "\n\n\n----- ENERGY EFFICIENCY METRICS -----\n"
         meta_data_file += "Total Energy (J): "
+        meta_data_file += "  Idle: " + str(round(idle_energy_joules, 2))
         meta_data_file += "  Source code: " + str(round(sourcecode_total_energy_joules, 2))
-        meta_data_file += "  Refactored code: " + str(round(total_energy_joules, 2))
+        meta_data_file += "  Refactored code: " + str(round(total_energy_joules_refactor, 2))
         meta_data_file += "\n"
         meta_data_file += "Average Power (W): "
+        meta_data_file += "  Idle: " + str(round(idle_ave_power, 2))
         meta_data_file += "  Source code: " + str(round(sourcecode_ave_power, 2))
-        meta_data_file += "  Refactored code: " + str(round(ave_power, 2))
+        meta_data_file += "  Refactored code: " + str(round(ave_power_refactor, 2))
+        meta_data_file += "\n"
+        meta_data_file += "Runtime (s): "
+        meta_data_file += "  Idle: " + str(round(duration, 2))
+        meta_data_file += "  Source code: " + str(round(duration, 2))
+        meta_data_file += "  Refactored code: " + str(round(duration_refactor, 2))
     if energy_efficiency_refactor_success:
         meta_data_file += "\n\n\n----- CODE COMPARISON -----\n"
         meta_data_file += code_comparison_response
 
     # Write meta data for this experiment
-    filename = directory + "/" + "metadata" + "_" + file_name + "__" + str(dt_string) + ".txt"
+    filename = directory + "/" + "metadata" + "_" + file_name_save + ".txt"
     with open(filename, 'w') as file:
         file.write(meta_data_file)
     file.close()

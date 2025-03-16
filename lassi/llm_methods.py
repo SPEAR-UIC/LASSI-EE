@@ -4,7 +4,7 @@ from lassi.llm_config import argo_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
 
 
-def llm_call(llm_source, model, num_ctx, system_prompt, content_prompt, display_response):
+def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, display_response):
    
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt)
@@ -13,7 +13,7 @@ def llm_call(llm_source, model, num_ctx, system_prompt, content_prompt, display_
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt)
 
-    print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE" + color.END + " -----\n")
+    print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
         display(Markdown(response_text))
 

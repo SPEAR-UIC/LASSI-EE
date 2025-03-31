@@ -4,14 +4,17 @@ from lassi.llm_config import argo_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
 
 
-def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, display_response):
+def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, display_response, verifyprompt=False):
    
+    if intent == "refactoring plan":
+        print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to write a refactoring plan." + color.END + "\n")
+        
     if llm_source == "argo":
-        response_text = argo_llm(model, system_prompt, content_prompt)
+        response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "lmstudio":
-        response_text = lmstudio_llm(model, system_prompt, content_prompt)
+        response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
-        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt)
+        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
 
     print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
@@ -19,7 +22,79 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
 
     return response_text
 
-def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context, target_lang, display_response):
+
+def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, display_response, verifyprompt=False):
+
+    intent = "code validation judge"
+
+    print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to judge the validity of the refactored code." + color.END + "\n")
+    
+    # Use same system prompt.
+    # Build user prompt:
+    # Fixed instructions first
+    # "SOURCE CODE"
+    # <insert source code>
+    # "STANDARD OUTPUT
+    # <insert runtime output>
+    # "METRICS"
+    # <insert measurements>
+    # "REFACTORED CODE"
+    # <insert refactored code>
+    # "STANDARD OUTPUT
+    # <insert runtime output>
+    # "METRICS"
+    # <insert measurements>
+    content_prompt = """
+    Please compare the difference between the following two codes written in CUDA C++.\n
+    First, I will provide you first with the SOURCE CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
+    Next, I will provide you with a REFACTORED CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
+    After you have reviewed both codes and their output, while the REFACTORED CODE may run faster and potentially use less energy than the SOURCE CODE, it should still produce equivalent functionality and identical standard output in layout and content.\n
+    Your task is to strictly evaluate whether the REFACTORED CODE preserves all intended functionality of the SOURCE CODE and produces equivalent standard output, including its layout and content, compared to the SOURCE CODE.\n
+    Your careful evaluation should focus on functional equivalence of the two codes and nearly exact standard output of the two codes. Minor differences in numerical values are acceptable in the standard output only if they are consistent with the REFACTORD CODE improving energy efficiency and these specific values are reasonable and consistent with the SOURCE CODE's intended purpose.\n
+    Please explain your reasoning, and then conclude your response with VALID if the refactored code is functionally equivalent, or INVALID if it is not.
+    """
+    # Please evaluate if you think the refactored code should be considered valid in terms of providing the same code functionality while also having the exact same standard output as compared with the the source code, other than the specific numerical values. However, these numerical values must still make sense for the given functionality and intent of the code for the refactored code to be considered valud. \n
+    # If you think the refactored code is valid, then please conclude your response with VALID. Otherwise, conclude with INVALID.
+    #"""
+
+    content_prompt += f"\n\n# [SOURCE CODE]\n {input_content_dict['source_code']}"
+    content_prompt += f"\n\n## [STANDARD OUTPUT]\n {input_content_dict['source_stdout']}"
+    content_prompt += f"\n\n## [METRICS]\n {input_content_dict['source_metrics']}"
+    content_prompt += f"\n\n# [REFACTORED CODE]\n {input_content_dict['refactored_code']}"
+    content_prompt += f"\n\n## [STANDARD OUTPUT]\n {input_content_dict['refactored_stdout']}"
+    content_prompt += f"\n\n## [METRICS]\n {input_content_dict['refactored_metrics']}"
+
+    if input_content_dict['refactored_metrics'] == "":
+        # No energy metrics measured. This refactored code should be flagged INVALID.
+        return "INVALID"
+    
+    if llm_source == "argo":
+        response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "lmstudio":
+        response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "ollama":
+        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+
+    print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
+    if display_response:
+        display(Markdown(response_text))
+
+    print("\n\n----- " + color.BOLD + color.BLUE + "END LLM RESPONSE" + color.END + " -----\n")
+
+    # look for "VALID" or "INVALID" in the LLM response
+    # only return this value
+    # NOTE: check "INVALID" first, because "VALID" is a substring
+    if "INVALID" in response_text:
+        response_validation = "INVALID"
+    elif "VALID" in response_text:
+        response_validation = "VALID"
+    else:
+        response_validation = "NONE"
+    
+    return response_validation
+
+    
+def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context, target_lang, display_response, verifyprompt=False):
 
     content_prompt = """
     Read and Analyze: First, read the following background knowledge.
@@ -38,11 +113,11 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
     content_prompt = content_prompt + "\n\n" + input_context
     
     if llm_source == "argo":
-        response_text = argo_llm(model, system_prompt, content_prompt)
+        response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "lmstudio":
-        response_text = lmstudio_llm(model, system_prompt, content_prompt)
+        response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
-        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt)
+        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
 
     print("\n\n----- " + color.BOLD + color.BLUE + "CONTEXT KNOWLEDGE SUMMARY" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -52,7 +127,7 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
     return response_text
 
 
-def code_description_llm(llm_source, model, num_ctx, system_prompt, input_context, input_code, display_response):
+def code_description_llm(llm_source, model, num_ctx, system_prompt, input_context, input_code, display_response, verifyprompt=False):
 
     # content_prompt = """
     # Please provide a detailed summary describing the functionality of the following source code.  
@@ -73,11 +148,11 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
     content_prompt = content_prompt + "\n\n[START OF CODE TO DESCRIBE AND ANALYZE]\n" + input_code + "\n\n"  # [/END SOURCE CODE]"
     
     if llm_source == "argo":
-        response_text = argo_llm(model, system_prompt, content_prompt)
+        response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "lmstudio":
-        response_text = lmstudio_llm(model, system_prompt, content_prompt)
+        response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
-        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt)
+        response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
 
     print("\n\n----- " + color.BOLD + color.BLUE + "CODE DESCRIPTION and ANALYSIS" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -87,8 +162,10 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
     return response_text
 
 
-def code_generator_llm(llm_source, model, num_ctx, system_prompt, content_prompt, display_response):
+def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_prompt, display_response, verifyprompt=False):
 
+    print("\n----- " + color.BOLD + color.PURPLE + "STARTING CODE GENERATION" + color.END + " -----\n")
+    
     # print("\n\nDEBUG input parameter values:")
     # print("  llm_source: " + str(llm_source))
     # print("  model: " + str(model))
@@ -98,13 +175,13 @@ def code_generator_llm(llm_source, model, num_ctx, system_prompt, content_prompt
     # print("  display_response: " + str(display_response))
     
     if llm_source == "argo":
-        response_text = argo_llm(model, system_prompt, content_prompt)
+        response_text = argo_llm(model, system_prompt, content_prompt, temp, verifyprompt)
     elif llm_source == "lmstudio":
-        response_text = lmstudio_llm(model, system_prompt, content_prompt)
+        response_text = lmstudio_llm(model, system_prompt, content_prompt, temp, verifyprompt)
     elif llm_source == "ollama":
-        response_text = ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt)
+        response_text = ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
         
-    print("\n\n----- " + color.BOLD + color.BLUE + "GENERATED CODE" + color.END + " -----\n")
+    print("\n\n----- " + color.BOLD + color.BLUE + "THE GENERATED CODE" + color.END + " -----\n")
     if display_response:
         print("(hidden)\n\n")
         # display(Markdown(response_text))

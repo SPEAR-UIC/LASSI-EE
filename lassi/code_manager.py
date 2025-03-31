@@ -82,6 +82,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     start_power_time = 0
     total_energy_joules = 0
     ave_power = 0
+    metrics_results_string = ""
 
     # Simulating a progress bar while sleeping for 5 seconds
     for _ in tqdm(range(wait), desc="Waiting for the system to settle down for " + str(wait) + " seconds..."):
@@ -185,12 +186,13 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     #    end_power_time = time.time()
                     stop_power_event.set()
                     power_thread.join()
-                    total_energy_joules, ave_power = lassi.get_power.power_collect_data(
+                    total_energy_joules, ave_power, metrics_results_string = lassi.get_power.power_collect_data(
                         power_queue, 
                         code_source, 
                         target_lang, 
                         start_exe_time, 
-                        end_exe_time)
+                        end_exe_time
+                    )
 
                     # Shutdown NVML
                     nvmlShutdown()
@@ -228,4 +230,4 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
     stdout_output = ''.join(stdout_lines)
 
-    return return_result, stdout_output, total_energy_joules, ave_power, duration
+    return return_result, stdout_output, total_energy_joules, ave_power, duration, metrics_results_string

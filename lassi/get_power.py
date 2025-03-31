@@ -34,6 +34,7 @@ def report_gpu_memory(llm_source):
                 pass
 
             
+# Not used in LASSI - Energy Efficiency version
 def get_gpu_power():
     try:
         result = subprocess.run(['nvidia-smi', '--id=0', '--query-gpu=power.draw', '--format=csv,noheader,nounits'],
@@ -121,17 +122,21 @@ def display_energy_results(file_name, start_time, end_time):
     total_energy_kwh = total_energy_wh / 1000  # Convert from Watt-hours to Kilowatt-hours
     
     execution_duration = end_time - start_time
-    print(f"Code execution duration: {execution_duration:.2f} seconds")
     print(f"Total GPU energy consumption for {file_name}:")
     print(f"  {total_energy_kwh:.6f} kWh")
     print(f"  {total_energy_wh:.4f} Wh")
     print(f"  {total_energy_joules:.2f} J")
     print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W" + color.END)
     print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
+    print(f"Code execution duration: {execution_duration:.2f} seconds")
     # print("Idle Energy (same duration): " + f"  {idle_energy:.2f} J")
     print("----------------------------------------------------------------------------------------------------------------------------------------")
-    
-    return total_energy_joules, ave_power
+
+    metrics_results_string = f"Total Energy During Exe Runtime: {total_energy_joules:.2f} Joules"
+    metrics_results_string += f"\nAverage GPU power: {ave_power:.2f} Watts"
+    metrics_results_string += f"\nCode execution duration: {execution_duration:.2f} seconds" 
+   
+    return total_energy_joules, ave_power, metrics_results_string
 
     
 # Function to read CSV and plot the GPU power usage
@@ -154,10 +159,10 @@ def power_collect_data(power_queue, code_source, target_lang, start_exe_time, en
     # print(f"\nMODEL TRIAL: {experiment}")
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
+
+    total_energy_joules, ave_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time)
     
-    total_energy_joules, ave_power = display_energy_results(filename, start_exe_time, end_exe_time)
-    
-    return total_energy_joules, ave_power
+    return total_energy_joules, ave_power, metrics_results_string
 
     
 def idlepower(duration):
@@ -185,7 +190,9 @@ def idlepower(duration):
     stop_power_event.set()
     power_thread.join()
     # print("... idle duration increment: " + str(end_power_time - start_power_time))
-    total_energy_joules, ave_power = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time)
+    
+    # We don't need the metrics_results_string for idle metrics.
+    total_energy_joules, ave_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time)
 
     # Shutdown NVML
     nvmlShutdown()

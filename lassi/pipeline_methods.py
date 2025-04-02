@@ -151,10 +151,10 @@ def generate_refactoring_plan(source_lang,
         refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
     # refactoring_plan_original = refactoring_plan  # Save for self-correction iterations.
     # Append code to refactor
-    refactoring_plan = refactoring_plan + code_to_refactor
+    refactoring_plan_full = refactoring_plan + code_to_refactor
         
-    refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan)
+    refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan_full)
     
     print("\n\n----- " + color.GREEN + "THE REFACTORING PLAN PROMPT " + color.END + " (prompt with code, token count: " + str(refactoring_plan_tokens) + "): \n")  # + refactoring_plan + "\n")
 
-    return refactoring_plan
+    return refactoring_plan, code_to_refactor

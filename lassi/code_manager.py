@@ -77,6 +77,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # print("...WAITING.")
     # time.sleep(20)
     # print("...DONE WAITING.")
+    print("\nBefore exe...")
+    lassi.get_power.report_gpu_memory()
 
     duration = 0
     start_power_time = 0
@@ -114,8 +116,18 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # Execute the binary object with input parameters, if provided
 
     if power_measure:
-        nvmlInit()
+        try:
+            nvmlInit()
+        except NVMLError as err:
+            print(f"Failed to initialize NVML: {err}")
         handle = nvmlDeviceGetHandleByIndex(0)  # Assuming GPU 0
+        # Collect idle power average value before exe
+        idle_power_before = []
+        for _ in range(200):  # 2 seconds @ 0.01s intervals
+            p = nvmlDeviceGetPowerUsage(handle) / 1000.0
+            idle_power_before.append(p)
+            time.sleep(0.01)
+        ave_idle_before = sum(idle_power_before) / len(idle_power_before)
      
     # Ensure the file is open and available before executing
     if os.path.exists(executable):
@@ -186,16 +198,30 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     #    end_power_time = time.time()
                     stop_power_event.set()
                     power_thread.join()
+                    # Collect idle power average value after exe
+                    idle_power_after = []
+                    for _ in range(200):  # 2 seconds @ 0.01s intervals
+                        p = nvmlDeviceGetPowerUsage(handle) / 1000.0
+                        idle_power_after.append(p)
+                        time.sleep(0.01)
+                    ave_idle_after = sum(idle_power_after) / len(idle_power_after)
+
+                    ave_idle_power = (ave_idle_before + ave_idle_after) / 2
+        
                     total_energy_joules, ave_power, metrics_results_string = lassi.get_power.power_collect_data(
                         power_queue, 
                         code_source, 
                         target_lang, 
                         start_exe_time, 
-                        end_exe_time
+                        end_exe_time,
+                        ave_idle_power
                     )
 
                     # Shutdown NVML
-                    nvmlShutdown()
+                    try:
+                        nvmlShutdown()
+                    except NVMLError as err:
+                        print(f"Failed to shutdown NVML: {err}")
         
         except IOError as e:
             print(f"Pipeline error | An I/O error occurred: {e.strerror}")
@@ -229,5 +255,11 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     os.chdir(initial_dir)
 
     stdout_output = ''.join(stdout_lines)
+
+    print("\nAfter exe...")
+    lassi.get_power.report_gpu_memory()
+
+    # Convert to native Python float:
+    total_energy_joules = float(total_energy_joules)
 
     return return_result, stdout_output, total_energy_joules, ave_power, duration, metrics_results_string

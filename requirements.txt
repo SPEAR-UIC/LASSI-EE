@@ -6,3 +6,4 @@ pandas
 matplotlib
 tiktoken
 aiohttp
+numba

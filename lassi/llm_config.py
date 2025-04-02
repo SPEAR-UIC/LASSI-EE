@@ -28,7 +28,15 @@ Example: model='codestral:latest'
 """
 
 
-def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt):
+def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
+    
+    if verifyprompt:
+        print("\n=====> VERIFY THE PROMPTING <=====\n")
+        print(f"TEMPERATURE: {round(temp, 1)}")
+        print(f"\nSYSTEM: {system_prompt}")
+        print(f"\nPROMPT: {content_prompt}")
+        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    
     response_text = ""
 
     # Ollama serve must already be running on a port on this server 
@@ -40,7 +48,7 @@ def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt):
         ],
         stream=False,
         options=dict(
-            temperature=0.2,
+            temperature=temp,
             top_p=0.9,
             num_ctx=num_ctx
         )
@@ -60,10 +68,17 @@ def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt):
     return cleaned_response  # response_text
 
 
-def ollama_llm(model, num_ctx, system_prompt, content_prompt):
+def ollama_llm(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
     # Create an HTML display object with a <pre> tag for formatted text
     html_display = display(HTML(""), display_id=True)
 
+    if verifyprompt:
+        print("\n=====> VERIFY THE PROMPTING <=====\n")
+        print(f"TEMPERATURE: {round(temp, 1)}")
+        print(f"\nSYSTEM: {system_prompt}")
+        print(f"\nPROMPT: {content_prompt}")
+        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+            
     response_text = ""
 
     # Ollama serve must already be running on a port on this server 
@@ -75,7 +90,7 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt):
         ],
         stream=True,
         options=dict(
-            temperature=0.7,
+            temperature=temp,
             top_p=0.9
             # num_ctx=num_ctx  # including this parameter seems to slow down the streaming response
         ),
@@ -106,19 +121,18 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt):
             
             # Create typewriter effect with cursor
             display_text = f"{styled_text}<span style='border-right:2px solid;animation:blink 1s infinite'> </span>"  
-            html_display.update(HTML(f"""
-                <pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;
-                              white-space:pre-wrap;font-family:monospace'>
-                {display_text}
-                </pre>
-                <style>
-                @keyframes blink {{
-                    0% {{ opacity:1 }}
-                    50% {{ opacity:0 }}
-                    100% {{ opacity:1 }}
-                }}
-                </style>
-            """))
+            # Put everything on one line to avoid extra whitespace
+            html_content = (
+                f"<pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;"
+                f"white-space:pre-wrap;font-family:monospace;margin:0;'>{display_text}</pre>"
+                f"<style>"
+                f"@keyframes blink {{0%{{opacity:1}}50%{{opacity:0}}100%{{opacity:1}}}}"
+                f"</style>"
+            )
+        
+        # Update the display output with styled text
+        html_display.update(HTML(html_content))
+        
     except ResponseError as e:
         if "unexpected EOF" in str(e):
             # Log the event, check if the output seems complete, and continue
@@ -207,13 +221,20 @@ def fetch_with_curl(url, data):
     return output  # Store full response for later use
 
     
-def argo_llm(model, system_prompt, content_prompt):
+def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
     # Argo Gateway API endpoint to POST
     url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
     # url = "https://localhost:5000/argoapi/api/v1/resource/chat/"
     
     if model == "gpto1preview":
         content_prompt = system_prompt + "\n\n" + content_prompt
+    
+    if verifyprompt:
+        print("\n=====> VERIFY THE PROMPTING <=====\n")
+        print(f"TEMPERATURE: {round(temp, 1)}")
+        print(f"\nSYSTEM: {system_prompt}")
+        print(f"\nPROMPT: {content_prompt}")
+        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
     
     # Data to be sent as a POST in JSON format
     data = {
@@ -222,7 +243,7 @@ def argo_llm(model, system_prompt, content_prompt):
         "system": system_prompt,
         "prompt": [content_prompt],
         "stop": [],
-        "temperature": 0.2,
+        "temperature": round(temp, 1),
         "top_p": 0.9,
     }
 

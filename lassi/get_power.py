@@ -1,6 +1,7 @@
 # Used for power consumption
 import csv
 import time
+from datetime import datetime
 import subprocess
 from threading import Thread
 import threading
@@ -11,29 +12,50 @@ import matplotlib.pyplot as plt
 from pynvml import nvmlInit, nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetPowerUsage, NVMLError, nvmlShutdown
 from lassi.format_colors import color
 
-  
-def report_gpu_memory(llm_source):
-    if llm_source != "argo":
+
+def query_gpu_state():
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=clocks.gr,clocks.sm,power.draw,pstate",
+                "--format=csv"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        print("\n----- GPU State:")
+        print(result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(" Failed to query GPU state:")
+        print(e.stderr)
+
+        
+def report_gpu_memory():
+    try:
+        nvmlInit()
+        device_count = nvmlDeviceGetCount()
+        print("\n----- GPU Memory Status:")
+        for i in range(device_count):
+            handle = nvmlDeviceGetHandleByIndex(i)
+            info = nvmlDeviceGetMemoryInfo(handle)
+            used = info.used // (1024 * 1024)
+            free = info.free // (1024 * 1024)
+            total = info.total // (1024 * 1024)
+            print(f" GPU {i}: {used} MiB used, {free} MiB free, {total} MiB total")
+        query_gpu_state()
+    except NVMLError as error:
+        print("Failed to query GPU memory:", error)
+    finally:
         try:
-            nvmlInit()
-            device_count = nvmlDeviceGetCount()
-            print("GPU Memory Status:")
-            for i in range(device_count):
-                handle = nvmlDeviceGetHandleByIndex(i)
-                info = nvmlDeviceGetMemoryInfo(handle)
-                used = info.used // (1024 * 1024)
-                free = info.free // (1024 * 1024)
-                total = info.total // (1024 * 1024)
-                print(f" GPU {i}: {used} MiB used, {free} MiB free, {total} MiB total")
-        except NVMLError as error:
-            print("Failed to query GPU memory:", error)
-        finally:
-            try:
-                nvmlShutdown()
-            except:
-                pass
+            nvmlShutdown()
+        except NVMLError as shutdown_error:
+            print("Failed to shut down NVML cleanly:", shutdown_error)
 
             
+# Not used in LASSI - Energy Efficiency version
 def get_gpu_power():
     try:
         result = subprocess.run(['nvidia-smi', '--id=0', '--query-gpu=power.draw', '--format=csv,noheader,nounits'],
@@ -92,7 +114,7 @@ def calculate_total_energy(file_name, start_time, end_time):
     
     # Filter data to only include the inference period
     print("Start time: " + str(round(start_time, 3)) + " -- End time: " + str(round(end_time, 3)))
-    code_execution_data = data[(data['Time'] >= start_time) & (data['Time'] <= end_time)]
+    code_execution_data = data[(data['Time'] >= start_time) & (data['Time'] <= end_time)].copy()
     
     if len(code_execution_data) > 1:
         time_interval = code_execution_data['Time'].diff().mean()
@@ -100,8 +122,12 @@ def calculate_total_energy(file_name, start_time, end_time):
         print("Not enough data points to calculate energy consumption.")
         return 0, 0, 0
 
+    # Because we subtract off ave idle power, we could have negative values,
+    # which are not physically meaningful. So, we clamp negative net power values to zero.
+    code_execution_data['GPU Power (W)'] = code_execution_data['GPU Power (W)'].clip(lower=0)
+
     # Calculate total energy consumption in joules
-    total_energy = sum(code_execution_data['GPU Power (W)'] * time_interval)
+    total_energy = (code_execution_data['GPU Power (W)'] * time_interval).sum()
     ave_power = code_execution_data['GPU Power (W)'].mean()
 
     # Get baseline energy consumption for same duration
@@ -121,43 +147,56 @@ def display_energy_results(file_name, start_time, end_time):
     total_energy_kwh = total_energy_wh / 1000  # Convert from Watt-hours to Kilowatt-hours
     
     execution_duration = end_time - start_time
-    print(f"Code execution duration: {execution_duration:.2f} seconds")
     print(f"Total GPU energy consumption for {file_name}:")
     print(f"  {total_energy_kwh:.6f} kWh")
     print(f"  {total_energy_wh:.4f} Wh")
     print(f"  {total_energy_joules:.2f} J")
     print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W" + color.END)
     print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
+    print(f"Code execution duration: {execution_duration:.2f} seconds")
     # print("Idle Energy (same duration): " + f"  {idle_energy:.2f} J")
     print("----------------------------------------------------------------------------------------------------------------------------------------")
-    
-    return total_energy_joules, ave_power
+
+    metrics_results_string = f"Total Energy During Exe Runtime: {total_energy_joules:.2f} Joules"
+    metrics_results_string += f"\nAverage GPU power: {ave_power:.2f} Watts"
+    metrics_results_string += f"\nCode execution duration: {execution_duration:.2f} seconds" 
+   
+    return total_energy_joules, ave_power, metrics_results_string
 
     
 # Function to read CSV and plot the GPU power usage
-def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time):
+def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power):
+    # now = datetime.now()
+    # dt_string = now.strftime("%m-%d-%Y_t%H_%M_%S")
+    
     # Collect power data
     power_data = []
     while not power_queue.empty():
         power_data.append(power_queue.get())
     
+    # Subtract off idle power:
+    # a list of tuples (timestamp, power):
+    net_power_data = [
+        (t, p - ave_idle_power) for (t, p) in power_data
+    ]
+    
     # Write results to CSV
     if code_source == "" and target_lang == "":
         code_source = "idle"
-    filename = f"{code_source}_{target_lang}_gpu_power_results.csv"
+    filename = f"{code_source}_{target_lang}_gpu_net_power_results.csv"  # _{dt_string}
     with open(filename, 'w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['Time', 'GPU Power (W)'])
-        for time_elapsed, power in power_data:
+        for time_elapsed, power in net_power_data:
             writer.writerow([f"{time_elapsed:.2f}", power])
     
     # print(f"\nMODEL TRIAL: {experiment}")
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
+
+    total_energy_joules, ave_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time)
     
-    total_energy_joules, ave_power = display_energy_results(filename, start_exe_time, end_exe_time)
-    
-    return total_energy_joules, ave_power
+    return total_energy_joules, ave_power, metrics_results_string
 
     
 def idlepower(duration):
@@ -185,7 +224,9 @@ def idlepower(duration):
     stop_power_event.set()
     power_thread.join()
     # print("... idle duration increment: " + str(end_power_time - start_power_time))
-    total_energy_joules, ave_power = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time)
+    
+    # We don't need the metrics_results_string for idle metrics.
+    total_energy_joules, ave_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0)
 
     # Shutdown NVML
     nvmlShutdown()

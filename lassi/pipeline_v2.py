@@ -84,6 +84,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     energy_efficiency_iteration = 0
     code_version = 0
     tracking_best_version = -1  # to account for the source code at index 0
+    get_system_info_flag = True  # Used in the selfprompting context builder
     valid_code_flag = "INVALID"  # default value, or "VALID"
     change_strategy = False
     code_gen_temp = 0.2  # default LLM temperature
@@ -147,6 +148,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Pull in prompts used for base LLM
     original_context_content_prompt, refactor_instructions, system_prompt = lassi.pipeline_methods.selfprompting_context_builder(
         generate_context_flag,
+        get_system_info_flag,
         source_lang=source_lang,
         llm_source=llm_source,
         model=model,
@@ -186,6 +188,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             generate_context_flag = True
             original_context_knowledge, context_prompt, system_prompt = lassi.pipeline_methods.selfprompting_context_builder(
                 generate_context_flag,
+                get_system_info_flag,
                 source_lang=source_lang,
                 input_context=input_context,
                 llm_source=llm_source,
@@ -229,7 +232,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         
         elif compile_result != "energy_efficiency":
             """
-            This condition is for handing CODE ERRORS during compilatino or runtime.
+            This condition is for handing CODE ERRORS during compilation or runtime.
             """
             # CALL THE LLM WITH CODE ERROR CORRECTION - COMPILE TIME OR RUN TIME
             print("\n\n----- " + color.BOLD + color.RED + "SELF-CORRECTION: " + str(self_correction_counter) + color.END + " -----")
@@ -415,7 +418,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                 report_gpu_memory()
 
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=5)
+            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=5)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
             else:
@@ -671,7 +674,7 @@ def auto_code_llmgeneration_pipeline(prompts,
 
         # Send prompt to LLM endpoint
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "LLM prompt to compare codes." + color.END + "\n\n")
-        code_comparison_response = lassi.llm_methods.llm_call("code comparison", llm_source, model, num_ctx, system_prompt, compare_code, display_response, verifyprompt=False)
+        code_comparison_response = lassi.llm_methods.llm_call("code comparison", llm_source, model, num_ctx, system_prompt, compare_code, display_response, verifyprompt=True)
         
 
     # MEASURE SIMILARITY BETWEEN GENERATED TRANSLATION CODE AND ORIGINAL TARGET CODE

@@ -36,6 +36,8 @@ def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp=0.2,
         print(f"\nSYSTEM: {system_prompt}")
         print(f"\nPROMPT: {content_prompt}")
         print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    else:
+        print("\n=====< LLM Prompt Not Shown >=====\n")
     
     response_text = ""
 
@@ -78,6 +80,8 @@ def ollama_llm(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifypr
         print(f"\nSYSTEM: {system_prompt}")
         print(f"\nPROMPT: {content_prompt}")
         print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    else:
+        print("\n=====< LLM Prompt Not Shown >=====\n")
             
     response_text = ""
 
@@ -235,6 +239,8 @@ def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False)
         print(f"\nSYSTEM: {system_prompt}")
         print(f"\nPROMPT: {content_prompt}")
         print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    else:
+        print("\n=====< LLM Prompt Not Shown >=====\n")
     
     # Data to be sent as a POST in JSON format
     data = {

@@ -60,11 +60,11 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     # Check if the compilation was successful
     return_result = ""
     if result.returncode == 0:
-        print("\n" + color.BOLD + "Compilation of code successful!" + color.END)
+        print("\n" + color.BOLD + "Compilation of code successful!\n" + color.END)
     else:
         # If there was an error, print the error message
         return_result = result.stderr
-        print("\n" + color.BOLD + color.RED + "***** Compilation failed." + color.END)
+        print("\n" + color.BOLD + color.RED + "***** Compilation failed.\n" + color.END)
         print(" Error message: ")
         print(return_result)
         
@@ -76,14 +76,16 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # Wait 20 seconds for the system to settle down
     # print("...WAITING.")
     # time.sleep(20)
-    # print("...DONE WAITING.")
-    print("\nBefore exe...")
-    lassi.get_power.report_gpu_memory()
+    # print("...DONE WAITING
+    if power_measure:
+        print("\n----- >>> System check BEFORE exe code...")
+        lassi.get_power.report_gpu_memory()
 
     duration = 0
     start_power_time = 0
     total_energy_joules = 0
     ave_power = 0
+    std_power = 0
     metrics_results_string = ""
 
     # Simulating a progress bar while sleeping for 5 seconds
@@ -155,6 +157,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     exception_error = ""
                     
                     # Print the output in real-time
+                    print("\n----- < BEGIN: STANDARD OUTPUT FROM CODE EXECUTION > -----\n")
                     try:
                         # Read stdout in a separate thread or in a non-blocking way
                         while True:
@@ -184,6 +187,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                         print("An error occurred while executing the program: ", e)
                         exception_error = str(e)
 
+                    print("\n----- < END: Standard Output > -----\n")
+
                 total_energy_joules = 0
                 ave_power = 0
                 # Only continue power measurements if no exe error
@@ -208,7 +213,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
                     ave_idle_power = (ave_idle_before + ave_idle_after) / 2
         
-                    total_energy_joules, ave_power, metrics_results_string = lassi.get_power.power_collect_data(
+                    total_energy_joules, ave_power, std_power, metrics_results_string = lassi.get_power.power_collect_data(
                         power_queue, 
                         code_source, 
                         target_lang, 
@@ -241,9 +246,6 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
         if return_code == -11:
             return_result += "Segmentation fault detected."
         stderr_output = ''.join(stderr_lines)
-        # stdout_output = ''.join(stdout_lines)
-        # if stdout_output:
-        #    return_result += "\nStandard Output: " + stdout_output
         if exception_error != "":
             return_result += "\nException Error: " + exception_error
         if stderr_output:
@@ -256,10 +258,11 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
     stdout_output = ''.join(stdout_lines)
 
-    print("\nAfter exe...")
-    lassi.get_power.report_gpu_memory()
+    if power_measure:
+        print("\n----- >>> System check AFTER exe code...")
+        lassi.get_power.report_gpu_memory()
 
     # Convert to native Python float:
     total_energy_joules = float(total_energy_joules)
 
-    return return_result, stdout_output, total_energy_joules, ave_power, duration, metrics_results_string
+    return return_result, stdout_output, total_energy_joules, ave_power, std_power, duration, metrics_results_string

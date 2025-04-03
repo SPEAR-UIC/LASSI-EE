@@ -173,10 +173,10 @@ def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system
     # """
 
     content_prompt = """
-    Below are the detailed system metrics of the GPU and related hardware used for executing CUDA C++ code. Your task is to analyze this information and provide a complete, clear description of the system that highlights any details relevant to assessing and improving energy efficiency. In your description, please focus on key aspects such as power consumption, clock speeds, utilization, thermal metrics, PCIe configuration, and any CPU/memory details provided. Your summary should serve as background context to identify inefficiencies and develop a refactoring plan for energy-efficient CUDA code.\n\nPlease respond with only your descriptive summary of the system. Do not include any code examples or additional extraneous information.
+    Below are the detailed system metrics of the GPU and related hardware used for executing CUDA C++ code. Your task is to analyze this information and provide a complete, clear description of the system that highlights any details relevant to assessing and improving energy efficiency. In your description, focus on key aspects such as power consumption, clock speeds, utilization, thermal metrics, PCIe configuration, and any CPU/memory details provided. Your description should included specific system details important as background context for the task of identifying inefficiencies and developing a refactoring plan for energy efficient CUDA C++ code.\n\nPlease respond with only your detailed descriptive summary of the system. Do not include any code examples or additional extraneous information.
     """
     
-    content_prompt = content_prompt + "\n[GPU SYSTEM DETAILS TO DESCRIBE]\n\n" + gpu_system_details + "\n"
+    content_prompt = content_prompt + "\n[CPU/GPU SYSTEM DETAILS TO DESCRIBE]\n\n" + gpu_system_details + "\n"
     
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)

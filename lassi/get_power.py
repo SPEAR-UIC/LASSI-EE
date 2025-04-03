@@ -98,7 +98,7 @@ def plot_gpu_power(file_name, start_time, end_time):
     plt.axvline(x=float(end_time), color='r', linestyle='--', label='Execution End')
     # plt.axvline(x=float(data['Unload model time'][0]), color='b', linestyle='--', label='Model Unloaded')
     
-    plt.title(f'GPU Power Usage Over Time for {file_name}')
+    plt.title("GPU Power Usage Over Time")  # for"  {file_name}')
     plt.xlabel('Time (seconds)')
     plt.ylabel('GPU Power (W)')
     plt.grid(True)
@@ -152,10 +152,10 @@ def display_energy_results(file_name, start_time, end_time):
     print(f"  {total_energy_kwh:.6f} kWh")
     print(f"  {total_energy_wh:.4f} Wh")
     print(f"  {total_energy_joules:.2f} J")
-    print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W" + color.END)
-    print(" with sample standard deviation: " + color.BOLD + f"{std_power:.2f}" + color.END)
+    print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W +/- {std_power:.2f} " + color.END)
+    print(" with sample standard deviation.")
     print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
-    print(f"Code execution duration: {execution_duration:.2f} seconds")
+    print("Code execution duration: " + color.BOLD + f" {execution_duration:.2f} seconds" + color.END)
     # print("Idle Energy (same duration): " + f"  {idle_energy:.2f} J")
     print("----------------------------------------------------------------------------------------------------------------------------------------")
 

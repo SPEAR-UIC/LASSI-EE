@@ -163,7 +163,7 @@ def selfprompting_context_builder(generate_context_flag,
             gpu_system_details = get_gpu_system_details()
             # CALL LLM HERE
             llm_system_description_response = lassi.llm_methods.system_description_llm(llm_source, model, num_ctx, general_system_prompt, gpu_system_details, display_response, verifyprompt=True)
-            content = content + "[YOUR DESCRIPTION OF THE GPU SYSTEM]\n" + llm_system_description_response + "\n\n"
+            content = content + "[YOUR DESCRIPTION OF THE CPU/GPU SYSTEM]\n" + llm_system_description_response + "\n\n"
 
             
         # Requet LLM summary description of the provided SOURCE code

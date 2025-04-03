@@ -77,7 +77,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # print("...WAITING.")
     # time.sleep(20)
     # print("...DONE WAITING.")
-    print("\nBefore exe...")
+    print("\n----- >>> System check BEFORE exe code...")
     lassi.get_power.report_gpu_memory()
 
     duration = 0
@@ -156,6 +156,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     exception_error = ""
                     
                     # Print the output in real-time
+                    print("\n----- < BEGIN: STANDARD OUTPUT FROM CODE EXECUTION > -----\n")
                     try:
                         # Read stdout in a separate thread or in a non-blocking way
                         while True:
@@ -184,6 +185,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     except Exception as e:
                         print("An error occurred while executing the program: ", e)
                         exception_error = str(e)
+
+                    print("\n----- < END: Standard Output > -----\n")
 
                 total_energy_joules = 0
                 ave_power = 0
@@ -257,7 +260,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
     stdout_output = ''.join(stdout_lines)
 
-    print("\nAfter exe...")
+    print("\n----- >>> System check AFTER exe code...")
     lassi.get_power.report_gpu_memory()
 
     # Convert to native Python float:

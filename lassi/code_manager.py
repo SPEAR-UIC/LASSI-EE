@@ -84,6 +84,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     start_power_time = 0
     total_energy_joules = 0
     ave_power = 0
+    std_power = 0
     metrics_results_string = ""
 
     # Simulating a progress bar while sleeping for 5 seconds
@@ -208,7 +209,7 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
 
                     ave_idle_power = (ave_idle_before + ave_idle_after) / 2
         
-                    total_energy_joules, ave_power, metrics_results_string = lassi.get_power.power_collect_data(
+                    total_energy_joules, ave_power, std_power, metrics_results_string = lassi.get_power.power_collect_data(
                         power_queue, 
                         code_source, 
                         target_lang, 
@@ -262,4 +263,4 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
     # Convert to native Python float:
     total_energy_joules = float(total_energy_joules)
 
-    return return_result, stdout_output, total_energy_joules, ave_power, duration, metrics_results_string
+    return return_result, stdout_output, total_energy_joules, ave_power, std_power, duration, metrics_results_string

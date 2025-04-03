@@ -129,18 +129,19 @@ def calculate_total_energy(file_name, start_time, end_time):
     # Calculate total energy consumption in joules
     total_energy = (code_execution_data['GPU Power (W)'] * time_interval).sum()
     ave_power = code_execution_data['GPU Power (W)'].mean()
+    std_power = code_execution_data['GPU Power (W)'].std()
 
     # Get baseline energy consumption for same duration
     # print("\nCapturing idle energy consumed for same duration...") 
     #idle_energy, ave_idle_power = idlepower(int(end_time - start_time))
     # print("... Complete.")
     
-    return total_energy, ave_power
+    return total_energy, ave_power, std_power
 
     
 def display_energy_results(file_name, start_time, end_time):
     plot_gpu_power(file_name, start_time, end_time)
-    total_energy_joules, ave_power = calculate_total_energy(file_name, start_time, end_time)
+    total_energy_joules, ave_power, std_power = calculate_total_energy(file_name, start_time, end_time)
     
     # Convert energy units
     total_energy_wh = total_energy_joules / 3600  # Convert from Joules to Watt-hours
@@ -152,16 +153,17 @@ def display_energy_results(file_name, start_time, end_time):
     print(f"  {total_energy_wh:.4f} Wh")
     print(f"  {total_energy_joules:.2f} J")
     print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W" + color.END)
+    print(" with sample standard deviation: " + color.BOLD + f"{std_power:.2f}" + color.END)
     print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
     print(f"Code execution duration: {execution_duration:.2f} seconds")
     # print("Idle Energy (same duration): " + f"  {idle_energy:.2f} J")
     print("----------------------------------------------------------------------------------------------------------------------------------------")
 
     metrics_results_string = f"Total Energy During Exe Runtime: {total_energy_joules:.2f} Joules"
-    metrics_results_string += f"\nAverage GPU power: {ave_power:.2f} Watts"
+    metrics_results_string += f"\nAverage GPU power: {ave_power:.2f} Watts +/- {std_power:.2f}"
     metrics_results_string += f"\nCode execution duration: {execution_duration:.2f} seconds" 
    
-    return total_energy_joules, ave_power, metrics_results_string
+    return total_energy_joules, ave_power, std_power, metrics_results_string
 
     
 # Function to read CSV and plot the GPU power usage
@@ -194,9 +196,9 @@ def power_collect_data(power_queue, code_source, target_lang, start_exe_time, en
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
 
-    total_energy_joules, ave_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time)
+    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time)
     
-    return total_energy_joules, ave_power, metrics_results_string
+    return total_energy_joules, ave_power, std_power, metrics_results_string
 
     
 def idlepower(duration):
@@ -226,12 +228,12 @@ def idlepower(duration):
     # print("... idle duration increment: " + str(end_power_time - start_power_time))
     
     # We don't need the metrics_results_string for idle metrics.
-    total_energy_joules, ave_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0)
+    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0)
 
     # Shutdown NVML
     nvmlShutdown()
 
-    return round(total_energy_joules, 2), round(ave_power, 2)
+    return round(total_energy_joules, 2), round(ave_power, 2), round(std_power, 2)
 
     
 

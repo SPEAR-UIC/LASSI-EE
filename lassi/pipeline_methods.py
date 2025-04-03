@@ -1,8 +1,62 @@
+import subprocess
 import lassi.code_manager
 from lassi.format_colors import color
 from lassi.prompt_dictionary import PromptDictionary
 
 prompts = PromptDictionary()
+
+
+def run_command(command_list):
+    try:
+        return subprocess.check_output(command_list, universal_newlines=True)
+    except Exception as e:
+        return f"Error running {' '.join(command_list)}: {e}"
+
+
+def get_gpu_system_details():
+    details = []
+
+    # CUDA compiler version
+    details.append("=== CUDA Compiler Version (nvcc --version) ===")
+    details.append(run_command(["nvcc", "--version"]))
+    
+    # Full GPU details from nvidia-smi -q
+    details.append("=== NVIDIA SMI Full Details (nvidia-smi -q) ===")
+    details.append(run_command(["nvidia-smi", "-q"]))
+
+    # Granular power and clock metrics
+    details.append("=== Power and Clock Metrics ===")
+    details.append(run_command([
+        "nvidia-smi",
+        "--query-gpu=power.draw,power.limit,clocks.sm,clocks.mem,clocks.gr",
+        "--format=csv"
+    ]))
+
+    # GPU Performance State (P-State)
+    details.append("=== GPU Performance State (P-State) ===")
+    details.append(run_command([
+        "nvidia-smi",
+        "--query-gpu=pstate",
+        "--format=csv"
+    ]))
+
+    # PCIe details (if relevant)
+    details.append("=== PCIe Details ===")
+    details.append(run_command([
+        "nvidia-smi",
+        "--query-gpu=pci.bus_id,pci.device_id,pci.domain,pci.bus",
+        "--format=csv"
+    ]))
+    
+    # Optionally, system-level details: CPU and memory info
+    details.append("=== CPU Information (lscpu) ===")
+    details.append(run_command(["lscpu"]))
+    
+    details.append("=== Memory Information (free -h) ===")
+    details.append(run_command(["free", "-h"]))
+
+    # Combine all details into a single text string
+    return "\n".join(details)
 
 
 def test_source_code(source_file_path,
@@ -38,7 +92,7 @@ def test_source_code(source_file_path,
     if yes_execute:
         print("\nTest executing the compiled original source code: " + str(execute_file))
         exe_file_path = execute_file  # directory + "/" + execute_file
-        execute_result, exe_output_source, total_energy_joules, ave_power, duration, metrics_results_string = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=1)
+        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=1)
         input_content_llmjudge_dict["source_stdout"] = exe_output_source
         input_content_llmjudge_dict["source_metrics"] = metrics_results_string
         # Save source code energy metrics:
@@ -47,7 +101,7 @@ def test_source_code(source_file_path,
         if execute_result != "0":
             return False
         print("\n\nMeasure system idle power...")
-        idle_energy_joules, idle_ave_power = lassi.get_power.idlepower(duration)
+        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower(duration)
         actual_energy = sourcecode_total_energy_joules - idle_energy_joules
         energy_history.append(round(sourcecode_total_energy_joules, 2))
         actual_ave_power = sourcecode_ave_power - idle_ave_power
@@ -60,6 +114,7 @@ def test_source_code(source_file_path,
 
 
 def selfprompting_context_builder(generate_context_flag,
+                                  get_system_info_flag,
                                   source_lang=None,
                                   this_llm_prompt=None,
                                   input_context=None,
@@ -92,7 +147,7 @@ def selfprompting_context_builder(generate_context_flag,
         # Request LLM summarization of provided context knowledge
         # Note, the input_context object includes all context requested by the user in the LASSI framework.
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to summarize context knowledge." + color.END + "\n")
-        llm_code_knowledge_summary_response = lassi.llm_methods.code_knowledge_llm(llm_source, model, num_ctx, general_system_prompt, input_context, target_lang, display_response, verifyprompt=True)
+        llm_code_knowledge_summary_response = lassi.llm_methods.code_knowledge_llm(llm_source, model, num_ctx, general_system_prompt, input_context, target_lang, display_response, verifyprompt=False)
         
         if use_context_summaries_only:
             # Save only LLM summary as context
@@ -102,12 +157,21 @@ def selfprompting_context_builder(generate_context_flag,
             # Keep the original context in the content to be included in the LLM prompting
             content = content + "[YOUR SUMMARY OF BACKGROUND KNOWLEDGE]\n" + llm_code_knowledge_summary_response + "\n\n"  # [/END CONTEXT KNOWLEDGE SUMMARY]
 
+        # Capture system info, have LLM summarize details
+        if get_system_info_flag:
+            print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to describe the system." + color.END + "\n")
+            gpu_system_details = get_gpu_system_details()
+            # CALL LLM HERE
+            llm_system_description_response = lassi.llm_methods.system_description_llm(llm_source, model, num_ctx, general_system_prompt, gpu_system_details, display_response, verifyprompt=True)
+            content = content + "[YOUR DESCRIPTION OF THE GPU SYSTEM]\n" + llm_system_description_response + "\n\n"
+
+            
         # Requet LLM summary description of the provided SOURCE code
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to describe the source code." + color.END + "\n")
-        llm_code_description_response = lassi.llm_methods.code_description_llm(llm_source, model, num_ctx, general_system_prompt, input_context, input_code, display_response, verifyprompt=True)
+        llm_code_description_response = lassi.llm_methods.code_description_llm(llm_source, model, num_ctx, general_system_prompt, input_context, input_code, display_response, verifyprompt=False)
         content = content + "[YOUR ANALYSIS OF THE SOURCE CODE TO REFACTOR]\n" + llm_code_description_response + "\n\n"
         # refactor_instructions = prompts.get_code_ee_refactoring_prompt(str(source_lang + "_refactor"))  # Includes prompt to generate a refactoring plan
-          
+
     else:
         # For initial zero-shot attempt
         # Fetch system prompt when not using context
@@ -138,7 +202,7 @@ def generate_refactoring_plan(source_lang,
                              ):
 
     # Prompt structure: GOAL - RETURN FORMAT - WARNINGS - CONTEXT
-    refactoring_plan_instructions = prompts.get_code_ee_refactoring_prompt(source_lang)
+    refactoring_plan_instructions = prompts.get_code_ee_refactoring_prompt(source_lang + "_refactorplan")
     # Prepend the Context:
     refactoring_plan_instructions = refactoring_plan_instructions + "\n\n" + context_prompt 
     code_to_refactor = "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"

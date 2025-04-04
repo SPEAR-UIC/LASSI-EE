@@ -4,13 +4,36 @@ from lassi.llm_config import argo_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
 
 
-def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, display_response, verifyprompt=False):
+def llm_code_compare(prompts, input_content_llmjudge_dict, source_duration, source_total_energy_joules, source_ave_power, refactored_duration, refactored_total_energy_joules, refactored_ave_power, llm_source, model, num_ctx, system_prompt, display_response, verifyprompt, uri):
+    print("\n\n----- " + color.BOLD + color.BLUE + "FINAL CODE COMPARISON: Source Code vs. Best Refactored Code" + color.END + " -----\n")
+            
+    compare_code = prompts.get_code_comparison("cuda_cpp")
+    compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_content_llmjudge_dict["source_code"]
+    compare_code = compare_code + "\n\nOUTPUT: \n\n" + input_content_llmjudge_dict["source_stdout"]
+    compare_code = compare_code + "\n\nCode execution duration: " + str(round(source_duration, 2)) + " s"
+    compare_code = compare_code + "\nTotal Energy Consumed: " + str(round(source_total_energy_joules,2)) + " J" + "\nAverage Power: " + str(round(source_ave_power,2)) + " W"
+    compare_code = compare_code + "\n\n[/END SOURCE CODE AND RESULTS]"
+            
+    compare_code = compare_code + "\n\n" + "[BEGIN REFACTORED CODE AND RESULTS]\n\n" + input_content_llmjudge_dict["refactored_code"]
+    compare_code = compare_code + "\n\nOUTPUT: \n\n" + input_content_llmjudge_dict["refactored_stdout"]
+    compare_code = compare_code + "\n\nCode execution duration: " + str(round(refactored_duration, 2)) + " s"
+    compare_code = compare_code + "\nTotal Energy Consumed: " + str(round(refactored_total_energy_joules,2)) + " J" + "\nAverage Power: " + str(round(refactored_ave_power,2)) + " W"
+    compare_code = compare_code + "\n\n[/END REFACTORED CODE AND RESULTS]"
+    
+    # Send prompt to LLM endpoint
+    print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "LLM prompt to compare codes." + color.END + "\n\n")
+    code_comparison_response = llm_call("code comparison", llm_source, model, num_ctx, system_prompt, compare_code, display_response, verifyprompt, uri)
+
+    return code_comparison_response
+
+    
+def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, display_response, verifyprompt=False, uri="remote"):
    
     if intent == "refactoring plan":
         print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to write a refactoring plan." + color.END + "\n")
         
     if llm_source == "argo":
-        response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
+        response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt, uri)
     elif llm_source == "lmstudio":
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
@@ -23,7 +46,7 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
     return response_text
 
 
-def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, display_response, verifyprompt=False):
+def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, display_response, verifyprompt=False, uri="remote"):
 
     intent = "code validation judge"
 
@@ -64,9 +87,10 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, dis
     content_prompt += f"\n\n## [STANDARD OUTPUT]\n {input_content_dict['refactored_stdout']}"
     content_prompt += f"\n\n## [METRICS]\n {input_content_dict['refactored_metrics']}"
 
-    if input_content_dict['refactored_metrics'] == "":
+    if power_measure:
+        if input_content_dict['refactored_metrics'] == "":
         # No energy metrics measured. This refactored code should be flagged INVALID.
-        return "INVALID"
+            return "INVALID"
     
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)

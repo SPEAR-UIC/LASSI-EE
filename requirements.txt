@@ -7,3 +7,4 @@ matplotlib
 tiktoken
 aiohttp
 numba
+jupyterlab

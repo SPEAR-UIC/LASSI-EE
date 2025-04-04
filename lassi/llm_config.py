@@ -225,10 +225,15 @@ def fetch_with_curl(url, data):
     return output  # Store full response for later use
 
     
-def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
+def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False, uri="remote"):
     # Argo Gateway API endpoint to POST
-    url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
+    if uri == "local":
+        url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
+    else:
+        url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
     # url = "https://localhost:5000/argoapi/api/v1/resource/chat/"
+    # url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
+    
     
     if model == "gpto1preview":
         content_prompt = system_prompt + "\n\n" + content_prompt

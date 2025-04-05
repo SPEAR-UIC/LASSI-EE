@@ -219,7 +219,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                         target_lang, 
                         start_exe_time, 
                         end_exe_time,
-                        ave_idle_power
+                        ave_idle_power,
+                        idle=False
                     )
 
                     # Shutdown NVML

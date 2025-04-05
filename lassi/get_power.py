@@ -85,7 +85,7 @@ def power_collection_thread(power_queue, stop_event, handle, interval=0.01):
         # time.sleep(0.01)
 
 
-def plot_gpu_power(file_name, start_time, end_time, idle=False):
+def plot_gpu_power(file_name, start_time, end_time, idle):
     data = pd.read_csv(file_name)
 
     plt.figure(figsize=(10, 6))
@@ -143,7 +143,7 @@ def calculate_total_energy(file_name, start_time, end_time):
     return total_energy, ave_power, std_power
 
     
-def display_energy_results(file_name, start_time, end_time, idle=False):
+def display_energy_results(file_name, start_time, end_time, idle):
     plot_gpu_power(file_name, start_time, end_time, idle)
     total_energy_joules, ave_power, std_power = calculate_total_energy(file_name, start_time, end_time)
     
@@ -177,7 +177,7 @@ def display_energy_results(file_name, start_time, end_time, idle=False):
 
     
 # Function to read CSV and plot the GPU power usage
-def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle=False):
+def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle):
     # now = datetime.now()
     # dt_string = now.strftime("%m-%d-%Y_t%H_%M_%S")
     
@@ -206,7 +206,7 @@ def power_collect_data(power_queue, code_source, target_lang, start_exe_time, en
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
 
-    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time, idle=False)
+    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time, idle)
     
     return total_energy_joules, ave_power, std_power, metrics_results_string
 

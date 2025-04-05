@@ -85,7 +85,7 @@ def power_collection_thread(power_queue, stop_event, handle, interval=0.01):
         # time.sleep(0.01)
 
 
-def plot_gpu_power(file_name, start_time, end_time):
+def plot_gpu_power(file_name, start_time, end_time, idle):
     data = pd.read_csv(file_name)
 
     plt.figure(figsize=(10, 6))
@@ -98,9 +98,13 @@ def plot_gpu_power(file_name, start_time, end_time):
     plt.axvline(x=float(end_time), color='r', linestyle='--', label='Execution End')
     # plt.axvline(x=float(data['Unload model time'][0]), color='b', linestyle='--', label='Model Unloaded')
     
-    plt.title("GPU Power Usage Over Time")  # for"  {file_name}')
+    if idle:
+        plt.title("Total GPU Power Usage Over Time")  # for"  {file_name}')
+        plt.ylabel('GPU Power (W)')
+    else:
+        plt.title("Net GPU Power Usage Over Time")
+        plt.ylabel('GPU Power (W) - idle power substracted')
     plt.xlabel('Time (seconds)')
-    plt.ylabel('GPU Power (W)')
     plt.grid(True)
     plt.legend()
     plt.show()
@@ -139,8 +143,8 @@ def calculate_total_energy(file_name, start_time, end_time):
     return total_energy, ave_power, std_power
 
     
-def display_energy_results(file_name, start_time, end_time):
-    plot_gpu_power(file_name, start_time, end_time)
+def display_energy_results(file_name, start_time, end_time, idle):
+    plot_gpu_power(file_name, start_time, end_time, idle)
     total_energy_joules, ave_power, std_power = calculate_total_energy(file_name, start_time, end_time)
     
     # Convert energy units
@@ -148,13 +152,19 @@ def display_energy_results(file_name, start_time, end_time):
     total_energy_kwh = total_energy_wh / 1000  # Convert from Watt-hours to Kilowatt-hours
     
     execution_duration = end_time - start_time
-    print(f"Total GPU energy consumption for {file_name}:")
+    if idle:
+        print(f"Total GPU energy consumption for {file_name}:")
+    else:
+        print(f"Net (idle corrected) GPU energy consumption for {file_name}:")
     print(f"  {total_energy_kwh:.6f} kWh")
     print(f"  {total_energy_wh:.4f} Wh")
     print(f"  {total_energy_joules:.2f} J")
     print("Average GPU power: " + color.BOLD + f"{ave_power:.2f} W +/- {std_power:.2f} " + color.END)
     print(" with sample standard deviation.")
-    print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
+    if idle:
+        print("Total Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
+    else:
+        print("Net Energy During Exe Runtime: " + color.BOLD + f"  {total_energy_joules:.2f} J" + color.END)
     print("Code execution duration: " + color.BOLD + f" {execution_duration:.2f} seconds" + color.END)
     # print("Idle Energy (same duration): " + f"  {idle_energy:.2f} J")
     print("----------------------------------------------------------------------------------------------------------------------------------------")
@@ -167,7 +177,7 @@ def display_energy_results(file_name, start_time, end_time):
 
     
 # Function to read CSV and plot the GPU power usage
-def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power):
+def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle):
     # now = datetime.now()
     # dt_string = now.strftime("%m-%d-%Y_t%H_%M_%S")
     
@@ -196,7 +206,7 @@ def power_collect_data(power_queue, code_source, target_lang, start_exe_time, en
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
 
-    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time)
+    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time, idle)
     
     return total_energy_joules, ave_power, std_power, metrics_results_string
 
@@ -228,7 +238,7 @@ def idlepower(duration):
     # print("... idle duration increment: " + str(end_power_time - start_power_time))
     
     # We don't need the metrics_results_string for idle metrics.
-    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0)
+    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0, idle=True)
 
     # Shutdown NVML
     nvmlShutdown()

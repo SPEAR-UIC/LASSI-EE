@@ -1,0 +1,75 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+Date-time: 04-06-2025_t03_09_23
+Application: chacha20
+
+EE Refactoring: CUDA_ee
+
+LLM Source: argo
+Model: gpto3mini
+Model coder: gpto3mini
+System Prompt Index: CUDA
+Code file template: generated_codes/argo_gpto3mini/promptset_CUDA/chacha20-cuda_main_ee_refactorcode_CUDA_exp_t15.3_pipelineV2_o3mini_chacha20_argo_ee_hecb_selfcontext
+
+LLM System Prompt: 
+
+You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents. You always surround your generated code with the three characters ```.
+
+Power measurement: True
+
+----- PIPELINE METRICS -----
+Experiment date-time: 04-06-2025_t03_09_23
+Time (sec): 674.07
+Code Error Self-correction iteration count: 2
+Energy Efficiency Self-improvement iteration count: 5
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Best refactored code version: 5
+LLM Judge Validation Result: VALID
+Total Energy (J):   Idle: 531.16  Source code: 314.26  Base LLM code: 36.44  Best Refactored code: 24.27
+Average Power (W):   Idle: 49.41  Source code: 29.26  Base LLM code: 25.13  Best Refactored code: 23.33
+Runtime (s):   Idle: 10.75  Source code: 10.75  Base LLM code: 1.45  Best Refactored code: 1.04
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Average execution time of kernels: 34.683567 (us)
+PASS
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Average execution time of kernels: 2.310762 (us)
+PASS
+
+
+
+----- CODE COMPARISON -----
+Below is a summary of the key changes in the REFACTORED CODE that are likely responsible for its improved energy efficiency:
+
+1. Use of Pinned (Page‐Locked) Memory and Asynchronous Copies:
+   - In the refactored code, the host memory for the result buffers is allocated using cudaHostAlloc (i.e. pinned memory). This improves the memory transfer performance by enabling faster GPU–CPU transfers.
+   - Asynchronous memory copies (cudaMemcpyAsync) and the use of a CUDA stream are now employed. These changes help overlap communication with computation and reduce waiting times, thereby lowering both the energy usage and overall execution time.
+
+2. Consolidation of Kernel Launches:
+   - Instead of launching the test kernel in a loop from the host (repeat times), the refactored version launches the kernel only once. Inside that kernel, a loop driven by a device constant (d_repeat) calls the.Crypt routine repeatedly.
+   - This design eliminates kernel launch overheads for each iteration. Fewer kernel launches result in lower energy consumption, both on the GPU and the CPU.
+
+3. Precomputation and Separation of Conversions:
+   - The refactored code introduces a new kernel (init_keystreams) that performs the conversion from hexadecimal strings to raw bytes once. The results are stored so that subsequent cryptographic operations can reuse the precomputed raw data.
+   - By structuring the conversions separately (and only once) rather than redoing them every iteration inside the main kernel, overall computation and memory operations are reduced.
+
+4. Use of Constant Memory:
+   - The lookup table (char_to_uint) has been moved into constant memory (declared as __constant__) and is copied using cudaMemcpyToSymbol. Constant memory offers efficient broadcast to all threads, reducing memory latency and power consumption.
+   - Additionally, the repeat count is also stored as a constant on the device (d_repeat), which further optimizes the kernel execution.
+
+5. Reduction of Unnecessary Memory Operations:
+   - The refactored code avoids repeatedly clearing the result buffer (cudaMemset) on every host loop iteration by simply overwriting the result inside the GPU, thereby reducing unnecessary memory operations and possibly saving energy.
+
+Collectively, these changes lead to:
+- Lower overall kernel launch overhead.
+- Better overlap between computation and communication.
+- Fewer redundant conversions and memory operations.
+- Improved memory access patterns through the use of constant memory and pinned memory.
+
+These optimizations directly contribute to lowering both the average power and total energy consumed, as evidenced by the significant improvements in execution time and energy measurements in the results.

@@ -1,0 +1,45 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+Date-time: 04-06-2025_t19_46_58
+Application: jaccard
+
+EE Refactoring: CUDA_ee
+
+LLM Source: argo
+Model: gpto3mini
+Model coder: gpto3mini
+System Prompt Index: CUDA
+Code file template: generated_codes/argo_gpto3mini/promptset_CUDA/jaccard-cuda_main_ee_refactorcode_CUDA_exp_t12.3_pipelineV2_o3mini_jac_argo_ee_hecb_selfcontext
+
+LLM System Prompt: 
+
+You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents. You always surround your generated code with the three characters ```.
+
+Power measurement: True
+
+----- PIPELINE METRICS -----
+Experiment date-time: 04-06-2025_t19_46_58
+Time (sec): 785.05
+Code Error Self-correction iteration count: 0
+Energy Efficiency Self-improvement iteration count: 6
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Best refactored code version: -1
+LLM Judge Validation Result: SOURCE
+Total Energy (J):   Idle: 1119.3  Source code: 2050.52  Base LLM code: 2053.08  Best Refactored code: 2050.52
+Average Power (W):   Idle: 50.17  Source code: 91.95  Base LLM code: 92.15  Best Refactored code: 91.95
+Runtime (s):   Idle: 22.3  Source code: 22.3  Base LLM code: 22.29  Best Refactored code: 22.3
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Number of matrix rows and cols: 1024 512
+Average execution time of kernels: 0.0111731 (s)
+Average execution time of kernels: 0.0107776 (s)
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Number of matrix rows and cols: 1024 512
+Average execution time of kernels: 0.0111417 (s)
+Average execution time of kernels: 0.0107491 (s)

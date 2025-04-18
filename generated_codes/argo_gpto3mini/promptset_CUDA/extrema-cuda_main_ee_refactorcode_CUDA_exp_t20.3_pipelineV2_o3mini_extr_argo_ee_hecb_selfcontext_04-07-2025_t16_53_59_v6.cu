@@ -1,0 +1,409 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <cuda.h>
+
+// --- 1D Kernel: Specialized for clip and wrapped modes ---
+template<typename T>
+__global__ void relextrema_1D_kernel(
+    const int n,
+    const int order,
+    const bool clip,
+    const T* __restrict__ inp,
+    bool* __restrict__ results,
+    const int repeat)  // 'repeat' parameter is preserved but not used inside
+{
+  const int tx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int stride = blockDim.x * gridDim.x;
+
+  // Branch once on clip mode prior to inner loop
+  if (clip) {
+    // Use clip mode: indices are clamped
+    for (int tid = tx; tid < n; tid += stride) {
+      const T data = inp[tid];
+      bool temp = true;
+      #pragma unroll
+      for (int o = 1; o <= order; o++) {
+        int plus  = tid + o;
+        int minus = tid - o;
+        if (plus >= n) plus = n - 1;
+        if (minus < 0) minus = 0;
+        temp = temp && (data > inp[plus]) && (data >= inp[minus]);
+      }
+      results[tid] = temp;
+    }
+  } else {
+    // Wrapped mode: indices wrap-around
+    for (int tid = tx; tid < n; tid += stride) {
+      const T data = inp[tid];
+      bool temp = true;
+      #pragma unroll
+      for (int o = 1; o <= order; o++) {
+        int plus  = tid + o;
+        int minus = tid - o;
+        if (plus >= n) plus -= n;
+        if (minus < 0) minus += n;
+        temp = temp && (data > inp[plus]) && (data >= inp[minus]);
+      }
+      results[tid] = temp;
+    }
+  }
+}
+
+
+// --- 2D Kernel: Specialized for clip and wrapped modes ---
+template<typename T>
+__global__ void relextrema_2D_kernel(
+    const int in_x,
+    const int in_y,
+    const int order,
+    const bool clip,
+    const int axis,
+    const T* __restrict__ inp,
+    bool* __restrict__ results,
+    const int repeat)  // 'repeat' is preserved but not used
+{
+  const int ty = blockIdx.x * blockDim.x + threadIdx.x;
+  const int tx = blockIdx.y * blockDim.y + threadIdx.y;
+
+  if (tx < in_y && ty < in_x) {
+    const int tid = tx * in_x + ty;
+    const T data = inp[tid];
+    bool temp = true;
+
+    if (clip) {
+      #pragma unroll
+      for (int o = 1; o <= order; o++) {
+        int plus, minus;
+        if (axis == 0) { // vertical axis
+          int plus_temp  = tx + o;
+          int minus_temp = tx - o;
+          if (plus_temp >= in_y) plus_temp = in_y - 1;
+          if (minus_temp < 0)   minus_temp = 0;
+          plus  = plus_temp  * in_x + ty;
+          minus = minus_temp * in_x + ty;
+        } else { // horizontal axis
+          int plus_temp  = ty + o;
+          int minus_temp = ty - o;
+          if (plus_temp >= in_x) plus_temp = in_x - 1;
+          if (minus_temp < 0)    minus_temp = 0;
+          plus  = tx * in_x + plus_temp;
+          minus = tx * in_x + minus_temp;
+        }
+        temp = temp && (data > inp[plus]) && (data >= inp[minus]);
+      }
+    } else {
+      #pragma unroll
+      for (int o = 1; o <= order; o++) {
+        int plus, minus;
+        if (axis == 0) { // vertical axis
+          int plus_temp  = tx + o;
+          int minus_temp = tx - o;
+          if (plus_temp >= in_y) plus_temp -= in_y;
+          if (minus_temp < 0)    minus_temp += in_y;
+          plus  = plus_temp  * in_x + ty;
+          minus = minus_temp * in_x + ty;
+        } else { // horizontal axis
+          int plus_temp  = ty + o;
+          int minus_temp = ty - o;
+          if (plus_temp >= in_x) plus_temp -= in_x;
+          if (minus_temp < 0)    minus_temp += in_x;
+          plus  = tx * in_x + plus_temp;
+          minus = tx * in_x + minus_temp;
+        }
+        temp = temp && (data > inp[plus]) && (data >= inp[minus]);
+      }
+    }
+    results[tid] = temp;
+  }
+}
+
+
+// -----------------------------------------------------------------------------
+// CPU versions remain unchanged
+// -----------------------------------------------------------------------------
+template<typename T>
+void cpu_relextrema_1D(
+    const int n,
+    const int order,
+    const bool clip,
+    const T* __restrict__ inp,
+    bool* __restrict__ results)
+{
+  for (int tid = 0; tid < n; tid++) {
+    const T data = inp[tid];
+    bool temp = true;
+    for (int o = 1; o <= order; o++) {
+      int plus  = tid + o;
+      int minus = tid - o;
+
+      if (clip) {
+        if (plus >= n) plus = n - 1;
+        if (minus < 0) minus = 0;
+      } else {
+        if (plus >= n) plus -= n;
+        if (minus < 0) minus += n;
+      }
+      temp = temp && (data > inp[plus]) && (data >= inp[minus]);
+    }
+    results[tid] = temp;
+  }
+}
+
+
+template<typename T>
+void cpu_relextrema_2D(
+    const int in_x,
+    const int in_y,
+    const int order,
+    const bool clip,
+    const int axis,
+    const T* __restrict__ inp,
+    bool* __restrict__ results)
+{
+  for (int tx = 0; tx < in_y; tx++) {
+    for (int ty = 0; ty < in_x; ty++) {
+      const int tid = tx * in_x + ty;
+      const T data = inp[tid];
+      bool temp = true;
+      for (int o = 1; o <= order; o++) {
+        int plus, minus;
+        if (axis == 0) {
+          int plus_temp  = tx + o;
+          int minus_temp = tx - o;
+          if (clip) {
+            if (plus_temp >= in_y) plus_temp = in_y - 1;
+            if (minus_temp < 0)   minus_temp = 0;
+          } else {
+            if (plus_temp >= in_y) plus_temp -= in_y;
+            if (minus_temp < 0)    minus_temp += in_y;
+          }
+          plus  = plus_temp * in_x + ty;
+          minus = minus_temp * in_x + ty;
+        } else {
+          int plus_temp  = ty + o;
+          int minus_temp = ty - o;
+          if (clip) {
+            if (plus_temp >= in_x) plus_temp = in_x - 1;
+            if (minus_temp < 0)    minus_temp = 0;
+          } else {
+            if (plus_temp >= in_x) plus_temp -= in_x;
+            if (minus_temp < 0)    minus_temp += in_x;
+          }
+          plus  = tx * in_x + plus_temp;
+          minus = tx * in_x + minus_temp;
+        }
+        temp = temp && (data > inp[plus]) && (data >= inp[minus]);
+      }
+      results[tid] = temp;
+    }
+  }
+}
+
+
+// -----------------------------------------------------------------------------
+// Test functions call the new GPU kernels (launching them 'repeat' times from the host)
+// -----------------------------------------------------------------------------
+template <typename T>
+long test_1D(const int length, const int order, const bool clip,
+             const int repeat, const char* type)
+{
+  T* x;
+  cudaMallocHost((void**)&x, sizeof(T) * length);
+  for (int i = 0; i < length; i++)
+    x[i] = rand() % length;
+
+  bool* cpu_r;
+  cudaMallocHost((void**)&cpu_r, sizeof(bool) * length);
+  bool* gpu_r;
+  cudaMallocHost((void**)&gpu_r, sizeof(bool) * length);
+
+  T* d_x;
+  bool* d_result;
+  cudaMalloc((void**)&d_x, length * sizeof(T));
+  cudaMalloc((void**)&d_result, length * sizeof(bool));
+
+  // Create a stream for asynchronous operations.
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+
+  // Asynchronously copy host data to device.
+  cudaMemcpyAsync(d_x, x, sizeof(T)*length, cudaMemcpyHostToDevice, stream);
+  cudaStreamSynchronize(stream);
+
+  const int threadsPerBlock = 256;
+  const int blocks = (length + threadsPerBlock - 1) / threadsPerBlock;
+
+  // Create CUDA events for timing
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  // Record the start event
+  cudaEventRecord(start, stream);
+
+  // Launch the 1D kernel 'repeat' times (each run performs one iteration of computation)
+  for (int i = 0; i < repeat; i++) {
+    relextrema_1D_kernel<T><<<blocks, threadsPerBlock, 0, stream>>>(length, order, clip, d_x, d_result, 1);
+  }
+
+  // Record the stop event and synchronize
+  cudaEventRecord(stop, stream);
+  cudaEventSynchronize(stop);
+
+  // Calculate elapsed time (returns time in milliseconds)
+  float ms = 0.0f;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avgTime = (ms * 1e-3f) / repeat;
+  printf("Average 1D kernel (type = %s, order = %d, clip = %d) execution time: %f (s)\n",
+         type, order, clip, avgTime);
+
+  // Asynchronously copy results back to host.
+  cudaMemcpyAsync(gpu_r, d_result, length * sizeof(bool), cudaMemcpyDeviceToHost, stream);
+  cudaStreamSynchronize(stream);
+
+  // Validate the GPU results against the CPU version.
+  cpu_relextrema_1D<T>(length, order, clip, x, cpu_r);
+
+  int error = 0;
+  for (int i = 0; i < length; i++) {
+    if (cpu_r[i] != gpu_r[i]) {
+      error = 1;
+      break;
+    }
+  }
+  cudaFree(d_x);
+  cudaFree(d_result);
+  cudaFreeHost(x);
+  cudaFreeHost(cpu_r);
+  cudaFreeHost(gpu_r);
+  cudaStreamDestroy(stream);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  if (error) printf("1D test: FAILED\n");
+  return static_cast<long>(ms * 1e6f);  // return time in nanoseconds for consistency
+}
+
+
+template <typename T>
+long test_2D(const int length_x, const int length_y, const int order,
+             const bool clip, const int axis,
+             const int repeat, const char* type)
+{
+  const int length = length_x * length_y;
+  T* x;
+  cudaMallocHost((void**)&x, sizeof(T) * length);
+  for (int i = 0; i < length; i++)
+    x[i] = rand() % length;
+
+  bool* cpu_r;
+  cudaMallocHost((void**)&cpu_r, sizeof(bool) * length);
+  bool* gpu_r;
+  cudaMallocHost((void**)&gpu_r, sizeof(bool) * length);
+
+  T* d_x;
+  bool* d_result;
+  cudaMalloc((void**)&d_x, length * sizeof(T));
+  cudaMalloc((void**)&d_result, length * sizeof(bool));
+
+  // Create a stream for asynchronous operations.
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+
+  // Asynchronously copy host data to device.
+  cudaMemcpyAsync(d_x, x, sizeof(T)*length, cudaMemcpyHostToDevice, stream);
+  cudaStreamSynchronize(stream);
+
+  dim3 threads(16, 16);
+  dim3 grids((length_x + 15) / 16, (length_y + 15) / 16);
+
+  // Create CUDA events for timing
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  // Record start event
+  cudaEventRecord(start, stream);
+
+  // Launch the 2D kernel 'repeat' times.
+  for (int i = 0; i < repeat; i++) {
+    relextrema_2D_kernel<T><<<grids, threads, 0, stream>>>(length_x, length_y, order, clip, axis, d_x, d_result, 1);
+  }
+
+  // Record stop event and synchronize
+  cudaEventRecord(stop, stream);
+  cudaEventSynchronize(stop);
+
+  // Calculate elapsed time (in milliseconds)
+  float ms = 0.0f;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avgTime = (ms * 1e-3f) / repeat;
+  printf("Average 2D kernel (type = %s, order = %d, clip = %d, axis = %d) execution time: %f (s)\n",
+         type, order, clip, axis, avgTime);
+
+  // Asynchronously copy results back to host.
+  cudaMemcpyAsync(gpu_r, d_result, length * sizeof(bool), cudaMemcpyDeviceToHost, stream);
+  cudaStreamSynchronize(stream);
+
+  // Validate the GPU results against the CPU version.
+  cpu_relextrema_2D(length_x, length_y, order, clip, axis, x, cpu_r);
+
+  int error = 0;
+  for (int i = 0; i < length; i++) {
+    if (cpu_r[i] != gpu_r[i]) {
+      error = 1;
+      break;
+    }
+  }
+  cudaFree(d_x);
+  cudaFree(d_result);
+  cudaFreeHost(x);
+  cudaFreeHost(cpu_r);
+  cudaFreeHost(gpu_r);
+  cudaStreamDestroy(stream);
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  if (error) printf("2D test: FAILED\n");
+  return static_cast<long>(ms * 1e6f);  // return time in nanoseconds for consistency
+}
+
+
+// -----------------------------------------------------------------------------
+// Main: test 1D and 2D versions for a variety of types and orders
+// -----------------------------------------------------------------------------
+int main(int argc, char* argv[]) {
+  if (argc != 2) {
+    printf("Usage: ./%s <repeat>\n", argv[0]);
+    return 1;
+  }
+  const int repeat = atoi(argv[1]);
+  long time = 0;
+
+  for (int order = 1; order <= 128; order = order * 2) {
+    time += test_1D<int>(1000000, order, true, repeat, "int");
+    time += test_1D<long>(1000000, order, true, repeat, "long");
+    time += test_1D<float>(1000000, order, true, repeat, "float");
+    time += test_1D<double>(1000000, order, true, repeat, "double");
+  }
+
+  for (int order = 1; order <= 128; order = order * 2) {
+    // test 2D with axis = 1 (vertical)
+    time += test_2D<int>(1000, 1000, order, true, 1, repeat, "int");
+    time += test_2D<long>(1000, 1000, order, true, 1, repeat, "long");
+    time += test_2D<float>(1000, 1000, order, true, 1, repeat, "float");
+    time += test_2D<double>(1000, 1000, order, true, 1, repeat, "double");
+  }
+
+  for (int order = 1; order <= 128; order = order * 2) {
+    // test 2D with axis = 0 (horizontal)
+    time += test_2D<int>(1000, 1000, order, true, 0, repeat, "int");
+    time += test_2D<long>(1000, 1000, order, true, 0, repeat, "long");
+    time += test_2D<float>(1000, 1000, order, true, 0, repeat, "float");
+    time += test_2D<double>(1000, 1000, order, true, 0, repeat, "double");
+  }
+
+  printf("\n-----------------------------------------------\n");
+  printf("Total kernel execution time: %lf (s)\n", time * 1e-9);
+  printf("-----------------------------------------------\n");
+  return 0;
+}

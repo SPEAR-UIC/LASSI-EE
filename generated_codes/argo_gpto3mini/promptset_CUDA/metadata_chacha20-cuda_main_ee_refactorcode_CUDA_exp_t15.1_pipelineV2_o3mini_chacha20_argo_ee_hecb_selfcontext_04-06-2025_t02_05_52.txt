@@ -1,0 +1,43 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+Date-time: 04-06-2025_t02_05_52
+Application: chacha20
+
+EE Refactoring: CUDA_ee
+
+LLM Source: argo
+Model: gpto3mini
+Model coder: gpto3mini
+System Prompt Index: CUDA
+Code file template: generated_codes/argo_gpto3mini/promptset_CUDA/chacha20-cuda_main_ee_refactorcode_CUDA_exp_t15.1_pipelineV2_o3mini_chacha20_argo_ee_hecb_selfcontext
+
+LLM System Prompt: 
+
+You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents. You always surround your generated code with the three characters ```.
+
+Power measurement: True
+
+----- PIPELINE METRICS -----
+Experiment date-time: 04-06-2025_t02_05_52
+Time (sec): 1054.44
+Code Error Self-correction iteration count: 4
+Energy Efficiency Self-improvement iteration count: 8
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Best refactored code version: 4
+LLM Judge Validation Result: VALID
+Total Energy (J):   Idle: 605.64  Source code: 377.35  Base LLM code: 98.02  Best Refactored code: 93.91
+Average Power (W):   Idle: 56.28  Source code: 35.07  Base LLM code: 30.73  Best Refactored code: 28.28
+Runtime (s):   Idle: 10.76  Source code: 10.76  Base LLM code: 3.19  Best Refactored code: 3.33
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Average execution time of kernels: 34.683609 (us)
+PASS
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Average execution time of kernels: 12.474010 (us)
+PASS

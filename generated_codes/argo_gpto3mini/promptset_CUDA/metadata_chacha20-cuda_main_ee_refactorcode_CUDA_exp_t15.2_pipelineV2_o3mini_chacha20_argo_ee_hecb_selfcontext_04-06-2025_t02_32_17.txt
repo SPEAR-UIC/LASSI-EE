@@ -1,0 +1,78 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+Date-time: 04-06-2025_t02_32_17
+Application: chacha20
+
+EE Refactoring: CUDA_ee
+
+LLM Source: argo
+Model: gpto3mini
+Model coder: gpto3mini
+System Prompt Index: CUDA
+Code file template: generated_codes/argo_gpto3mini/promptset_CUDA/chacha20-cuda_main_ee_refactorcode_CUDA_exp_t15.2_pipelineV2_o3mini_chacha20_argo_ee_hecb_selfcontext
+
+LLM System Prompt: 
+
+You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents. You always surround your generated code with the three characters ```.
+
+Power measurement: True
+
+----- PIPELINE METRICS -----
+Experiment date-time: 04-06-2025_t02_32_17
+Time (sec): 1210.64
+Code Error Self-correction iteration count: 4
+Energy Efficiency Self-improvement iteration count: 11
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Best refactored code version: 11
+LLM Judge Validation Result: VALID
+Total Energy (J):   Idle: 530.31  Source code: 316.1  Base LLM code: 123.86  Best Refactored code: 3.7
+Average Power (W):   Idle: 49.33  Source code: 29.4  Base LLM code: 28.21  Best Refactored code: 9.48
+Runtime (s):   Idle: 10.75  Source code: 10.75  Base LLM code: 4.4  Best Refactored code: 0.39
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Average execution time of kernels: 34.685539 (us)
+PASS
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Average execution time of kernels: 0.097961 (us)
+PASS
+
+
+
+----- CODE COMPARISON -----
+```
+The refactored code makes several targeted changes that can lead to reduced energy consumption and lower average power usage on both the GPU and CPU. Key differences related to energy efficiency include:
+
+1. Constant Memory for Lookup Table:
+   • In the refactored version the lookup table (char_to_uint) is copied into device constant memory (d_char_to_uint_const). This provides faster access times and reduces global memory traffic, which in turn minimizes power usage during memory accesses.
+
+2. Merged Precomputation Kernel:
+   • Instead of repeatedly converting the hex strings to raw bytes separately in each call, the refactored code introduces a dedicated kernel “precompute_all” that performs all three conversions (for key, nonce, and keystream) at once.
+   • By merging these operations, the kernel launch overhead is reduced and the work is parallelized using grid‐stride loops. Fewer, more efficient kernel executions translate to lower overall energy consumption.
+
+3. Asynchronous Memory Transfers and Pinned Host Memory:
+   • The refactored code uses cudaMemcpyAsync and allocates host memory with cudaHostAlloc (pinned memory). These optimizations improve the data transfer rates between host and device.
+   • Faster transfers help in reducing the CPU’s waiting time (thus reducing CPU power) and lower the duration during which the GPU is powered up for data movement.
+
+4. Use of CUDA Streams:
+   • The introduction of a CUDA stream allows overlapping data transfers and kernel executions, which can lead to better resource utilization and reduced idle power consumption.
+   • Synchronizing only when needed (with cudaStreamSynchronize) minimizes unnecessary waiting, contributing to lower energy use.
+
+5. Grid-Stride Loops in Kernels:
+   • Both the merged precomputation kernel and the updated test_keystreams kernel use grid-stride loops to evenly distribute work across all threads.
+   • This change ensures full occupancy with optimal resource use and minimizes wastage of GPU cycles, which contributes to energy efficiency.
+
+6. Device Constant for the Repetition Count:
+   • The repetition count (d_repeat) is stored as a device constant. This avoids passing it as a kernel parameter on every launch, reducing overhead and memory access energy.
+
+7. Reduced Kernel Execution Time:
+   • Combined, these improvements (better memory access patterns, merged computations, asynchronous transfers, and better parallel workload distribution) lead to a dramatic reduction in kernel execution time.
+   • Less execution time equates directly to lower energy consumption and average power.
+
+Overall, by reorganizing the work to be more efficient in terms of memory accesses (via constant memory and pinned memory), streamlining data transfers (using asynchronous methods and streams), and consolidating computation (merging conversions into a single kernel), the refactored code achieves the same functional result with significantly lower energy consumption and power usage.
+```

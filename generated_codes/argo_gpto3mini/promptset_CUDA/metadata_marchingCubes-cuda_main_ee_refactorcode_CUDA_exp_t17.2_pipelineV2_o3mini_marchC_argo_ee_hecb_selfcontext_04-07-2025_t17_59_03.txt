@@ -1,0 +1,55 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+Date-time: 04-07-2025_t17_59_03
+Application: marchingCubes
+
+EE Refactoring: CUDA_ee
+
+LLM Source: argo
+Model: gpto3mini
+Model coder: gpto3mini
+System Prompt Index: CUDA
+Code file template: generated_codes/argo_gpto3mini/promptset_CUDA/marchingCubes-cuda_main_ee_refactorcode_CUDA_exp_t17.2_pipelineV2_o3mini_marchC_argo_ee_hecb_selfcontext
+
+LLM System Prompt: 
+
+You are an expert C++/CUDA engineer. Your goal is to refactor provided CUDA C++ code for energy efficiency by reducing GPU and CPU power consumption without losing any functionality of the original code. You must also carefully read and incorporate the best practices from the provided background documents. You always surround your generated code with the three characters ```.
+
+Power measurement: True
+
+----- PIPELINE METRICS -----
+Experiment date-time: 04-07-2025_t17_59_03
+Time (sec): 1232.21
+Code Error Self-correction iteration count: 11
+Energy Efficiency Self-improvement iteration count: 2
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Best refactored code version: -1
+LLM Judge Validation Result: SOURCE
+Total Energy (J):   Idle: 506.15  Source code: 476.83  Base LLM code: 458.81  Best Refactored code: 476.83
+Average Power (W):   Idle: 48.62  Source code: 45.85  Base LLM code: 38.14  Best Refactored code: 45.85
+Runtime (s):   Idle: 10.4  Source code: 10.4  Base LLM code: 12.04  Best Refactored code: 10.4
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Block Lv1: 8296
+Block Lv2: 240380
+Vertices Size: 73075520
+Triangles Size: 227159100
+Vertices: 4856560
+Triangles: 6101640
+Average kernel execution time (generatingTriangles): 0.098850 (s)
+PASS
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Block Lv1: 8678
+Block Lv2: 273711
+Vertices Size: 83208144
+Triangles Size: 258656895
+Vertices: 0
+Triangles: 0
+Average kernel execution time (generatingTriangles): 0.115746 (s)
+FAIL

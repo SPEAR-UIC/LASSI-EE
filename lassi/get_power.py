@@ -97,7 +97,7 @@ def plot_gpu_power(file_name, start_time, end_time, idle):
     plt.axvline(x=float(start_time), color='g', linestyle='--', label='Execution Start')
     plt.axvline(x=float(end_time), color='r', linestyle='--', label='Execution End')
     # plt.axvline(x=float(data['Unload model time'][0]), color='b', linestyle='--', label='Model Unloaded')
-    
+    plt.ylim(0, 225)
     if idle:
         plt.title("Total GPU Power Usage Over Time")  # for"  {file_name}')
         plt.ylabel('GPU Power (W)')

@@ -72,7 +72,8 @@ def test_source_code(source_file_path,
                      energy_history,
                      power_history,
                      runtime_history,
-                     valid_code_history
+                     valid_code_history,
+                     code_gen_temp_history
                     ):
     """
     Compile, execute, and measure power profile of source code.
@@ -108,9 +109,10 @@ def test_source_code(source_file_path,
         power_history.append(round(float(sourcecode_ave_power), 2))
         runtime_history.append(round(float(duration),2))
         valid_code_history.append("SOURCE")
+        code_gen_temp_history.append("SOURCE")
 
     return (idle_energy_joules, idle_ave_power, input_content_llmjudge_dict, sourcecode_total_energy_joules, sourcecode_ave_power,
-            duration, energy_history, power_history, runtime_history, valid_code_history)
+            duration, energy_history, power_history, runtime_history, valid_code_history, code_gen_temp_history)
 
 
 def selfprompting_context_builder(generate_context_flag,

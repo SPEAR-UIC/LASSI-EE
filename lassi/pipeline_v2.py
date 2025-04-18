@@ -93,6 +93,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     power_history = []
     runtime_history = []
     valid_code_history = []
+    code_gen_temp_history = []
     code_blocks = []  # Collection of all codes generated
     best_refactored_code_dict = {}
     input_content_llmjudge_dict = {"source_code": "",
@@ -117,10 +118,10 @@ def auto_code_llmgeneration_pipeline(prompts,
     if test_code_first:
         """Initial stage to run the SOURCE CODE and gather metrics."""
         (idle_energy_joules, idle_ave_power, input_content_llmjudge_dict, sourcecode_total_energy_joules, sourcecode_ave_power, duration,
-         energy_history, power_history, runtime_history, valid_code_history) = lassi.pipeline_methods.test_source_code(source_file_path, build_script, source_lang, target_lang,
+         energy_history, power_history, runtime_history, valid_code_history, code_gen_temp_history) = lassi.pipeline_methods.test_source_code(source_file_path, build_script, source_lang, target_lang,
                                                                                                 exe_input_parameters, code_compiler, code_compiler_kwds,
                                                                                                 yes_execute, power_measure, input_content_llmjudge_dict,
-                                                                                                energy_history, power_history, runtime_history, valid_code_history
+                                                                                                energy_history, power_history, runtime_history, valid_code_history, code_gen_temp_history
                                                                                                )
         # Save the output details for this as the "best" code version for metadata record
         # This is necessary for if no better refactored code is generated:
@@ -238,7 +239,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             print("\n\n----- " + color.BOLD + color.RED + "SELF-CORRECTION: " + str(self_correction_counter) + color.END + " -----")
             if compile_result == "execute_error":
                 self_correction_counter = self_correction_counter + 1
-                error_correction_prompt_intro = "\n -- The above CODE TO FIX was executed after a successul compile with " + code_compiler + " " + code_compiler_kwds + " and produced the following execution error: "
+                error_correction_prompt_intro = "\n -- The above CODE TO FIX was executed after a successful compile with " + code_compiler + " " + code_compiler_kwds + " and produced the following execution error: "
                 error_message = execute_result
             else:  # Must be a compiler error
                 self_correction_counter = self_correction_counter + 1
@@ -448,7 +449,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             #self_correction_power_counter = self_correction_power_counter_max + 1
             
             # Call LLM-as-a-judge to review SOURCE CODE and REFACTORED CODE to evaluate if likely valid
-            valid_code_flag = lassi.llm_methods.llm_judge(llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, display_response, verifyprompt=True)
+            valid_code_flag = lassi.llm_methods.llm_judge(llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, display_response, verifyprompt=True, uri="remote")
             
             # valid_code_flag can be: (1) "VALID", (2) "INVALID", or (3) "NONE"
             if not zero_shot:
@@ -462,6 +463,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             ave_power_lessidle = ave_power_refactor - idle_ave_power
             power_history.append(round(float(ave_power_refactor),2))
             runtime_history.append(round(float(duration_refactor),2))
+            code_gen_temp_history.append(code_gen_temp)
             print("\nPower and Energy Feedback data: ")
             print("----- Energy consumed (J) -----")
             print("  Source code: " + str(round(sourcecode_total_energy_joules, 2)))
@@ -481,7 +483,8 @@ def auto_code_llmgeneration_pipeline(prompts,
             print(runtime_history)
             print("  Valid code history: ", end=' ')
             print(valid_code_history)
-                                    
+            print("  LLM Code Generation Temperature parameter: ", end= ' ')
+            print(code_gen_temp_history)                       
             
             if (
                 total_energy_joules_refactor < energy_history[tracking_best_version+1]
@@ -693,8 +696,11 @@ def auto_code_llmgeneration_pipeline(prompts,
     print(power_history)
     print("\nRuntime history: ")
     print(runtime_history)
+    print("\nLLM Temp parameter history: ")
+    print(code_gen_temp_history)
     print("\nValid code history: ")
     print(valid_code_history)
+
     
     meta_data_file += "\n\n"
     meta_data_file += "----- PIPELINE METRICS -----"

@@ -448,7 +448,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             #self_correction_power_counter = self_correction_power_counter_max + 1
             
             # Call LLM-as-a-judge to review SOURCE CODE and REFACTORED CODE to evaluate if likely valid
-            valid_code_flag = lassi.llm_methods.llm_judge(llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, display_response, verifyprompt=True)
+            valid_code_flag = lassi.llm_methods.llm_judge(llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, display_response, verifyprompt=True)
             
             # valid_code_flag can be: (1) "VALID", (2) "INVALID", or (3) "NONE"
             if not zero_shot:

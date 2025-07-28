@@ -200,6 +200,8 @@ def fetch_with_curl(url, data):
 
     headers = [
         "-H", "Content-Type: application/json",
+        "-H", "Accept-Encoding: identity",
+        "-H", "Cache-Control: no-cache",
         "-H", "Host: apps-dev.inside.anl.gov"
     ]
 
@@ -266,6 +268,7 @@ def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False,
         "Content-Type": "application/json",
         "Accept": "text/plain",  # Expect standard text streaming
         "Accept-Encoding": "identity",  # Prevent gzip compression
+        "Cache-Control": "no-cache",
         "Host": "apps-dev.inside.anl.gov",
     }
 

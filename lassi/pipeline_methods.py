@@ -59,8 +59,12 @@ def get_gpu_system_details():
     return "\n".join(details)
 
 
-def test_source_code(source_file_path,
+def test_source_code(experiment_data_directory,
+                     code_version,
+                     source_file_path,
                      build_script,
+                     make_script,
+                     directory,
                      source_lang,
                      target_lang,
                      exe_input_parameters,
@@ -83,6 +87,11 @@ def test_source_code(source_file_path,
     if build_script:
         compile_result = lassi.code_manager.build_script_code("source_codes", code_build_script)
         execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level1/" + file_nameexe_input_parameters
+    elif make_script:
+        compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds)
+        if compile_result == "":
+            execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
     else:
         compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
     
@@ -92,7 +101,7 @@ def test_source_code(source_file_path,
     if yes_execute:
         print("\nTest executing the compiled original source code: " + str(execute_file))
         exe_file_path = execute_file  # directory + "/" + execute_file
-        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code(exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=1)
+        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=1)
         input_content_llmjudge_dict["source_stdout"] = exe_output_source
         input_content_llmjudge_dict["source_metrics"] = metrics_results_string
         # Save source code energy metrics:
@@ -101,7 +110,7 @@ def test_source_code(source_file_path,
         if execute_result != "0":
             return False
         print("\n\nMeasure system idle power...")
-        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower(duration)
+        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower(experiment_data_directory, duration)
         actual_energy = sourcecode_total_energy_joules - idle_energy_joules
         energy_history.append(round(sourcecode_total_energy_joules, 2))
         actual_ave_power = sourcecode_ave_power - idle_ave_power
@@ -126,7 +135,8 @@ def selfprompting_context_builder(generate_context_flag,
                                   use_context_summaries_only=None,
                                   input_code=None,
                                   total_energy_joules=None,
-                                  ave_power=None
+                                  ave_power=None,
+                                  verifyprompt=False
                                  ):
     """
     Update the system and user content prompts to include
@@ -147,7 +157,7 @@ def selfprompting_context_builder(generate_context_flag,
         # Request LLM summarization of provided context knowledge
         # Note, the input_context object includes all context requested by the user in the LASSI framework.
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to summarize context knowledge." + color.END + "\n")
-        llm_code_knowledge_summary_response = lassi.llm_methods.code_knowledge_llm(llm_source, model, num_ctx, general_system_prompt, input_context, target_lang, display_response, verifyprompt=False)
+        llm_code_knowledge_summary_response = lassi.llm_methods.code_knowledge_llm(llm_source, model, num_ctx, general_system_prompt, input_context, target_lang, display_response, verifyprompt)
         
         if use_context_summaries_only:
             # Save only LLM summary as context
@@ -162,13 +172,13 @@ def selfprompting_context_builder(generate_context_flag,
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to describe the system." + color.END + "\n")
             gpu_system_details = get_gpu_system_details()
             # CALL LLM HERE
-            llm_system_description_response = lassi.llm_methods.system_description_llm(llm_source, model, num_ctx, general_system_prompt, gpu_system_details, display_response, verifyprompt=True)
+            llm_system_description_response = lassi.llm_methods.system_description_llm(llm_source, model, num_ctx, general_system_prompt, gpu_system_details, display_response, verifyprompt)
             content = content + "[YOUR DESCRIPTION OF THE CPU/GPU SYSTEM]\n" + llm_system_description_response + "\n\n"
 
             
         # Requet LLM summary description of the provided SOURCE code
         print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to describe the source code." + color.END + "\n")
-        llm_code_description_response = lassi.llm_methods.code_description_llm(llm_source, model, num_ctx, general_system_prompt, input_context, input_code, display_response, verifyprompt=False)
+        llm_code_description_response = lassi.llm_methods.code_description_llm(llm_source, model, num_ctx, general_system_prompt, input_context, input_code, display_response, verifyprompt)
         content = content + "[YOUR ANALYSIS OF THE SOURCE CODE TO REFACTOR]\n" + llm_code_description_response + "\n\n"
         # refactor_instructions = prompts.get_code_ee_refactoring_prompt(str(source_lang + "_refactor"))  # Includes prompt to generate a refactoring plan
 
@@ -198,7 +208,8 @@ def generate_refactoring_plan(source_lang,
                               system_prompt,
                               context_prompt,
                               display_response,
-                              few_shot_learning=False
+                              few_shot_learning=False,
+                              verifyprompt=False
                              ):
 
     # Prompt structure: GOAL - RETURN FORMAT - WARNINGS - CONTEXT
@@ -209,7 +220,7 @@ def generate_refactoring_plan(source_lang,
     code_to_refactor = code_to_refactor + "\n\nFor reference, the CODE TO REFACTOR provided above was executed on this system and consumed a total energy of " + str(round(total_energy_joules, 2)) + " Joules at an average power of " + str(round(ave_power, 2)) + " Watts, which includes the idle system energy consumption and average power.\n"
     refactoring_plan_instructions = refactoring_plan_instructions + code_to_refactor
     # Generate the refactoring plan
-    refactoring_plan = "\n\n" + "[YOUR REFACTORING PLAN]\n" + lassi.llm_methods.llm_call("refactoring plan", llm_source, model, num_ctx, system_prompt, refactoring_plan_instructions, display_response, verifyprompt=True)
+    refactoring_plan = "\n\n" + "[YOUR REFACTORING PLAN]\n" + lassi.llm_methods.llm_call("refactoring plan", llm_source, model, num_ctx, system_prompt, refactoring_plan_instructions, display_response, verifyprompt)
     # Append few-shot learning examples
     if few_shot_learning:
         refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")

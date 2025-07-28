@@ -14,6 +14,59 @@ import lassi.get_power
 from lassi.format_colors import color
 
 
+def make_script_code(folder, code_compiler_kwds):
+    print("Make - current dir: " + str(os.getcwd()))
+    
+    # split your single-string of flags into a list
+    cmd = ['make'] + code_compiler_kwds.split()
+
+    # build the absolute path to your target folder
+    if folder in str(os.getcwd()):
+        target_dir = os.getcwd()
+    else:
+        target_dir = os.path.join(os.getcwd(), folder)
+    
+    # copy current env and inject your exports
+    env = os.environ.copy()
+    env['GPU_INCLUDE_PATH']  = '/usr/local/cuda/include'
+    env['GPU_LIBRARY_PATH']  = '/usr/local/cuda/lib64'
+
+    # disable all warnings in gcc/g++ (and NVCC’s host compiler)
+    # env['CFLAGS'] = env.get('CFLAGS', '') + ' -w'
+    # env['CXXFLAGS'] = env.get('CXXFLAGS', '') + ' -w'
+    # if you’re using nvcc directly in your Makefile you may need:
+    # env['NVCCFLAGS'] = env.get('NVCCFLAGS', '') + ' -w'
+    
+    # Execute the Make file script command
+    # make_script_file = str(os.getcwd()) + "/" + folder + "/" + "make"
+    #subprocess.run(['chmod', '+x', build_script_file], check=True)
+    # print("make_script_file: ", make_script_file)
+    result = subprocess.run(
+        cmd,
+        cwd=target_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False  # True if you want a CalledProcessError on failure
+    )
+
+     # Debug printouts
+    print(f"Running: {' '.join(cmd)} in {target_dir}")
+    print("STDOUT:")
+    print(result.stdout)
+    print("STDERR:")
+    print(result.stderr)
+
+    return_result = ""
+    if result.returncode == 0:
+        print("\n" + color.BOLD + "Make build/Compilation of code successful!\n" + color.END)
+    else:
+        return_result = result.stderr
+
+    return return_result
+        
+
+
 def build_script_code(folder, code_build_script):
     print("Build script - current dir: " + str(os.getcwd()))
     # Execute the build script command
@@ -71,7 +124,7 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     return return_result, output_file
 
 
-def execute_code(executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, wait=10):
+def execute_code(experiment_data_directory, code_version, directory, executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=10):
 
     # Wait 20 seconds for the system to settle down
     # print("...WAITING.")
@@ -93,26 +146,48 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
         time.sleep(1)
 
     return_code = ""
-    
-    # Capture current directory to switch back after code execution
-    initial_dir = os.getcwd()
 
+    print("executable_file: ", executable_file)
+    # Capture current directory to switch back after code execution
+    if make_script:
+        # build the absolute path to your target folder
+        if directory in str(os.getcwd()):
+            initial_dir = os.getcwd()
+        else:
+            initial_dir = os.path.join(os.getcwd(), directory)
+    else:
+        initial_dir = os.getcwd()
+    print("initial_dir: ", initial_dir)
+    
     # Extract the compiled program to execute
     directory_path = os.path.dirname(executable_file)
+    print("directory_path: ", directory_path)
     executable = os.path.basename(executable_file)
+    print("executable: ", executable)
 
     # Change the working directory to the subdirectory of the executable
-    os.chdir(directory_path)
-
+    if make_script:
+        os.chdir(initial_dir)
+        executable = directory_path + "/" + executable
+        # executable = experiment_data_directory
+    else:
+        # os.chdir(initial_dir + "/" + directory_path)
+        os.chdir(directory_path)
+        # os.chdir(experiment_data_directory)
+        
     # Ensure the binary has execute permissions
     subprocess.run(['chmod', '+x', executable])
 
     # Build execute command
     if build_script:
         execute_command = ['./' + executable] + exe_input_parameters[0].split(' ')
+    elif make_script:
+        print("exe_input_parameters: ", exe_input_parameters)
+        os.chdir(initial_dir)
+        execute_command = ['./' + executable] + exe_input_parameters
     else:
         execute_command = ['./' + executable] + exe_input_parameters
-    print("Working directory: " + directory_path)
+    print("Working directory: " + os.getcwd())
     print("Execute command: " + str(execute_command) + "\n")
 
     # Execute the binary object with input parameters, if provided
@@ -133,6 +208,10 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
      
     # Ensure the file is open and available before executing
     if os.path.exists(executable):
+        print("running: executable - ", executable)
+        # Hack for now:
+        if make_script:
+            executable = "README.md"
         try:
             # Open the file to ensure it is accessible
             with open(executable, 'rb') as code_file:
@@ -214,6 +293,8 @@ def execute_code(executable_file, exe_input_parameters, power_measure, code_sour
                     ave_idle_power = (ave_idle_before + ave_idle_after) / 2
         
                     total_energy_joules, ave_power, std_power, metrics_results_string = lassi.get_power.power_collect_data(
+                        experiment_data_directory,
+                        code_version,
                         power_queue, 
                         code_source, 
                         target_lang, 

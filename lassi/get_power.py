@@ -1,4 +1,5 @@
 # Used for power consumption
+import os
 import csv
 import time
 from datetime import datetime
@@ -85,9 +86,17 @@ def power_collection_thread(power_queue, stop_event, handle, interval=0.01):
         # time.sleep(0.01)
 
 
-def plot_gpu_power(file_name, start_time, end_time, idle):
+def plot_gpu_power(experiment_data_directory, code_version, file_name, start_time, end_time, idle):
+    # Load the data
     data = pd.read_csv(file_name)
 
+    # Increment because code version because this plot will be the next code version, if it passes.
+    # Do not increment if version is 0 (the source code)
+    # If the code is not saved, then this plot will be overwritten on the next pass.
+    if (code_version != 0 and code_version != "idle_power"):
+        code_version = code_version + 1
+
+    # Plot the data
     plt.figure(figsize=(10, 6))
     plt.plot(data['Time'], data['GPU Power (W)'], label='GPU Power')
     
@@ -107,7 +116,22 @@ def plot_gpu_power(file_name, start_time, end_time, idle):
     plt.xlabel('Time (seconds)')
     plt.grid(True)
     plt.legend()
+
+    # Make sure the output folder exists
+    os.makedirs(experiment_data_directory, exist_ok=True)
+
+    # Derive a filename for the PNG
+    png_name = f"code_v_{code_version}_gpu_power.png"
+    png_path = os.path.join(experiment_data_directory, png_name)
+
+    # Save the plot
+    plt.savefig(png_path, dpi=150, bbox_inches='tight')
+
+    # Show plot on screen
     plt.show()
+
+    # Clean up
+    plt.close()
 
     return True  # data['Inference Duration'][0]
 
@@ -143,8 +167,8 @@ def calculate_total_energy(file_name, start_time, end_time):
     return total_energy, ave_power, std_power
 
     
-def display_energy_results(file_name, start_time, end_time, idle):
-    plot_gpu_power(file_name, start_time, end_time, idle)
+def display_energy_results(experiment_data_directory, code_version, file_name, start_time, end_time, idle):
+    plot_gpu_power(experiment_data_directory, code_version, file_name, start_time, end_time, idle)
     total_energy_joules, ave_power, std_power = calculate_total_energy(file_name, start_time, end_time)
     
     # Convert energy units
@@ -177,7 +201,7 @@ def display_energy_results(file_name, start_time, end_time, idle):
 
     
 # Function to read CSV and plot the GPU power usage
-def power_collect_data(power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle):
+def power_collect_data(experiment_data_directory, code_version, power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle):
     # now = datetime.now()
     # dt_string = now.strftime("%m-%d-%Y_t%H_%M_%S")
     
@@ -206,12 +230,12 @@ def power_collect_data(power_queue, code_source, target_lang, start_exe_time, en
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
 
-    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(filename, start_exe_time, end_exe_time, idle)
+    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(experiment_data_directory, code_version, filename, start_exe_time, end_exe_time, idle)
     
     return total_energy_joules, ave_power, std_power, metrics_results_string
 
     
-def idlepower(duration):
+def idlepower(experiment_data_directory, duration):
     nvmlInit()
     handle = nvmlDeviceGetHandleByIndex(0)  # Assuming GPU 0
     
@@ -238,7 +262,7 @@ def idlepower(duration):
     # print("... idle duration increment: " + str(end_power_time - start_power_time))
     
     # We don't need the metrics_results_string for idle metrics.
-    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0, idle=True)
+    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(experiment_data_directory, "idle_power", power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0, idle=True)
 
     # Shutdown NVML
     nvmlShutdown()

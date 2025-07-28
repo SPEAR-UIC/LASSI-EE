@@ -3,37 +3,51 @@
         "source_folder": "HeCBench",
         "stu-matrix-rotate": {
             "app_folder": "stu-matrix-rotate",
-            "app_params": ["30000", "100"]
+            "app_params": ["30000", "100"],
+            "code_lines": 67
         },
         "all-pairs-distance": {
             "app_folder": "all-pairs-distance",
-            "app_params": ["10000"]
+            "app_params": ["10000"],
+            "code_lines": 328
         },
         "jacobi": {
             "app_folder": "jacobi",
-            "app_params": [""]
+            "app_params": [""],
+            "code_lines": 235
         },
         "layout": ["2500"],
         "atomicCost": ["16", "10"],
         "segment-reduce": ["16384", "100"],
         "dense-embedding": {
             "app_folder": "dense-embedding",
-            "app_params": ["100000", "128", "100"]
+            "app_params": ["100000", "128", "100"],
+            "code_lines": 193
         },
         "pathfinder": ["100000", "10000", "2500"],
         "bsearch": ["8388608", "1000"],
         "entropy": {
             "app_folder": "entropy",
-            "app_params": ["8192", "8192", "500"]
+            "app_params": ["8192", "8192", "500"],
+            "code_lines": 171
         },
         "colorwheel": ["10000", "256", "500000"],
         "randomAccess": ["10", "1"],
         "lid-driven-cavity": {
             "app_folder": "lid-driven-cavity",
-            "app_params": [""]
+            "app_params": [""],
+            "code_lines": 1079
         }
     },
     "Altis": {
         "xxx":"xxx"
+    },
+    "Miniapps": {
+        "source_folder": "Miniapps",
+        "miniMDock": {
+            "app_folder": "miniMDock",
+            "app_params": ["-lfile", "./input/7cpa/7cpa_ligand.pdbqt", "-nrun 100"],
+            "code_lines": 0
+        }
     }
 }

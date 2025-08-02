@@ -116,6 +116,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     valid_code_history = []
     code_blocks = []  # Collection of all codes generated
     iteration_log = {}  # initiate the iteration log for each code version
+    verification_log = {}  # iniiate a dict log for code verifications
     # iteration_log[version] = {"self_correction": 0, "energy_refactor": 0, "LLM_temperature": 0}
     best_refactored_code_dict = {}
     input_content_llmjudge_dict = {"source_code": "",
@@ -155,6 +156,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         experiment_data["source_v0_energy_J"] = sourcecode_total_energy_joules
         experiment_data["source_v0_avg_power_W"] = sourcecode_ave_power
         experiment_data["source_v0_runtime_s"] = duration
+
         
     print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
 
@@ -211,6 +213,21 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Clean up Python-level objects
     gc.collect()
     time.sleep(5)
+
+    # Generate Code Analysis for verification
+    code_analysis = lassi.pipeline_methods.generate_code_analysis(
+                    source_lang=source_lang,
+                    input_code=input_code,
+                    llm_source=llm_source,
+                    model=model,
+                    num_ctx=num_ctx,
+                    system_prompt=system_prompt,
+                    context_prompt=original_context_content_prompt,
+                    display_response=display_response,
+                    verifyprompt=True
+                )
+
+    verification_log["sourcecode_analysis"] = code_analysis
         
     # --------------------------------------------------------
     # INITIATE LASSI-EE LLM CODE GENERATION ITERATIVE PIPELINE

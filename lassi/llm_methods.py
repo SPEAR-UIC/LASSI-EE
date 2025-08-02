@@ -31,6 +31,8 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
    
     if intent == "refactoring plan":
         print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to write a refactoring plan." + color.END + "\n")
+    if intent == "code analysis":
+        print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to perform code analysis." + color.END + "\n")
         
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt, uri)
@@ -114,6 +116,27 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
         response_validation = "VALID"
     else:
         response_validation = "NONE"
+
+    # If valid, then run test case agent:
+    # 1) prompt with source code 
+
+    if response_validation == "VALID":
+        print("\n\nSTART CODE ANALYSIS ---- ")
+        
+        code_analysis_instructions = """
+            Your are a CUDA code evaluator. Your task is to determine if the provided CUDA code satisfies a given list of characteristics.
+            The characteristics will be given in a json format and will be given between the tags: "<rubric>" and "</rubric>".\
+            The CUDA code you are to evaluate will be given between "<code>" and "</code>".
+            Please give a simple "pass" or "fail" evaluation and also list which criteria pass and which fail (without additional details).
+            Please put your final, overall evaluation between the tags: "<result>" and put the list in a table format.
+            """
+        code_rubric = "\n\n<rubric>\n" + RUB + "\n</rubric>"
+        code_to_analyze = "\n\n<code>\n" + input_content_dict['refactored_code'] + "\n</code>"
+        code_analysis_instructions = code_analysis_instructions + code_rubric + code_to_analyze
+        code_analysis = llm_call("code analysis", llm_source, model, num_ctx, system_prompt, code_analysis_instructions, display_response, verifyprompt)
+
+        print("\n\nCODE ANALYSIS RESULT: " + str(code_analysis))
+
     
     return response_validation
 

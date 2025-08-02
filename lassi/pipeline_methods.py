@@ -233,3 +233,31 @@ def generate_refactoring_plan(source_lang,
     print("\n\n----- " + color.GREEN + "THE REFACTORING PLAN PROMPT " + color.END + " (prompt with code, token count: " + str(refactoring_plan_tokens) + "): \n")  # + refactoring_plan + "\n")
 
     return refactoring_plan, code_to_refactor
+
+
+def generate_code_analysis(source_lang, input_code,
+                              llm_source,
+                              model,
+                              num_ctx,
+                              system_prompt,
+                              context_prompt,
+                              display_response,
+                              verifyprompt=False
+                             ):
+    code_analysis_instructions = """
+    You are a formal methods and parallel programming expert and you specialize in identifying key characteristics of a given CUDA code. The characteristics can be something like invariants (a property of the program state that is always true), properties, patterns, unit tests, etc. The goal is to use these characteristics to determine if a refactored version of the code provide the same general functionality. Your task is to:
+    1. Identify underlying assumptions of the code
+    2. Identify invariants
+    3. Identify design patterns
+    4. Identify memory access patterns
+    5. Identify memory allocation/deallocation
+    6. Other key characteristics of the code
+    Please output your findings in a json file format. Put "=====" before and after the json output.
+    """
+
+    code_to_analyze = "\n\n[START OF CODE TO ANALYZE]\n" + input_code + "\n[/END OF CODE TO ANALYZE]"
+    code_analysis_instructions = code_analysis_instructions + code_to_analyze
+    code_analysis = lassi.llm_methods.llm_call("code analysis", llm_source, model, num_ctx, system_prompt, code_analysis_instructions, display_response, verifyprompt)
+
+    return code_analysis
+    

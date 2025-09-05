@@ -1,6 +1,6 @@
 from IPython.display import display, Markdown
 import re
-from lassi.llm_config import argo_llm, ollama_llm, ollama_llm_nostream
+from lassi.llm_config import argo_llm, cerebras_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
 
 
@@ -40,6 +40,10 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
@@ -48,7 +52,7 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
     return response_text
 
 
-def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, display_response, verifyprompt=False, uri="remote"):
+def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, display_response, verifyprompt=False, uri="remote"):
 
     intent = "code validation judge"
 
@@ -69,18 +73,15 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
     # <insert runtime output>
     # "METRICS"
     # <insert measurements>
-    content_prompt = """
-    Please compare the difference between the following two codes written in CUDA C++.\n
-    First, I will provide you first with the SOURCE CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
+    content_prompt = f"""
+    Please compare the difference between the following two codes written in {target_lang} C++.\n
+    First, I will provide you with the SOURCE CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
     Next, I will provide you with a REFACTORED CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
-    After you have reviewed both codes and their output, while the REFACTORED CODE may run faster and potentially use less energy than the SOURCE CODE, it should still produce equivalent functionality and identical standard output in layout and content.\n
-    Your task is to strictly evaluate whether the REFACTORED CODE preserves all intended functionality of the SOURCE CODE and produces equivalent standard output, including its layout and content, compared to the SOURCE CODE.\n
-    Your careful evaluation should focus on functional equivalence of the two codes and nearly exact standard output of the two codes. Minor differences in numerical values are acceptable in the standard output only if they are consistent with the REFACTORED CODE improving energy efficiency and these specific values are reasonable and consistent with the SOURCE CODE's intended purpose.\n
-    Please explain your reasoning, and then conclude your response with VALID if the refactored code is functionally equivalent, or INVALID if it is not.
+    After you have reviewed both codes and their output, the REFACTORED CODE is expected to produce equivalent functionality and reasonably similar standard output in its layout and content. However, the REFACTORED CODE may not meet these expectations.\n
+    Your task is to strictly evaluate whether the REFACTORED CODE (1) preserves all intended functionality of the SOURCE CODE and (2) produces printed nearly equivalent standard output, including its displayed layout and content, compared to the SOURCE CODE.\n
+    Your careful evaluation should focus on the functional equivalence of the two codes and nearly exact printed standard output of the two codes. Minor differences in numerical values are acceptable in the printed standard output only if they are consistent with the REFACTORED CODE improving energy efficiency and these specific values are reasonable and consistent with the SOURCE CODE's intended purpose. Formatting differences are acceptable as long as key details are included that are seen in the standard output of the SOURCE CODE.\n
+    Please explain your reasoning, and then conclude your response with VALID if the REFACTORED CODE is functionally equivalent, or INVALID if it is not.
     """
-    # Please evaluate if you think the refactored code should be considered valid in terms of providing the same code functionality while also having the exact same standard output as compared with the the source code, other than the specific numerical values. However, these numerical values must still make sense for the given functionality and intent of the code for the refactored code to be considered valud. \n
-    # If you think the refactored code is valid, then please conclude your response with VALID. Otherwise, conclude with INVALID.
-    #"""
 
     content_prompt += f"\n\n# [SOURCE CODE]\n {input_content_dict['source_code']}"
     content_prompt += f"\n\n## [STANDARD OUTPUT]\n {input_content_dict['source_stdout']}"
@@ -100,6 +101,10 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
@@ -120,7 +125,8 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
     # If valid, then run test case agent:
     # 1) prompt with source code 
 
-    if response_validation == "VALID":
+    # TODO: TO BE DEVELOPED
+    if 0==1 and response_validation == "VALID":
         print("\n\nSTART CODE ANALYSIS ---- ")
         
         code_analysis_instructions = """
@@ -165,6 +171,10 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "CONTEXT KNOWLEDGE SUMMARY" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -200,6 +210,10 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "CODE DESCRIPTION and ANALYSIS" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -231,6 +245,10 @@ def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "GPU SYSTEM DESCRIPTION" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -258,6 +276,10 @@ def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_
         response_text = lmstudio_llm(model, system_prompt, content_prompt, temp, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
+    else:
+        print("Invalid LLM source")
         
     print("\n\n----- " + color.BOLD + color.BLUE + "THE GENERATED CODE" + color.END + " -----\n")
     if display_response:

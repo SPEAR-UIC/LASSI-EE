@@ -124,7 +124,7 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     return return_result, output_file
 
 
-def execute_code(experiment_data_directory, code_version, directory, executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=10):
+def execute_code(experiment_data_directory, code_version, trial_number, directory, executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=10):
 
     # Wait 20 seconds for the system to settle down
     # print("...WAITING.")
@@ -295,6 +295,7 @@ def execute_code(experiment_data_directory, code_version, directory, executable_
                     total_energy_joules, ave_power, std_power, metrics_results_string = lassi.get_power.power_collect_data(
                         experiment_data_directory,
                         code_version,
+                        trial_number,
                         power_queue, 
                         code_source, 
                         target_lang, 

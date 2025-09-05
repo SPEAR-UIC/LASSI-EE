@@ -61,6 +61,7 @@ def get_gpu_system_details():
 
 def test_source_code(experiment_data_directory,
                      code_version,
+                     trial_number,
                      source_file_path,
                      build_script,
                      make_script,
@@ -101,7 +102,7 @@ def test_source_code(experiment_data_directory,
     if yes_execute:
         print("\nTest executing the compiled original source code: " + str(execute_file))
         exe_file_path = execute_file  # directory + "/" + execute_file
-        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=1)
+        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=1)
         input_content_llmjudge_dict["source_stdout"] = exe_output_source
         input_content_llmjudge_dict["source_metrics"] = metrics_results_string
         # Save source code energy metrics:
@@ -110,7 +111,7 @@ def test_source_code(experiment_data_directory,
         if execute_result != "0":
             return False
         print("\n\nMeasure system idle power...")
-        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower(experiment_data_directory, duration)
+        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower(experiment_data_directory, trial_number, duration)
         actual_energy = sourcecode_total_energy_joules - idle_energy_joules
         energy_history.append(round(sourcecode_total_energy_joules, 2))
         actual_ave_power = sourcecode_ave_power - idle_ave_power

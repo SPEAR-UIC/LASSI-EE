@@ -1,5 +1,6 @@
 import ollama
 from ollama import ResponseError
+from cerebras.cloud.sdk import Cerebras
 import json
 import requests
 import httpx
@@ -8,6 +9,7 @@ import asyncio
 import subprocess
 import re
 import html
+import time
 from IPython.display import display, HTML, clear_output
 import lassi.argostream_curl
 
@@ -70,6 +72,98 @@ def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp=0.2,
     return cleaned_response  # response_text
 
 
+def cerebras_llm(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
+    # Slow things down so we don't hit the per minute request count limit
+    time.sleep(10)
+    
+    # Create a HTML display object with a <pre> tag for formatted text
+    html_display = display(HTML(""), display_id=True)
+
+    if verifyprompt:
+        print("\n=====> VERIFY THE PROMPTING <=====\n")
+        print(f"TEMPERATURE: {round(temp, 1)}")
+        print(f"\nSYSTEM: {system_prompt}")
+        print(f"\nPROMPT: {content_prompt}")
+        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    else:
+        print("\n=====< LLM Prompt Not Shown >=====\n")
+            
+    response_text = ""
+
+    client = Cerebras(
+        # This is the default and can be omitted
+        api_key="csk-pt8c8yt4jc28jyvmn3fj36e4ty8tmr8xm5d6e52e4ht92698"  # os.environ.get("CEREBRAS_API_KEY")
+    )
+
+    stream = client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_prompt}
+        ],
+        model=model,
+        stream=True,
+        max_completion_tokens=65536,
+        temperature=temp,
+        top_p=0.9,
+        # reasoning_effort="medium"
+    )
+
+    # Process each chunk in the stream
+    try:
+        for chunk in stream:
+            chunk_content = chunk.choices[0].delta.content or ""
+            response_text += chunk_content
+    
+            # Escape HTML and highlight <think> tags
+            escaped_text = html.escape(response_text)
+    
+            # Style opening tags
+            styled_text = re.sub(
+                r'&lt;think&gt;',
+                '<span style="color: #d32f2f; font-weight: bold;">&lt;think&gt;</span>',
+                escaped_text
+            )
+            # Style closing tags
+            styled_text = re.sub(
+                r'&lt;/think&gt;',
+                '<span style="color: #d32f2f; font-weight: bold;">&lt;/think&gt;</span>',
+                styled_text
+            )
+            
+            # Create typewriter effect with cursor
+            display_text = f"{styled_text}<span style='border-right:2px solid;animation:blink 1s infinite'> </span>"  
+            # Put everything on one line to avoid extra whitespace
+            html_content = (
+                f"<pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;"
+                f"white-space:pre-wrap;font-family:monospace;margin:0;'>{display_text}</pre>"
+                f"<style>"
+                f"@keyframes blink {{0%{{opacity:1}}50%{{opacity:0}}100%{{opacity:1}}}}"
+                f"</style>"
+            )
+        
+        # Update the display output with styled text
+        html_display.update(HTML(html_content))
+        
+    except ResponseError as e:
+        if "unexpected EOF" in str(e):
+            # Log the event, check if the output seems complete, and continue
+            print("Stream ended unexpectedly but continuing with received output.")
+        else:
+            raise
+    
+    # Clear the streaming display after completion
+    # clear_output(wait=True)
+
+    # Final cleaning of the complete response
+    # Conditional cleaning only if <think> tags exist
+    if re.search(r'<think>.*?</think>', response_text, flags=re.DOTALL):
+        cleaned_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
+    else:
+        cleaned_response = response_text.strip()
+    
+    return cleaned_response  # response_text
+
+    
 def ollama_llm(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
     # Create an HTML display object with a <pre> tag for formatted text
     html_display = display(HTML(""), display_id=True)

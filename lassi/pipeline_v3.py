@@ -1,11 +1,13 @@
 """
 LASSI - EE pipeline v3
-Here, we first embrase the capability of the base LLM
+Here, we first embrace the capability of the base LLM
 by running the initial refactor as a zero-shot, no context attempt.
 Then, subsequent iterations, we bring in self-prompting and background context
 to see if we can improve the energy efficiency outcome further.
 
 Then, we split up the base LLM (without any help) and the base LLM + self-correction
+9/3/2015:
+For focus, we will not do the base LLM + self-correction. Just base LLM then LASSI for a pass@k metric.
 """
 
 import os
@@ -72,13 +74,18 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      vary_llm_temp,
                                      experiment,
                                      verifyprompt,
+                                     trial_number,
                                      experiment_data_directory,
                                      experiment_data_file_object,
                                      experiment_data
                                     ):
 
+    # -----------------
+    # ----- SETUP -----
+    # -----------------
     now = datetime.now(ZoneInfo("America/Chicago"))
     dt_string_data = now.strftime("%m-%d-%Y_t%H_%M_%S")
+    experiment_data["trial_number"] = trial_number
     experiment_data["timestamp"] = dt_string_data
     experiment_data["experiment"] = experiment
     experiment_data["app_name"] = file_name
@@ -87,7 +94,6 @@ def auto_code_llmgeneration_pipeline(prompts,
     experiment_data["llm_coder"] = model_coder
     experiment_data["llm_judge"] = model_judge
     
-    # Test compile and execute the source code to validate compiler and execution environment
     actual_energy = 0
     actual_ave_power = 0
     idle_energy_joules = 0
@@ -137,34 +143,37 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END) 
     
-    """
-    STAGE 0: TEST SOURCE CODE
-    + Compile and run source code, collect baseline energy measurements.
-    """
+    # --------------------------------
+    # ----- STAGE 0: TEST SOURCE -----
+    # --------------------------------
+    # Test compile and execute the source code to validate compiler and execution environment.
+    # Collect baseline energy measurements.
     if test_code_first:
         """Initial stage to run the SOURCE CODE and gather metrics."""
         (idle_energy_joules, idle_ave_power, input_content_llmjudge_dict, sourcecode_total_energy_joules, sourcecode_ave_power, duration,
-         energy_history, power_history, runtime_history, valid_code_history) = lassi.pipeline_methods.test_source_code(experiment_data_directory, code_version, source_file_path, build_script, make_script, directory, source_lang, target_lang,
+         energy_history, power_history, runtime_history, valid_code_history) = lassi.pipeline_methods.test_source_code(experiment_data_directory, code_version, trial_number, source_file_path, build_script, make_script, directory, source_lang, target_lang,
                                                                                                 exe_input_parameters, code_compiler, code_compiler_kwds,
                                                                                                 yes_execute, power_measure, input_content_llmjudge_dict,
                                                                                                 energy_history, power_history, runtime_history, valid_code_history
                                                                                                )
         # Save the output details for this as the "best" code version for metadata record
-        # This is necessary for if no better refactored code is generated:
+        # This is necessary to capture now if no better refactored code is generated:
         best_refactored_code_dict = input_content_llmjudge_dict
 
         experiment_data["source_v0_energy_J"] = sourcecode_total_energy_joules
         experiment_data["source_v0_avg_power_W"] = sourcecode_ave_power
         experiment_data["source_v0_runtime_s"] = duration
 
-        
-    print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
+        print(print("\n----- END OF STAGE 0: TEST SOURCE -----\n"))
+        print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
 
-
+    # ------------------------------------------
+    # ----- STAGE 1: BASELINE LLM REFACTOR -----
+    # ------------------------------------------
     """
     STAGE 1: ZERO-SHOT REFACTOR - STANDALONE BASE LLM CAPABILITY
     + Implement a straightforward and strong user prompt only.
-    + No self-correction feedback. Observe capability of unassisted base LLM.
+    + No context and no self-correction feedback. Observe capability of unassisted base LLM.
     """
     # Start LASSI-EE Pipeline Timer
     start_time = time.time()
@@ -203,7 +212,7 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     # Locally hosted open-source LLMs
     # Unload model first if we want a different coding model
-    if (model_coder != model and llm_source != "argo"):
+    if (model_coder != model and llm_source == "ollama"):
         # CHANGE MODEL FOR CODE GENERATION
         print(" (... changing LLM for code gen)")
         lassi.llm_config.unload_ollama_model(model)
@@ -263,6 +272,9 @@ def auto_code_llmgeneration_pipeline(prompts,
 
         # Initial zero-shot refactor attempt    
         if zero_shot and stage == "stage1":
+            print("\n\n----- " + color.BOLD + color.BLUE + "STARTING STAGE 1: BASE LLM REFACTORING WITHOUT SELF-CORRECTION " + color.END + " -----\n")
+            print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
+            
             # BUILD REFACTING INSTRUCTION PROMPT
             instructions_prompt = refactor_instructions
             # Append the source code to the prompt
@@ -270,7 +282,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             # Save the original context + energy efficiency context for re-use during energy efficiency correction
             standalone_basellm_prompt_tokens = lassi.token_analysis.token_count(instructions_prompt)
 
-            print("\n----- " + color.BOLD + color.GREEN + "REVIEW THE ZERO-SHOT INSTRUCTIONS TASK PROMPT " + color.END + " (prompt without code, token count: " + str(standalone_basellm_prompt_tokens) + ")\n")  #: " + instructions_prompt + "\n")  # + instructions_prompt + "\n")
+            print("\n----- " + color.BOLD + color.GREEN + "REVIEW THE ZERO-SHOT INSTRUCTIONS TASK PROMPT " + color.END + " (prompt token count, excluding code): " + str(standalone_basellm_prompt_tokens) + ")\n")  #: " + instructions_prompt + "\n")  # + instructions_prompt + "\n")
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "initial zero-shot attempt: prompt the LLM to generate code." + color.END + "\n\n")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, round(code_gen_temp,1), system_prompt, instructions_prompt, display_response, verifyprompt)  
 
@@ -289,14 +301,14 @@ def auto_code_llmgeneration_pipeline(prompts,
             # Prompting was built before WHILE loop initiates
             # report_gpu_memory()
             # Unload model first if we want a different coding model
-            if (model_coder != model and llm_source != "argo"):
+            if (model_coder != model and llm_source == "ollama"):
                 # CHANGE MODEL FOR CODE GENERATION
                 print(" (... changing LLM for code gen)")
                 lassi.llm_config.unload_ollama_model(model)
                 time.sleep(10)  # Pause for 10 seconds
                 report_gpu_memory()
         
-            if llm_source != "argo":
+            if llm_source == "ollama":
                 time.sleep(10)
             report_gpu_memory()
 
@@ -314,14 +326,15 @@ def auto_code_llmgeneration_pipeline(prompts,
             original_ee_context_content_prompt = instructions_prompt_core_iterations
             original_ee_prompt_tokens = lassi.token_analysis.token_count(original_ee_context_content_prompt)
 
-            print("\n----- " + color.BOLD + color.GREEN + "REVIEW THE ZERO-SHOT INSTRUCTIONS TASK PROMPT " + color.END + " (prompt without code, token count: " + str(original_ee_prompt_tokens) + "): \n")  # + instructions_prompt + "\n")
+            print("\n----- " + color.BOLD + color.GREEN + "REVIEW THE ZERO-SHOT INSTRUCTIONS TASK PROMPT " + color.END + " (prompt token count, excluding code): " + str(original_ee_prompt_tokens) + "): \n")  # + instructions_prompt + "\n")
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "initial zero-shot attempt: prompt the LLM to generate code." + color.END + "\n\n")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, code_gen_temp, system_prompt, instructions_prompt, display_response, verifyprompt)
         
         elif compile_result != "" and compile_result != "energy_efficiency":
             """
-            This condition is for handing CODE ERRORS during compilation or execution.
+            This condition is for handling CODE ERRORS during compilation or execution.
             """
+            print("\n\n----- " + color.BOLD + color.BLUE + "HANDLING CODE ERRORS " + color.END + " -----\n")
             print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
            
             # CALL THE LLM WITH CODE ERROR CORRECTION - COMPILE TIME OR RUN TIME
@@ -357,6 +370,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             This condition is available only if we want to REPEAT an iteration for the zero_shot attempt.
             Re-attempt until energy efficiency improvement is not acheived (then change prompting strategy).
             """
+            print("\n\n----- " + color.BOLD + color.BLUE + "ITERATION FOR STAGE 2: BASE LLM REFACTORING WITH SELF-CORRECTION " + color.END + " -----\n")
             print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
            
             # CALL THE LLM to generate the another base LLM code refactoring using the prior refactored code
@@ -372,12 +386,13 @@ def auto_code_llmgeneration_pipeline(prompts,
             # Save the original context + energy efficiency context for re-use during energy efficiency correction
             original_ee_context_content_prompt = instructions_prompt_core_iterations
             original_ee_prompt_tokens = lassi.token_analysis.token_count(original_ee_context_content_prompt)
-            print("\n----- " + color.BOLD + color.GREEN + "REVIEW THE ZERO-SHOT INSTRUCTIONS TASK PROMPT " + color.END + " (prompt without code, token count: " + str(original_ee_prompt_tokens) + "): \n")  # + instructions_prompt + "\n")
+            print("\n----- " + color.BOLD + color.GREEN + "REVIEW THE ZERO-SHOT INSTRUCTIONS TASK PROMPT " + color.END + " (prompt token count, excluding code): " + str(original_ee_prompt_tokens) + "): \n")  # + instructions_prompt + "\n")
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "iteratate base LLM zero-shot attempt: prompt the LLM to generate code." + color.END + "\n\n")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, round(code_gen_temp,1), system_prompt, instructions_prompt, display_response, verifyprompt)
 
         elif compile_result == "energy_efficiency" and energy_efficiency_refactor_success == False and not zero_shot:  #baseline_oneshot_goal:
             
+            print("\n\n----- " + color.BOLD + color.BLUE + "EE Self-correction, Increment LLM temp " + color.END + " -----\n")
             print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
             
             """
@@ -449,6 +464,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         
         elif compile_result == "energy_efficiency" and energy_efficiency_refactor_success == True and not zero_shot:  #baseline_oneshot_goal:
 
+            print("\n\n----- " + color.BOLD + color.BLUE + "EE Self-correction, New Refactor Plan " + color.END + " -----\n")
             print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
             
             """
@@ -500,6 +516,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         if code_block.startswith('c'):
             code_block = code_block[1:]    
     
+        print("\n\n----- " + color.BOLD + color.BLUE + "GENERATED CODE POST-PROCESSING " + color.END + " -----\n")
         print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
         
         # SAVE THE GENERATIVE CODE -- before compiling
@@ -514,7 +531,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         else:
             file_name_save = file_name + "_" + dt_string
             # file_path = directory + "/" + file_name_save + "." + refactored_code_extension
-            file_path = experiment_data_directory + "/" + file_name_save + "." + refactored_code_extension
+            file_path = experiment_data_directory + "/" + file_name_save + "_Trial" + str(trial_number) + "." + refactored_code_extension
         print("saving to file_path: ", file_path)
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, 'w') as file:
@@ -549,7 +566,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                 report_gpu_memory()
                 
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=5)
+            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=5)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
             else:
@@ -563,7 +580,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                 else:
                     this_code_version = str(code_version) + "-baseLLM"
                 # file_path = directory + "/" + file_name_save + "_v" + str(this_code_version) + "." + refactored_code_extension
-                file_path = experiment_data_directory + "/" + file_name_save + "_v" + str(this_code_version) + "." + refactored_code_extension
+                file_path = experiment_data_directory + "/" + file_name_save + "_v" + str(this_code_version) + "_Trial" + str(trial_number) + "." + refactored_code_extension
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 with open(file_path, 'w') as file:
                     file.write(code_block)
@@ -577,6 +594,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         # Begin POWER METRICS feedback loop
         if yes_power_feedback and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= self_correction_power_counter_max:
 
+            print("\n\n----- " + color.BOLD + color.BLUE + "POWER METRICS Feedback Loop " + color.END + " -----\n")
             print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
             
             if not zero_shot:  # baseline_oneshot_goal:
@@ -588,7 +606,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             #self_correction_power_counter = self_correction_power_counter_max + 1
             
             # Call LLM-as-a-judge to review SOURCE CODE and REFACTORED CODE to evaluate if likely valid
-            valid_code_flag = lassi.llm_methods.llm_judge(llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, display_response, verifyprompt)
+            valid_code_flag = lassi.llm_methods.llm_judge(target_lang, llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, display_response, verifyprompt)
             
             # valid_code_flag can be: (1) "VALID", (2) "INVALID", or (3) "NONE"
             if not zero_shot:
@@ -695,6 +713,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                     if current_energy < previous_energy:
                         tracking_best_version = code_version  # IGNORE this comment: code_version has already been incremented, so we need to step one back
                     
+                    print("\n\n----- " + color.BOLD + color.BLUE + "COMPARING CURRENT vs PREV ENERGY VALUES " + color.END + " -----\n")
                     print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
                     
                     # Calculate the fractional improvement
@@ -730,7 +749,8 @@ def auto_code_llmgeneration_pipeline(prompts,
                         print("\n\n")
                         break
             else:
-                
+                # TODO: Change label: invalid or not more energy efficient
+                print("\n\n----- " + color.BOLD + color.BLUE + "WE HAVE INVALID GENERATED CODE " + color.END + " -----\n")
                 print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
                 
                 compile_result = "energy_efficiency"
@@ -837,7 +857,6 @@ def auto_code_llmgeneration_pipeline(prompts,
     if (energy_efficiency_refactor_success or baseline_oneshot_goal):
 
         print("\n\n----- " + color.BOLD + color.BLUE + "FINAL CODE COMPARISON: Source Code vs. Best Refactored Code" + color.END + " -----\n")
-
         print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
         
         compare_code = prompts.get_code_comparison("cuda_cpp")
@@ -889,6 +908,8 @@ def auto_code_llmgeneration_pipeline(prompts,
     meta_data_file += "\n"
     meta_data_file += "Time (sec): " + str(round(end_time, 2)) + " | " + str(round(end_time/60, 2)) + " (min)"
     meta_data_file += "\n"
+    meta_data_file += "Experiment trial: " + str(trial_number)
+    meta_data_file += "\n"
     # meta_data_file += f"Token similarity (tokenize): {similarity_tokens:.2f}"
     # meta_data_file += "\n"
     # meta_data_file += f"Token similarity (tiktoken): {similarity_tokens_tiktoken:.2f}"
@@ -899,10 +920,12 @@ def auto_code_llmgeneration_pipeline(prompts,
     meta_data_file += "\n"
     # less 2 on the data collection length
     # because the first two values are the source code and the base LLM result.
-    meta_data_file += "Energy Efficiency Self-improvement iteration count: " + str(len(energy_history) - 2)  # str(self_correction_power_counter)
+    ee_iterations = len(energy_history) - 2
+    meta_data_file += "Energy Efficiency Self-improvement iteration count: " + str(ee_iterations)  # str(self_correction_power_counter)
     
     if yes_power_feedback:
         
+        print("\n\n----- " + color.BOLD + color.BLUE + "SAVING FINAL RESULTS" + color.END + " -----\n")
         print(color.BOLD + color.RED + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
         
         # Save "best" index
@@ -922,9 +945,14 @@ def auto_code_llmgeneration_pipeline(prompts,
         experiment_data["lassiee_energy_diff"] = round(((energy_history[best_index] - sourcecode_total_energy_joules) / sourcecode_total_energy_joules) * 100 ,2) if best_index > 0  else "N/A"
         experiment_data["lassiee_avg_power_diff"] = round(((power_history[best_index] - sourcecode_ave_power) / sourcecode_ave_power) * 100 ,2) if best_index > 0  else "N/A"
         experiment_data["lassiee_runtime_diff"] = round(((runtime_history[best_index] - duration) / duration) * 100 ,2) if best_index > 0  else "N/A"
-        experiment_data["lassiee_optimization_methods"] = "TBD"
-        experiment_data["total_selfcorrections"] = 0
-        experiment_data["total_eeiterations"] = 0
+        match_code_comparison_response = re.search(r"\[OPTIMIZATION LIST\](.*?)\[/OPTIMIZATION LIST\]", code_comparison_response, re.DOTALL)
+        if match_code_comparison_response:
+            optimization_list_text = match_code_comparison_response.group(1).strip()
+        else:
+            optimization_list_text = "None"
+        experiment_data["lassiee_optimization_methods"] = str(optimization_list_text)
+        experiment_data["total_selfcorrections"] = self_correction_counter
+        experiment_data["total_eeiterations"] = ee_iterations
         experiment_data["pipeline_runtime_min"] = round(end_time/60, 2)
         
         meta_data_file += "\n\n\n----- ENERGY EFFICIENCY METRICS -----\n"
@@ -963,7 +991,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         filename = os.path.join(experiment_data_directory, "metadata" + "_" + experiment + ".txt")
     else:
         # filename = directory + "/" + "metadata" + "_" + file_name_save + ".txt"
-        filename = os.path.join(experiment_data_directory, "metadata" + "_" + file_name_save + ".txt")
+        filename = os.path.join(experiment_data_directory, "metadata" + "_" + file_name_save + "_Trial" + str(trial_number) + ".txt")
     with open(filename, 'w') as file:
         file.write(meta_data_file)
     file.close()

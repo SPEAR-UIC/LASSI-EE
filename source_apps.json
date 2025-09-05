@@ -16,8 +16,16 @@
             "app_params": [""],
             "code_lines": 235
         },
-        "layout": ["2500"],
-        "atomicCost": ["16", "10"],
+        "layout": {
+            "app_folder": "layout",
+            "app_params": ["2500"],
+            "code_lines": 10
+        },
+        "atomicCost": {
+            "app_folder": "atomicCost",
+            "app_params": ["16", "10"],
+            "code_lines": 10
+        },
         "segment-reduce": ["16384", "100"],
         "dense-embedding": {
             "app_folder": "dense-embedding",

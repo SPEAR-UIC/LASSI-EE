@@ -567,7 +567,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         print("\nExecute file: " + str(execute_file))
 
         # If the Baseline LLM in Stage 1 fails to compile, then move on to LASSI
-        if zero_shot and stage == "stage1":
+        if zero_shot and stage == "stage1" and compile_result != "":
             # Force the switch to LASSI-EE pipeline.
             stage = ""
             change_strategy = True

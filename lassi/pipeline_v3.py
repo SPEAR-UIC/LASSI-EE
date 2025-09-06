@@ -129,6 +129,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     best_refactored_code_dict = {}
     best_refactored_code_judge = ""
     best_refactoring_plan = ""
+    code_comparison_response = ""
     input_content_llmjudge_dict = {"source_code": "",
                                   "source_stdout": "",
                                   "source_metrics": "",

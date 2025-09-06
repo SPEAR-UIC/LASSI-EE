@@ -1027,7 +1027,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         meta_data_file += "\n\n\n----- GENERATED: EXECUTION OUTPUT -----\n"
         meta_data_file += best_refactored_code_dict["refactored_stdout"]
     if yes_power_feedback:
-        meta_data_file += "\n\n\n----- CODE COMPARISON -----\n"
+        meta_data_file += "\n\n\n----- FINAL CODE COMPARISON SOURCE vs BEST -----\n"
         meta_data_file += code_comparison_response
         meta_data_file += "\n\n\n----- REFACTORING PLAN -----\n"
         meta_data_file += best_refactoring_plan

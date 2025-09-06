@@ -52,7 +52,7 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
     return response_text
 
 
-def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, display_response, verifyprompt=False, uri="remote"):
+def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, sourcecode_analysis, display_response, verifyprompt=False, uri="remote"):
 
     intent = "code validation judge"
 
@@ -125,26 +125,33 @@ def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_cont
     # If valid, then run test case agent:
     # 1) prompt with source code 
 
-    # TODO: TO BE DEVELOPED
-    if 0==1 and response_validation == "VALID":
-        print("\n\nSTART CODE ANALYSIS ---- ")
+    # APPLY CODE ANALYSIS TO JUDGE REVIEW
+    code_analysis = ""
+    if response_validation == "VALID":
+        print("\n\nLLM JUDGE: START CODE ANALYSIS ---- ")
         
         code_analysis_instructions = """
             Your are a CUDA code evaluator. Your task is to determine if the provided CUDA code satisfies a given list of characteristics.
-            The characteristics will be given in a json format and will be given between the tags: "<rubric>" and "</rubric>".\
+            The characteristics will be given in a json format and will be given between the tags: "<rubric>" and "</rubric>".
             The CUDA code you are to evaluate will be given between "<code>" and "</code>".
             Please give a simple "pass" or "fail" evaluation and also list which criteria pass and which fail (without additional details).
             Please put your final, overall evaluation between the tags: "<result>" and put the list in a table format.
             """
-        code_rubric = "\n\n<rubric>\n" + RUB + "\n</rubric>"
+        code_rubric = "\n\n<rubric>\n" + sourcecode_analysis + "\n</rubric>"
         code_to_analyze = "\n\n<code>\n" + input_content_dict['refactored_code'] + "\n</code>"
         code_analysis_instructions = code_analysis_instructions + code_rubric + code_to_analyze
         code_analysis = llm_call("code analysis", llm_source, model, num_ctx, system_prompt, code_analysis_instructions, display_response, verifyprompt)
+        # print("\n\nCODE ANALYSIS RESULT: " + str(code_analysis))
 
-        print("\n\nCODE ANALYSIS RESULT: " + str(code_analysis))
+        # Change the validation response if code analysis fails
+        code_analysis_result = re.search(r'<result>(.*?)</result>', code_analysis, re.DOTALL)
+        code_analysis_result = code_analysis_result.group(1).strip().lower()  # Normalize: remove whitespace and make lowercase
+        if code_analysis_result == "fail":
+            print("-- CHANGE JUDGE VALIDATION RESULT! --")
+            response_validation = "INVALID"
 
     
-    return response_validation
+    return response_validation, response_text, code_analysis
 
     
 def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context, target_lang, display_response, verifyprompt=False):

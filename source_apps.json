@@ -19,28 +19,48 @@
         "layout": {
             "app_folder": "layout",
             "app_params": ["2500"],
-            "code_lines": 10
+            "code_lines": 197
         },
         "atomicCost": {
             "app_folder": "atomicCost",
             "app_params": ["16", "10"],
             "code_lines": 10
         },
-        "segment-reduce": ["16384", "100"],
+        "segment-reduce": {
+            "app_folder": "segment-reduce",
+            "app_params": ["16384", "100"],
+            "code_lines": 95
+        },
         "dense-embedding": {
             "app_folder": "dense-embedding",
             "app_params": ["100000", "128", "100"],
             "code_lines": 193
         },
-        "pathfinder": ["100000", "10000", "2500"],
-        "bsearch": ["8388608", "1000"],
+        "pathfinder": {
+            "app_folder": "pathfinder",
+            "app_params": ["100000", "10000", "2500"],
+            "code_lines": 286
+        },
+        "bsearch": {
+            "app_folder": "bsearch",
+            "app_params": ["8388608", "1000"],
+            "code_lines":279
+        },
         "entropy": {
             "app_folder": "entropy",
             "app_params": ["8192", "8192", "500"],
             "code_lines": 171
         },
-        "colorwheel": ["10000", "256", "500000"],
-        "randomAccess": ["10", "1"],
+        "colorwheel": {
+            "app_folder": "colorwheel",
+            "app_params": ["10000", "256", "500000"],
+            "code_lines": 154
+        },
+        "randomAccess": {
+            "app_folder": "randomAccess",
+            "app_params": ["10"],
+            "code_lines": 158
+        },
         "lid-driven-cavity": {
             "app_folder": "lid-driven-cavity",
             "app_params": [""],

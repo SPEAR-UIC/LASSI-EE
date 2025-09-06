@@ -208,6 +208,7 @@ def generate_refactoring_plan(source_lang,
                               num_ctx,
                               system_prompt,
                               context_prompt,
+                              prior_refactoring_plans,
                               display_response,
                               few_shot_learning=False,
                               verifyprompt=False
@@ -215,22 +216,32 @@ def generate_refactoring_plan(source_lang,
 
     # Prompt structure: GOAL - RETURN FORMAT - WARNINGS - CONTEXT
     refactoring_plan_instructions = prompts.get_code_ee_refactoring_prompt(source_lang + "_refactorplan")
+    
     # Prepend the Context:
-    refactoring_plan_instructions = refactoring_plan_instructions + "\n\n" + context_prompt 
+    refactoring_plan_instructions = refactoring_plan_instructions + "\n\n" + context_prompt
+    
+    # Append previous failed plans (if available)
+    if len(prior_refactoring_plans) > 0:
+        refactoring_plan_instructions = refactoring_plan_instructions + "\n\n" + "For reference to your refactoring plan, the following plans were previously used that did not result in a successful outcome of code that was functionally equivalent to the source code and reduced energy consumption during runtime. Based on these previous plans, try to not repeat specific ideas that may have been unsuccessful." 
+        refactoring_plan_instructions = refactoring_plan_instructions + "\n" + " | PREVIOUS FAILED PLAN: ".join(prior_refactoring_plans)
+    
+    # Append code to be refactored for generating the plan
     code_to_refactor = "\n\n[START OF CODE TO REFACTOR]\n" + input_code + "\n[/END OF CODE TO REFACTOR]"
     code_to_refactor = code_to_refactor + "\n\nFor reference, the CODE TO REFACTOR provided above was executed on this system and consumed a total energy of " + str(round(total_energy_joules, 2)) + " Joules at an average power of " + str(round(ave_power, 2)) + " Watts, which includes the idle system energy consumption and average power.\n"
     refactoring_plan_instructions = refactoring_plan_instructions + code_to_refactor
+    
     # Generate the refactoring plan
     refactoring_plan = "\n\n" + "[YOUR REFACTORING PLAN]\n" + lassi.llm_methods.llm_call("refactoring plan", llm_source, model, num_ctx, system_prompt, refactoring_plan_instructions, display_response, verifyprompt)
+    
     # Append few-shot learning examples
     if few_shot_learning:
         refactoring_plan = refactoring_plan + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
     # refactoring_plan_original = refactoring_plan  # Save for self-correction iterations.
-    # Append code to refactor
-    refactoring_plan_full = refactoring_plan + code_to_refactor
-        
-    refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan_full)
     
+    # Append code to refactor to the new refactoring plan
+    # NOTE: this is not returned, just for token counting
+    refactoring_plan_full = refactoring_plan + code_to_refactor
+    refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan_full)
     print("\n\n----- " + color.GREEN + "THE REFACTORING PLAN PROMPT " + color.END + " (prompt with code, token count: " + str(refactoring_plan_tokens) + "): \n")  # + refactoring_plan + "\n")
 
     return refactoring_plan, code_to_refactor

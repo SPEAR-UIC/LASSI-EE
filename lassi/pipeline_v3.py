@@ -1085,6 +1085,7 @@ def auto_code_llmgeneration_pipeline(prompts,
         meta_data_file += "Ave Power (W) history: " + str(power_history)
         meta_data_file += "\n"
         meta_data_file += "Runtime (s) history: " + str(runtime_history)
+        meta_data_file += "\n"
         meta_data_file += "Valid code history: " + str(valid_code_history)
         meta_data_file += "\n"
         meta_data_file += "Iteration log: " + str(iteration_log)

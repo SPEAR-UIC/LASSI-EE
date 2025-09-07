@@ -43,6 +43,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      use_context,
                                      use_context_summaries_only,
                                      few_shot_learning,
+                                     run_code_analysis,
                                      input_context,
                                      input_code_file_subdirectory,
                                      input_code,  # <-- THE SOURCE CODE
@@ -232,17 +233,20 @@ def auto_code_llmgeneration_pipeline(prompts,
 
     # Generate Code Analysis of source code for verification
     # Before we begin the LASSI-EE iterations
-    code_analysis = lassi.pipeline_methods.generate_code_analysis(
-                        source_lang=source_lang,
-                        input_code=input_code,
-                        llm_source=llm_source,
-                        model=model,
-                        num_ctx=num_ctx,
-                        system_prompt=system_prompt,
-                        context_prompt=original_context_content_prompt,
-                        display_response=display_response,
-                        verifyprompt=verifyprompt
-                    )
+    if run_code_analysis:
+        code_analysis = lassi.pipeline_methods.generate_code_analysis(
+                            source_lang=source_lang,
+                            input_code=input_code,
+                            llm_source=llm_source,
+                            model=model,
+                            num_ctx=num_ctx,
+                            system_prompt=system_prompt,
+                            context_prompt=original_context_content_prompt,
+                            display_response=display_response,
+                            verifyprompt=verifyprompt
+                        )
+    else:
+        code_analysis = "None"
     verification_log["sourcecode_analysis"] = code_analysis
     
     # --------------------------------------------------------
@@ -669,7 +673,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             #self_correction_power_counter = self_correction_power_counter_max + 1
             
             # Call LLM-as-a-judge to review SOURCE CODE and REFACTORED CODE to evaluate if likely valid
-            valid_code_flag, judge_response_text, code_analysis = lassi.llm_methods.llm_judge(target_lang, llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, verification_log["sourcecode_analysis"], display_response, verifyprompt)
+            valid_code_flag, judge_response_text, code_analysis = lassi.llm_methods.llm_judge(target_lang, llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, run_code_analysis, verification_log["sourcecode_analysis"], display_response, verifyprompt)
             
             # Handle scenario where we might have a bad power measurement
             if total_energy_joules_refactor == 0:
@@ -1075,6 +1079,15 @@ def auto_code_llmgeneration_pipeline(prompts,
         meta_data_file += best_refactoring_plan
         meta_data_file += "\n\n\n----- LLM-as-a-JUDGE RESPONSE -----\n"
         meta_data_file += best_refactored_code_judge
+        meta_data_file += "\n\n\n----- TRACKED METRICS -----\n"
+        meta_data_file += "Energy (J) history: " + str(energy_history)
+        meta_data_file += "\n"
+        meta_data_file += "Ave Power (W) history: " + str(power_history)
+        meta_data_file += "\n"
+        meta_data_file += "Runtime (s) history: " + str(runtime_history)
+        meta_data_file += "Valid code history: " + str(valid_code_history)
+        meta_data_file += "\n"
+        meta_data_file += "Iteration log: " + str(iteration_log)
             
     # Write meta data for this experiment
     if make_script:

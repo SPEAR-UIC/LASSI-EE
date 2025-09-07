@@ -86,14 +86,14 @@ def power_collection_thread(power_queue, stop_event, handle, interval=0.01):
         # time.sleep(0.01)
 
 
-def plot_gpu_power(experiment_data_directory, code_version, trial_number, file_name, start_time, end_time, idle):
+def plot_gpu_power(experiment_data_directory, code_version, zero_shot, trial_number, file_name, start_time, end_time, idle):
     # Load the data
     data = pd.read_csv(file_name)
 
     # Increment because code version because this plot will be the next code version, if it passes.
     # Do not increment if version is 0 (the source code)
     # If the code is not saved, then this plot will be overwritten on the next pass.
-    if (code_version != 0 and code_version != "idle_power"):
+    if (code_version != 0 and not zero_shot and code_version != "idle_power"):
         code_version = code_version + 1
 
     # Plot the data
@@ -167,8 +167,9 @@ def calculate_total_energy(file_name, start_time, end_time):
     return total_energy, ave_power, std_power
 
     
-def display_energy_results(experiment_data_directory, code_version, trial_number, file_name, start_time, end_time, idle):
-    plot_gpu_power(experiment_data_directory, code_version, trial_number, file_name, start_time, end_time, idle)
+def display_energy_results(experiment_data_directory, code_version, zero_shot, trial_number, file_name, start_time, end_time, idle):
+    
+    plot_gpu_power(experiment_data_directory, code_version, zero_shot, trial_number, file_name, start_time, end_time, idle)
     total_energy_joules, ave_power, std_power = calculate_total_energy(file_name, start_time, end_time)
     
     # Convert energy units
@@ -201,7 +202,7 @@ def display_energy_results(experiment_data_directory, code_version, trial_number
 
     
 # Function to read CSV and plot the GPU power usage
-def power_collect_data(experiment_data_directory, code_version, trial_number, power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle):
+def power_collect_data(experiment_data_directory, code_version, zero_shot, trial_number, power_queue, code_source, target_lang, start_exe_time, end_exe_time, ave_idle_power, idle):
     # now = datetime.now()
     # dt_string = now.strftime("%m-%d-%Y_t%H_%M_%S")
     
@@ -230,7 +231,7 @@ def power_collect_data(experiment_data_directory, code_version, trial_number, po
     # print(f"Inference time: {inference_duration:.2f} seconds")
     print(f"GPU power data has been written to {filename}")
 
-    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(experiment_data_directory, code_version, trial_number, filename, start_exe_time, end_exe_time, idle)
+    total_energy_joules, ave_power, std_power, metrics_results_string = display_energy_results(experiment_data_directory, code_version, zero_shot, trial_number, filename, start_exe_time, end_exe_time, idle)
     
     return total_energy_joules, ave_power, std_power, metrics_results_string
 
@@ -262,7 +263,8 @@ def idlepower(experiment_data_directory, trial_number, duration):
     # print("... idle duration increment: " + str(end_power_time - start_power_time))
     
     # We don't need the metrics_results_string for idle metrics.
-    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(experiment_data_directory, "idle_power", trial_number, power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0, idle=True)
+    zero_shot = False
+    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(experiment_data_directory, "idle_power", zero_shot, trial_number, power_queue, "", "", 0, end_power_time - start_power_time, ave_idle_power=0, idle=True)
 
     # Shutdown NVML
     nvmlShutdown()

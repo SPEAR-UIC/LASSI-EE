@@ -114,6 +114,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     tracking_best_version = 0  # to account for the source code at index 0
     get_system_info_flag = True  # Used in the selfprompting context builder
     valid_code_flag = "INVALID"  # default value, or "VALID"
+    force_save_baseline_llm = False
     change_strategy = False
     code_gen_temp = 0.2  # default LLM temperature
     code_gen_temp_max = 1.0
@@ -278,6 +279,8 @@ def auto_code_llmgeneration_pipeline(prompts,
 
         # Initial zero-shot refactor attempt    
         if zero_shot and compile_result == "" and stage == "stage1":
+            # Increment code version for Stage 1
+            code_version = code_version + 1
             print("\n\n----- " + color.BOLD + color.BLUE + "STARTING STAGE 1: BASE LLM REFACTORING WITHOUT SELF-CORRECTION " + color.END + " -----\n")
             print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
             
@@ -570,9 +573,12 @@ def auto_code_llmgeneration_pipeline(prompts,
         # If the Baseline LLM in Stage 1 fails to compile, then move on to LASSI
         if zero_shot and stage == "stage1" and compile_result != "":
             # Force the switch to LASSI-EE pipeline.
+            # Still need to record empty values for history
             stage = ""
+            compile_result = "energy_efficiency"
             change_strategy = True
             zero_shot = False  # Stop base LLM attempt after one try.
+            force_save_baseline_llm = True  # We need to save Null data to maintain history tracking
         
         if yes_execute and compile_result == "" and self_correction_counter <= self_correction_max:
             code_source = "generated"  # target
@@ -584,18 +590,23 @@ def auto_code_llmgeneration_pipeline(prompts,
                 report_gpu_memory()
                 
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=5)
+            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, zero_shot, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=5)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
                 # If the Baseline LLM in Stage 1 fails to execute, then move on to LASSI
                 if zero_shot and stage == "stage1":
                     # Force the switch to LASSI-EE pipeline.
+                    # Still need to record empty values for history
                     stage = ""
+                    compile_result = "energy_efficiency"
                     change_strategy = True
                     zero_shot = False  # Stop base LLM attempt after one try.
+                    force_save_baseline_llm = True  # We need to save Null data to maintain history tracking
             else:
                 # We have a keeper! Save the generated code as a separate versioned copy
-                code_version = code_version + 1  # Increment code version to get ready for the next iteration.
+                # Increment code version to get ready for the next iteration.
+                if not zero_shot:
+                    code_version = code_version + 1
                 # Initiate a new iteration log for this code version
                 iteration_log["v" + str(code_version)] = {"self_correction_count": 0, "energy_refactor_count": 0, "LLM_temperature": round(code_gen_temp,1)}
                 print("--> SAVING code version: " + str(code_version))
@@ -614,7 +625,33 @@ def auto_code_llmgeneration_pipeline(prompts,
                 input_content_llmjudge_dict["refactored_stdout"] = exe_output_generated
                 input_content_llmjudge_dict["refactored_metrics"] = metrics_results_string
                 
-
+        # If the Baseline LLM generated code that failed to compile or execute,
+        #  then we still need to save off zero'd data to maintain our history tracking used by LASSI
+        if force_save_baseline_llm:
+            code_version = code_version + 1
+            # Initiate a new iteration log for this code version
+            iteration_log["v" + str(code_version)] = {"self_correction_count": 0, "energy_refactor_count": 0, "LLM_temperature": round(code_gen_temp,1)}
+            print("--> SAVING code version: " + str(code_version))
+            this_code_version = str(code_version) + "-baseLLM"
+            file_path = experiment_data_directory + "/" + file_name_save + "_v" + str(this_code_version) + "_Trial" + str(trial_number) + "." + refactored_code_extension
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, 'w') as file:
+                file.write(code_block)
+            file.close()
+            code_blocks.append(code_block)  # save this code in our code collection list
+            energy_history.append(0)
+            power_history.append(0)
+            runtime_history.append(0)
+            valid_code_history.append("basellm_INVALID")
+            experiment_data["base_v1_energy_J"] = "NA"
+            experiment_data["base_v1_avg_power_W"] = "NA"
+            experiment_data["base_v1_runtime_s"] = "NA"
+            experiment_data["base_v1_valid"] = "INVALID"
+            experiment_data["base_v1_energy_diff"] = "NA"
+            experiment_data["base_v1_avg_power_diff"] = "NA"
+            experiment_data["base_v1_runtime_diff"] = "NA"
+                    
+            
         # Begin POWER METRICS feedback loop
         if yes_power_feedback and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= self_correction_power_counter_max:
 
@@ -632,6 +669,9 @@ def auto_code_llmgeneration_pipeline(prompts,
             # Call LLM-as-a-judge to review SOURCE CODE and REFACTORED CODE to evaluate if likely valid
             valid_code_flag, judge_response_text, code_analysis = lassi.llm_methods.llm_judge(target_lang, llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, verification_log["sourcecode_analysis"], display_response, verifyprompt)
             
+            # Handle scenario where we might have a bad power measurement
+            if total_energy_joules_refactor == 0:
+                valid_code_flag = "INVALID"
             # valid_code_flag can be: (1) "VALID", (2) "INVALID", or (3) "NONE"
             if not zero_shot:
                 valid_code_history.append(valid_code_flag)
@@ -829,7 +869,6 @@ def auto_code_llmgeneration_pipeline(prompts,
             + We also need to include better context for coding best practices.
             + Continue this self-feedback loop incrementing self_correction_power_counter until maxing at 7 tries.
             '''
-
 
     # END OF LASSI-EE PIPELIE WHILE LOOP
     # ----------------------------------

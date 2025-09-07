@@ -50,7 +50,7 @@ def make_script_code(folder, code_compiler_kwds):
         check=False  # True if you want a CalledProcessError on failure
     )
 
-     # Debug printouts
+    # Debug printouts
     print(f"Running: {' '.join(cmd)} in {target_dir}")
     print("STDOUT:")
     print(result.stdout)

@@ -628,10 +628,10 @@ def auto_code_llmgeneration_pipeline(prompts,
         # If the Baseline LLM generated code that failed to compile or execute,
         #  then we still need to save off zero'd data to maintain our history tracking used by LASSI
         if force_save_baseline_llm:
-            code_version = code_version + 1
+            # code_version = code_version + 1
             # Initiate a new iteration log for this code version
             iteration_log["v" + str(code_version)] = {"self_correction_count": 0, "energy_refactor_count": 0, "LLM_temperature": round(code_gen_temp,1)}
-            print("--> SAVING code version: " + str(code_version))
+            print("--> Force SAVING failed baseline LLM code version: " + str(code_version))
             this_code_version = str(code_version) + "-baseLLM"
             file_path = experiment_data_directory + "/" + file_name_save + "_v" + str(this_code_version) + "_Trial" + str(trial_number) + "." + refactored_code_extension
             os.makedirs(os.path.dirname(file_path), exist_ok=True)

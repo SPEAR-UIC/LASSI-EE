@@ -650,6 +650,8 @@ def auto_code_llmgeneration_pipeline(prompts,
             experiment_data["base_v1_energy_diff"] = "NA"
             experiment_data["base_v1_avg_power_diff"] = "NA"
             experiment_data["base_v1_runtime_diff"] = "NA"
+            # Reset flag because this should be a one-time action.
+            force_save_baseline_llm = False
                     
             
         # Begin POWER METRICS feedback loop

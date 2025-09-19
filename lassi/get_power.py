@@ -271,21 +271,58 @@ def idlepower(experiment_data_directory, trial_number, duration):
 
     return round(total_energy_joules, 2), round(ave_power, 2), round(std_power, 2)
 
+
+def amd_idlepower(experiment_data_directory, trial_number, duration):
+    """AMD equivalent of idlepower() function"""
+    from lassi.amd_power import AMDPowerMonitor, amd_power_collection_thread
     
-
-
-
-
-
-
+    monitor = AMDPowerMonitor()
+    if monitor.gpu_count == 0:
+        print("❌ No AMD GPUs detected for idle power measurement")
+        return 0.0, 0.0, 0.0
     
-
-
-
+    start_power_time = time.time()
+    power_queue = queue.Queue()
+    stop_power_event = threading.Event()
     
+    # Start AMD power collection thread
+    power_thread = Thread(target=amd_power_collection_thread, args=(power_queue, stop_power_event, 0))
+    power_thread.start()
+         
+    # Continue collecting power data for specified duration
+    print("Duration for AMD idle time measurement: " + str(round(duration, 2)))
+    time.sleep(duration)
+    end_power_time = time.time()
+    
+    stop_power_event.set()
+    power_thread.join()
+    
+    # We don't need the metrics_results_string for idle metrics.
+    zero_shot = False
+    total_energy_joules, ave_power, std_power, metrics_results_string = power_collect_data(
+        experiment_data_directory, "idle_power", zero_shot, trial_number, 
+        power_queue, "", "", 0, end_power_time - start_power_time, 
+        ave_idle_power=0, idle=True)
+
+    return round(total_energy_joules, 2), round(ave_power, 2), round(std_power, 2)
 
 
-
-
-        
-
+def idlepower_selectvendor(experiment_data_directory, trial_number, duration, gpu_vendor="auto"):
+    """Unified idle power measurement that works with both NVIDIA and AMD"""
+    
+    if gpu_vendor == "auto":
+        from lassi.gpu_detector import detect_gpu_vendors
+        vendors = detect_gpu_vendors()
+        if vendors:
+            gpu_vendor = vendors[0]['vendor']
+        else:
+            print("❌ No GPUs detected for idle power measurement")
+            return 0.0, 0.0, 0.0
+    
+    if gpu_vendor == "nvidia":
+        return idlepower(experiment_data_directory, trial_number, duration)
+    elif gpu_vendor == "amd":
+        return amd_idlepower(experiment_data_directory, trial_number, duration)
+    else:
+        print(f"❌ Unknown GPU vendor: {gpu_vendor}")
+        return 0.0, 0.0, 0.0

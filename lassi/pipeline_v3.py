@@ -26,6 +26,7 @@ import lassi.pipeline_methods
 from lassi.get_power import report_gpu_memory, query_gpu_state
 from lassi.format_colors import color
 from lassi.prompt_dictionary import PromptDictionary
+from lassi.gpu_detector import detect_gpu_vendors
 
 
 
@@ -133,21 +134,32 @@ def auto_code_llmgeneration_pipeline(prompts,
     best_refactoring_plan = ""
     code_comparison_response = ""
     input_content_llmjudge_dict = {"source_code": "",
-                                  "source_stdout": "",
-                                  "source_metrics": "",
-                                  "refactored_code": "",
-                                  "refactored_stdout": "",
-                                  "refactored_metrics": "",
+                                   "source_stdout": "",
+                                   "source_metrics": "",
+                                   "refactored_code_lang": "",
+                                   "refactored_code": "",
+                                   "refactored_stdout": "",
+                                   "refactored_metrics": "",
                                   }  # Input values to be used by the LLM-as-a-judge phase
 
     # Add source code to the first index of code_blocks
     code_blocks.append(input_code)
     input_content_llmjudge_dict["source_code"] = input_code
-    
-    report_gpu_memory()
-    
+
+    input_content_llmjudge_dict["refactored_code_lang"] = target_lang
+        
     print("\n----- WELCOME TO PIPELINE v3! CODE -----\n")
 
+    vendors = detect_gpu_vendors()
+    if not vendors:
+        print("❌ PIPELINE ERROR: No GPUs detected. Stopping LASSI.")
+        # Stop pipeline here
+    else:
+        detected_vendor = vendors[0]['vendor']
+        print(f"🔍 Detected GPU vendor: {detected_vendor.upper()}")
+
+    report_gpu_memory()
+        
     print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END) 
     
     # --------------------------------
@@ -368,7 +380,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             # error_correction_prompt_outro = " Eliminate this specific error by re-factoring the above code with an appropriate fix while also using the following background context: " + original_context_content_prompt
             # error_prompt = code_block + error_correction_prompt_intro + error_message + error_correction_prompt_outro
             # error_correction_prompt_outro = " Eliminate this specific error by re-factoring the above code with an appropriate fix."
-            error_correction_prompt = prompts.get_code_error_correction_prompt("CUDA_error")
+            error_correction_prompt = prompts.get_code_error_correction_prompt(source_lang + "_error")
             # TODO: maybe not include context for the code errors? original_context_content_prompt
             error_prompt = error_correction_prompt + "\n\n" + "[START OF CODE TO FIX] " + code_block + "\n\n" + "[/END OF CODE TO FIX] " + "\n\n" + error_correction_prompt_intro + "\n\n" + error_message
             error_prompt_tokens = lassi.token_analysis.token_count(error_prompt)
@@ -466,10 +478,10 @@ def auto_code_llmgeneration_pipeline(prompts,
             # Context:
             # if only the first pass, then refactoring_plan_original will be for the source code,
             # otherwise, it will include the latest refactoring plan for the best code
-            refactoring_plan_guide_iteration = prompts.get_code_ee_refactoring_prompt("CUDA_refactor_iteration")
+            refactoring_plan_guide_iteration = prompts.get_code_ee_refactoring_prompt(source_lang + "_refactor_iteration")
             # Append few-shot learning examples
             if few_shot_learning:
-                refactoring_plan_guide_iteration = refactoring_plan_guide_iteration + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
+                refactoring_plan_guide_iteration = refactoring_plan_guide_iteration + "\n\n" + prompts.get_codeknowledge(source_lang + "_c_few_shot_examples")
             
             refactoring_plan_guide_iteration = refactoring_plan_guide_iteration + "\n\n" + refactoring_plan + "\n\n" + code_to_refactor  # "\n\n" + context_prompt +
             refactoring_plan_iteration_tokens = lassi.token_analysis.token_count(refactoring_plan_guide_iteration)
@@ -511,10 +523,10 @@ def auto_code_llmgeneration_pipeline(prompts,
                 verifyprompt=verifyprompt
             )
 
-            refactoring_plan_guide = prompts.get_code_ee_refactoring_prompt("CUDA_refactor")
+            refactoring_plan_guide = prompts.get_code_ee_refactoring_prompt(source_lang + "_refactor")
             # Append few-shot learning examples
             if few_shot_learning:
-                refactoring_plan_guide = refactoring_plan_guide + "\n\n" + prompts.get_codeknowledge("cuda_c_few_shot_examples")
+                refactoring_plan_guide = refactoring_plan_guide + "\n\n" + prompts.get_codeknowledge(source_lang + "_c_few_shot_examples")
             
             refactoring_plan_guide = refactoring_plan_guide + "\n\n" + refactoring_plan + "\n\n" + code_to_refactor  # "\n\n" + context_prompt +
             refactoring_plan_tokens = lassi.token_analysis.token_count(refactoring_plan_guide)
@@ -594,7 +606,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                 report_gpu_memory()
                 
             exe_file_path = execute_file  # directory + "/" + execute_file
-            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, zero_shot, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=5)
+            execute_result, exe_output_generated, total_energy_joules_refactor, ave_power_refactor, std_power_std, duration_refactor, metrics_results_string = lassi.code_manager.execute_code_selectvendor(experiment_data_directory, code_version, zero_shot, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, gpu_vendor="auto", wait=5)
             if execute_result != "0":
                 compile_result = "execute_error"  # just a flag
                 # If the Baseline LLM in Stage 1 fails to execute, then move on to LASSI
@@ -947,10 +959,15 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Prompt the LLM to compare the codes between SOURCE and the "BEST" refactored version
     if (tracking_best_version != 0):
 
+        # TODO: Complete organizing this into lassi.llm_methods.llm_code_compare()
+        
         print("\n\n----- " + color.BOLD + color.BLUE + "FINAL CODE COMPARISON: Source Code vs. Best Refactored Code" + color.END + " -----\n")
         print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
         
-        compare_code = prompts.get_code_comparison("cuda_cpp")
+        if detected_vendor.upper() == "NVIDIA":
+            compare_code = prompts.get_code_comparison("CUDA_cpp")
+        elif detected_vendor.upper() == "AMD":
+            compare_code = prompts.get_code_comparison("HIP_cpp")
         compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_code
         compare_code = compare_code + "\n\nOUTPUT: \n\n" + input_content_llmjudge_dict["source_stdout"]
         compare_code = compare_code + "\n\nCode execution duration: " + str(round(duration, 2)) + " s"
@@ -994,6 +1011,8 @@ def auto_code_llmgeneration_pipeline(prompts,
     
     meta_data_file += "\n\n"
     meta_data_file += "----- PIPELINE METRICS -----"
+    meta_data_file += "\n"
+    meta_data_file += "GPU Device Vendor: " + str(detected_vendor)
     meta_data_file += "\n"
     meta_data_file += "Experiment date-time: " + str(dt_string)
     meta_data_file += "\n"

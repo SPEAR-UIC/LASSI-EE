@@ -7,7 +7,7 @@ from lassi.format_colors import color
 def llm_code_compare(prompts, input_content_llmjudge_dict, source_duration, source_total_energy_joules, source_ave_power, refactored_duration, refactored_total_energy_joules, refactored_ave_power, llm_source, model, num_ctx, system_prompt, display_response, verifyprompt, uri):
     print("\n\n----- " + color.BOLD + color.BLUE + "FINAL CODE COMPARISON: Source Code vs. Best Refactored Code" + color.END + " -----\n")
             
-    compare_code = prompts.get_code_comparison("cuda_cpp")
+    compare_code = prompts.get_code_comparison(input_content_llmjudge_dict["refactored_code_lang"] + "_cpp")
     compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_content_llmjudge_dict["source_code"]
     compare_code = compare_code + "\n\nOUTPUT: \n\n" + input_content_llmjudge_dict["source_stdout"]
     compare_code = compare_code + "\n\nCode execution duration: " + str(round(source_duration, 2)) + " s"
@@ -131,12 +131,12 @@ def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_cont
         if response_validation == "VALID":
             print("\n\nLLM JUDGE: START CODE ANALYSIS ---- ")
             
-            code_analysis_instructions = """
-                Your are a CUDA code evaluator. Your task is to determine if the provided CUDA code satisfies a given list of characteristics.
+            code_analysis_instructions = f"""
+                Your are a {target_lang} code evaluator. Your task is to determine if the provided {target_lang} code satisfies a given list of characteristics.
                 The characteristics will be given in a json format and will be given between the tags: "<rubric>" and "</rubric>".
-                The CUDA code you are to evaluate will be given between "<code>" and "</code>".
-                Please give a simple "pass" or "fail" evaluation and also list which criteria pass and which fail (without additional details).
-                Please put your final, overall evaluation between the tags: "<result>" and put the list in a table format.
+                The {target_lang} code you are to evaluate will be given between "<code>" and "</code>".
+                Please give a simple "PASS" or "FAIL" evaluation and also list which criteria pass and which fail (without additional details).
+                Please put your final, overall evaluation between the tags: "<result>" and "</result>" and put the list in a table format.
                 """
             code_rubric = "\n\n<rubric>\n" + sourcecode_analysis + "\n</rubric>"
             code_to_analyze = "\n\n<code>\n" + input_content_dict['refactored_code'] + "\n</code>"
@@ -230,7 +230,7 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
     return response_text
 
 
-def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system_details, display_response, verifyprompt=False):
+def system_description_llm(llm_source, target_lang, model, num_ctx, system_prompt, gpu_system_details, display_response, verifyprompt=False):
 
     # content_prompt = """
     # Please provide a detailed summary describing the functionality of the following source code.  
@@ -240,8 +240,15 @@ def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system
     # [BEGIN SOURCE CODE] \n\n
     # """
 
-    content_prompt = """
-    Below are the detailed system metrics of the GPU and related hardware used for executing CUDA C++ code. Your task is to analyze this information and provide a complete, clear description of the system that highlights any details relevant to assessing and improving energy efficiency. In your description, focus on key aspects such as power consumption, clock speeds, utilization, thermal metrics, PCIe configuration, and any CPU/memory details provided. Your description should included specific system details important as background context for the task of identifying inefficiencies and developing a refactoring plan for energy efficient CUDA C++ code.\n\nPlease respond with only your detailed descriptive summary of the system. Do not include any code examples or additional extraneous information.
+    content_prompt = f"""
+    Below are the detailed system metrics of the GPU and related hardware used for executing {target_lang} C++ code.
+    Your task is to analyze this information and provide a complete, clear description of the system that highlights
+    any details relevant to assessing and improving energy efficiency. 
+    In your description, focus on key aspects such as power consumption, clock speeds, utilization, thermal metrics, PCIe configuration,
+    and any CPU/memory details provided. 
+    Your description should included specific system details important as background context for the task of identifying
+    inefficiencies and developing a refactoring plan for energy efficient {target_lang} C++ code.
+    \n\nPlease respond with only your detailed descriptive summary of the system. Do not include any code examples or additional extraneous information.
     """
     
     content_prompt = content_prompt + "\n[CPU/GPU SYSTEM DETAILS TO DESCRIBE]\n\n" + gpu_system_details + "\n"

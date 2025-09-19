@@ -13,6 +13,53 @@ from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage
 import lassi.get_power
 from lassi.format_colors import color
 
+# AMD vendor GPU support imports
+from lassi.amd_power import AMDPowerMonitor, amd_power_collection_thread, amd_report_gpu_memory
+from lassi.gpu_detector import detect_gpu_vendors
+
+
+
+def execute_code_selectvendor(experiment_data_directory, code_version, zero_shot, trial_number, 
+                            directory, executable_file, exe_input_parameters, power_measure, 
+                            code_source, target_lang, build_script, make_script, 
+                            gpu_vendor="auto", wait=10):
+    """
+    Multi-vendor execute_code with automatic GPU vendor detection
+    Supports NVIDIA and AMD devices.
+    """
+    
+    # Auto-detect GPU vendor if not specified
+    if gpu_vendor == "auto":
+        vendors = detect_gpu_vendors()
+        if vendors:
+            gpu_vendor = vendors[0]['vendor']  # Use first detected vendor
+            print(f"🔍 Using {gpu_vendor.upper()} GPU for execution and power monitoring")
+        else:
+            print("⚠️  No GPUs detected, falling back to NVIDIA-based execution")
+            # If no GPUs detected, fall back to original function
+            return execute_code(experiment_data_directory, code_version, zero_shot, trial_number, 
+                              directory, executable_file, exe_input_parameters, power_measure, 
+                              code_source, target_lang, build_script, make_script, wait)
+    
+    # For NVIDIA GPUs, use NVIDIA-based function
+    if gpu_vendor == "nvidia":
+        return execute_code(experiment_data_directory, code_version, zero_shot, trial_number, 
+                          directory, executable_file, exe_input_parameters, power_measure, 
+                          code_source, target_lang, build_script, make_script, wait)
+    
+    # For AMD GPUs, implement AMD-specific logic
+    elif gpu_vendor == "amd":
+        return execute_code_amd(experiment_data_directory, code_version, zero_shot, trial_number, 
+                               directory, executable_file, exe_input_parameters, power_measure, 
+                               code_source, target_lang, build_script, make_script, wait)
+    
+    else:
+        # Fallback to original function
+        print(f"⚠️  Unknown GPU vendor '{gpu_vendor}', falling back to NVIDIA-based execution")
+        return execute_code(experiment_data_directory, code_version, zero_shot, trial_number, 
+                          directory, executable_file, exe_input_parameters, power_measure, 
+                          code_source, target_lang, build_script, make_script, wait)
+
 
 def make_script_code(folder, code_compiler_kwds):
     print("Make - current dir: " + str(os.getcwd()))
@@ -102,6 +149,19 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     elif lang == "CUDA":
         # The desired name of the compiled program
         output_file = source_file.split('.cu')[0]
+        # Construct the compilation command
+        compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
+    
+    elif lang == "HIP":  # NEW: Add HIP support
+        # The desired name of the compiled program
+        if source_file.endswith('.cu'):
+            output_file = source_file.split('.cu')[0]  # HIP can compile .cu files
+        elif source_file.endswith('.cpp'):
+            output_file = source_file.split('.cpp')[0]  # HIP can compile .cpp files
+        elif source_file.endswith('.hip'):
+            output_file = source_file.split('.hip')[0]  # Native HIP files
+        else:
+            output_file = source_file + '_compiled'  # Fallback
         # Construct the compilation command
         compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
         
@@ -347,6 +407,210 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
         lassi.get_power.report_gpu_memory()
 
     # Convert to native Python float:
+    total_energy_joules = float(total_energy_joules)
+
+    return return_result, stdout_output, total_energy_joules, ave_power, std_power, duration, metrics_results_string
+
+
+# NEW: Add AMD-specific execution function
+def execute_code_amd(experiment_data_directory, code_version, zero_shot, trial_number, 
+                    directory, executable_file, exe_input_parameters, power_measure, 
+                    code_source, target_lang, build_script, make_script, wait=10):
+    """
+    AMD-specific version of execute_code - mirrors NVIDIA logic but uses AMD power monitoring
+    """
+    
+    if power_measure:
+        print("\n----- >>> AMD GPU system check BEFORE exe code...")
+        amd_report_gpu_memory()
+
+    duration = 0
+    start_power_time = 0
+    total_energy_joules = 0
+    ave_power = 0
+    std_power = 0
+    metrics_results_string = ""
+
+    # Simulating a progress bar while sleeping
+    for _ in tqdm(range(wait), desc="Waiting for the system to settle down for " + str(wait) + " seconds..."):
+        time.sleep(1)
+
+    return_code = ""
+
+    print("executable_file: ", executable_file)
+    
+    # ... (copy the directory handling logic from original execute_code) ...
+    if make_script:
+        if directory in str(os.getcwd()):
+            initial_dir = os.getcwd()
+        else:
+            initial_dir = os.path.join(os.getcwd(), directory)
+    else:
+        initial_dir = os.getcwd()
+    print("initial_dir: ", initial_dir)
+    
+    directory_path = os.path.dirname(executable_file)
+    print("directory_path: ", directory_path)
+    executable = os.path.basename(executable_file)
+    print("executable: ", executable)
+
+    if make_script:
+        os.chdir(initial_dir)
+        executable = directory_path + "/" + executable
+    else:
+        os.chdir(directory_path)
+        
+    subprocess.run(['chmod', '+x', executable])
+
+    if build_script:
+        execute_command = ['./' + executable] + exe_input_parameters[0].split(' ')
+    elif make_script:
+        print("exe_input_parameters: ", exe_input_parameters)
+        os.chdir(initial_dir)
+        execute_command = ['./' + executable] + exe_input_parameters
+    else:
+        execute_command = ['./' + executable] + exe_input_parameters
+    print("Working directory: " + os.getcwd())
+    print("Execute command: " + str(execute_command) + "\n")
+
+    # AMD Power monitoring setup
+    if power_measure:
+        amd_monitor = AMDPowerMonitor()
+        if amd_monitor.gpu_count == 0:
+            print("❌ No AMD GPUs detected for power monitoring")
+            power_measure = False
+        else:
+            # Collect idle power average value before exe
+            idle_power_before = []
+            for _ in range(200):  # 2 seconds @ 0.01s intervals
+                p = amd_monitor.get_power_usage(0)
+                idle_power_before.append(p)
+                time.sleep(0.01)
+            ave_idle_before = sum(idle_power_before) / len(idle_power_before)
+     
+    # ... (copy the execution logic from original execute_code, but use AMD power monitoring) ...
+    
+    if os.path.exists(executable):
+        print("running: executable - ", executable)
+        if make_script:
+            executable = "README.md"
+        try:
+            with open(executable, 'rb') as code_file:
+                if power_measure:
+                    start_power_time = time.time()
+                    power_queue = queue.Queue()
+                    stop_power_event = threading.Event()
+    
+                    # Start AMD power collection thread
+                    power_thread = Thread(target=amd_power_collection_thread, 
+                                        args=(power_queue, stop_power_event, 0))
+                    power_thread.start()
+                    time.sleep(15)
+    
+                start_exe_time = time.time() - start_power_time
+                repeat = 1
+                stdout_lines = []
+                stderr_lines = []
+                
+                for i in range(0, repeat):
+                    process = subprocess.Popen(execute_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    exception_error = ""
+                    
+                    print("\n----- < BEGIN: STANDARD OUTPUT FROM CODE EXECUTION > -----\n")
+                    try:
+                        while True:
+                            line = process.stdout.readline()
+                            if not line:
+                                break
+                            print(line, end='')
+                            stdout_lines.append(line)
+                        process.stdout.close()
+                
+                        while True:
+                            line = process.stderr.readline()
+                            if not line:
+                                break
+                            stderr_lines.append(line)
+                        process.stderr.close()
+                    
+                        return_code = process.wait()
+                        
+                        if return_code != 0:
+                            error_output = ''.join(stderr_lines)
+                            print("Program Execution Error:", error_output)
+    
+                    except Exception as e:
+                        print("An error occurred while executing the program: ", e)
+                        exception_error = str(e)
+
+                    print("\n----- < END: Standard Output > -----\n")
+
+                total_energy_joules = 0
+                ave_power = 0
+                
+                if power_measure and return_code == 0:            
+                    end_exe_time = time.time() - start_power_time
+                    duration = end_exe_time - start_exe_time
+                    time.sleep(15)
+                    end_power_time = time.time()            
+                    stop_power_event.set()
+                    power_thread.join()
+                    
+                    # Collect idle power average value after exe
+                    idle_power_after = []
+                    for _ in range(200):
+                        p = amd_monitor.get_power_usage(0)
+                        idle_power_after.append(p)
+                        time.sleep(0.01)
+                    ave_idle_after = sum(idle_power_after) / len(idle_power_after)
+
+                    ave_idle_power = (ave_idle_before + ave_idle_after) / 2
+        
+                    total_energy_joules, ave_power, std_power, metrics_results_string = lassi.get_power.power_collect_data(
+                        experiment_data_directory,
+                        code_version,
+                        zero_shot,
+                        trial_number,
+                        power_queue, 
+                        code_source, 
+                        target_lang, 
+                        start_exe_time, 
+                        end_exe_time,
+                        ave_idle_power,
+                        idle=False
+                    )
+        
+        except IOError as e:
+            print(f"Pipeline error | An I/O error occurred: {e.strerror}")
+        except Exception as e:
+            print(f"Pipeline error | An error occurred: {e}")
+    else:
+        print(f"Pipeline error | The file {executable} does not exist.")
+    
+    # ... (copy the return logic from original execute_code) ...
+    return_result = "0"
+    if return_code == 0:
+        print("\n" + color.BOLD + "Program executed successfully!" + color.END)
+    else:
+        return_result = "Program exited with return code: " + str(return_code) + " "
+        if return_code == -11:
+            return_result += "Segmentation fault detected."
+        stderr_output = ''.join(stderr_lines)
+        if exception_error != "":
+            return_result += "\nException Error: " + exception_error
+        if stderr_output:
+            return_result += "\nStandard Error: " + stderr_output
+        print("\n" + color.BOLD + color.RED + "***** Execution failed." + color.END)
+        print("Error message: ")
+        print(return_result)
+    
+    os.chdir(initial_dir)
+    stdout_output = ''.join(stdout_lines)
+
+    if power_measure:
+        print("\n----- >>> AMD GPU system check AFTER exe code...")
+        amd_report_gpu_memory()
+
     total_energy_joules = float(total_energy_joules)
 
     return return_result, stdout_output, total_energy_joules, ave_power, std_power, duration, metrics_results_string

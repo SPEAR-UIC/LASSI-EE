@@ -2,6 +2,7 @@ import subprocess
 import lassi.code_manager
 from lassi.format_colors import color
 from lassi.prompt_dictionary import PromptDictionary
+from lassi.gpu_detector import detect_gpu_vendors
 
 prompts = PromptDictionary()
 
@@ -14,46 +15,113 @@ def run_command(command_list):
 
 
 def get_gpu_system_details():
+    """
+    Get comprehensive GPU system details for both NVIDIA and AMD GPUs:
+    + Extract device details to provide the LLM with comprehensive context about
+        the target system regardless of GPU vendor, enabling it to generate optimized
+        code for the specific hardware.
+    
+    + For NVIDIA systems:
+        CUDA compiler version
+        Full nvidia-smi details
+        Power/clock/P-state information
+        PCIe details
+        System info
+    
+    + For AMD systems:
+        HIP compiler version
+        ROCm system information
+        rocm-smi GPU overview
+        Detailed power, memory, clock, temperature data
+        System info
+    """
     details = []
-
-    # CUDA compiler version
-    details.append("=== CUDA Compiler Version (nvcc --version) ===")
-    details.append(run_command(["nvcc", "--version"]))
     
-    # Full GPU details from nvidia-smi -q
-    details.append("=== NVIDIA SMI Full Details (nvidia-smi -q) ===")
-    details.append(run_command(["nvidia-smi", "-q"]))
-
-    # Granular power and clock metrics
-    details.append("=== Power and Clock Metrics ===")
-    details.append(run_command([
-        "nvidia-smi",
-        "--query-gpu=power.draw,power.limit,clocks.sm,clocks.mem,clocks.gr",
-        "--format=csv"
-    ]))
-
-    # GPU Performance State (P-State)
-    details.append("=== GPU Performance State (P-State) ===")
-    details.append(run_command([
-        "nvidia-smi",
-        "--query-gpu=pstate",
-        "--format=csv"
-    ]))
-
-    # PCIe details (if relevant)
-    details.append("=== PCIe Details ===")
-    details.append(run_command([
-        "nvidia-smi",
-        "--query-gpu=pci.bus_id,pci.device_id,pci.domain,pci.bus",
-        "--format=csv"
-    ]))
+    # Detect available GPU vendors
+    vendors = detect_gpu_vendors()
+    if not vendors:
+        details.append("=== No GPUs Detected ===")
+        details.append("No NVIDIA or AMD GPUs found on this system")
+        return "\n".join(details)
     
-    # Optionally, system-level details: CPU and memory info
+    detected_vendor = vendors[0]['vendor']
+    details.append(f"=== Detected GPU Vendor: {detected_vendor.upper()} ===")
+    
+    if detected_vendor == "nvidia":
+        # NVIDIA-specific details
+        details.append("=== CUDA Compiler Version (nvcc --version) ===")
+        details.append(run_command(["nvcc", "--version"]))
+        
+        # Full GPU details from nvidia-smi -q
+        details.append("=== NVIDIA SMI Full Details (nvidia-smi -q) ===")
+        details.append(run_command(["nvidia-smi", "-q"]))
+
+        # Granular power and clock metrics
+        details.append("=== Power and Clock Metrics ===")
+        details.append(run_command([
+            "nvidia-smi",
+            "--query-gpu=power.draw,power.limit,clocks.sm,clocks.mem,clocks.gr",
+            "--format=csv"
+        ]))
+
+        # GPU Performance State (P-State)
+        details.append("=== GPU Performance State (P-State) ===")
+        details.append(run_command([
+            "nvidia-smi",
+            "--query-gpu=pstate",
+            "--format=csv"
+        ]))
+
+        # PCIe details
+        details.append("=== PCIe Details ===")
+        details.append(run_command([
+            "nvidia-smi",
+            "--query-gpu=pci.bus_id,pci.device_id,pci.domain,pci.bus",
+            "--format=csv"
+        ]))
+    
+    elif detected_vendor == "amd":
+        # AMD-specific details
+        details.append("=== HIP Compiler Version (hipcc --version) ===")
+        details.append(run_command(["hipcc", "--version"]))
+        
+        # ROCm version and system info
+        details.append("=== ROCm System Information (rocminfo) ===")
+        details.append(run_command(["rocminfo"]))
+        
+        # AMD GPU details from rocm-smi
+        details.append("=== AMD GPU Overview (rocm-smi) ===")
+        details.append(run_command(["rocm-smi"]))
+        
+        # Detailed power information
+        details.append("=== AMD GPU Power Details (rocm-smi --showpower) ===")
+        details.append(run_command(["rocm-smi", "--showpower"]))
+        
+        # Memory information
+        details.append("=== AMD GPU Memory Details (rocm-smi --showmeminfo vram) ===")
+        details.append(run_command(["rocm-smi", "--showmeminfo", "vram"]))
+        
+        # Clock information
+        details.append("=== AMD GPU Clock Details (rocm-smi --showclocks) ===")
+        details.append(run_command(["rocm-smi", "--showclocks"]))
+        
+        # Temperature information
+        details.append("=== AMD GPU Temperature Details (rocm-smi --showtemp) ===")
+        details.append(run_command(["rocm-smi", "--showtemp"]))
+    
+    # Common system-level details for both vendors
     details.append("=== CPU Information (lscpu) ===")
     details.append(run_command(["lscpu"]))
     
     details.append("=== Memory Information (free -h) ===")
     details.append(run_command(["free", "-h"]))
+    
+    # Kernel and OS information
+    details.append("=== System Information (uname -a) ===")
+    details.append(run_command(["uname", "-a"]))
+    
+    details.append("=== OS Release Information ===")
+    details.append(run_command(["cat", "/etc/os-release"]))
 
     # Combine all details into a single text string
     return "\n".join(details)
@@ -103,7 +171,7 @@ def test_source_code(experiment_data_directory,
         print("\nTest executing the compiled original source code: " + str(execute_file))
         exe_file_path = execute_file  # directory + "/" + execute_file
         zero_shot = False
-        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code(experiment_data_directory, code_version, zero_shot, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=1)
+        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code_selectvendor(experiment_data_directory, code_version, zero_shot, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, gpu_vendor="auto", wait=1)
         input_content_llmjudge_dict["source_stdout"] = exe_output_source
         input_content_llmjudge_dict["source_metrics"] = metrics_results_string
         # Save source code energy metrics:
@@ -112,7 +180,7 @@ def test_source_code(experiment_data_directory,
         if execute_result != "0":
             return False
         print("\n\nMeasure system idle power...")
-        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower(experiment_data_directory, trial_number, duration)
+        idle_energy_joules, idle_ave_power, idle_std_power = lassi.get_power.idlepower_selectvendor(experiment_data_directory, trial_number, duration, gpu_vendor="auto")
         actual_energy = sourcecode_total_energy_joules - idle_energy_joules
         energy_history.append(round(sourcecode_total_energy_joules, 2))
         actual_ave_power = sourcecode_ave_power - idle_ave_power
@@ -150,7 +218,10 @@ def selfprompting_context_builder(generate_context_flag,
     # Augmented prompting to handle processing of provided knowledge context
     if generate_context_flag:
         # Fetch system prompt when using context
-        general_system_prompt = prompts.get_system_prompt("general_system_ee")
+        if source_lang == "CUDA":
+            general_system_prompt = prompts.get_system_prompt("general_system_cuda_ee")
+        elif source_lang == "HIP":
+            general_system_prompt = prompts.get_system_prompt("general_system_hip_ee")
         # Inject provided knowledge context--must be provided from top-level LASSI framework script.
         content = "" + input_context + "\n\n"  # [BEGIN CONTEXT KNOWLEDGE]  [/END CONTEXT KNOWLEDGE]
 
@@ -174,7 +245,7 @@ def selfprompting_context_builder(generate_context_flag,
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to describe the system." + color.END + "\n")
             gpu_system_details = get_gpu_system_details()
             # CALL LLM HERE
-            llm_system_description_response = lassi.llm_methods.system_description_llm(llm_source, model, num_ctx, general_system_prompt, gpu_system_details, display_response, verifyprompt)
+            llm_system_description_response = lassi.llm_methods.system_description_llm(llm_source, target_lang, model, num_ctx, general_system_prompt, gpu_system_details, display_response, verifyprompt)
             content = content + "[YOUR DESCRIPTION OF THE CPU/GPU SYSTEM]\n" + llm_system_description_response + "\n\n"
 
             
@@ -187,7 +258,10 @@ def selfprompting_context_builder(generate_context_flag,
     else:
         # For initial zero-shot attempt
         # Fetch system prompt when not using context
-        general_system_prompt = prompts.get_system_prompt("general_system_nocontext_ee")
+        if source_lang == "CUDA":
+            general_system_prompt = prompts.get_system_prompt("general_system_nocontext_cuda_ee")
+        elif source_lang == "HIP":
+            general_system_prompt = prompts.get_system_prompt("general_system_nocontext_hip_ee")
         content = ""  # "Think carefully before developing the code following these instructions."
         content = content + "\n\n" + prompts.get_code_ee_refactoring_prompt(str(source_lang + "_baseline_nocontext"))
         

@@ -18,7 +18,7 @@
         },
         "murmurhash3": {
             "app_folder": "murmurhash3",
-            "app_params": ["750000, 500"],
+            "app_params": ["750000", "500"],
             "code_lines": 245
         },
         "jacobi": {
@@ -28,7 +28,7 @@
         },
         "jaccard": {
             "app_folder": "jaccard",
-            "app_params": ["1024, 512, 1000"],
+            "app_params": ["1024", "512", "1000"],
             "code_lines": 417
         },
         "layout": {

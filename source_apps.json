@@ -11,10 +11,25 @@
             "app_params": ["10000"],
             "code_lines": 328
         },
+        "chacha20": {
+            "app_folder": "chacha20",
+            "app_params": ["300000"],
+            "code_lines": 130
+        },
+        "murmurhash3": {
+            "app_folder": "murmurhash3",
+            "app_params": ["750000, 500"],
+            "code_lines": 245
+        },
         "jacobi": {
             "app_folder": "jacobi",
             "app_params": [""],
             "code_lines": 235
+        },
+        "jaccard": {
+            "app_folder": "jaccard",
+            "app_params": ["1024, 512, 1000"],
+            "code_lines": 417
         },
         "layout": {
             "app_folder": "layout",

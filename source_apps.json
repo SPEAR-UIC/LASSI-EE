@@ -36,6 +36,11 @@
             "app_params": ["1024", "512", "1000"],
             "code_lines": 417
         },
+        "threadfence": {
+            "app_folder": "threadfence",
+            "app_params": ["100", "250000000"],
+            "code_lines": 139
+        },
         "layout": {
             "app_folder": "layout",
             "app_params": ["2500"],

@@ -21,6 +21,11 @@
             "app_params": ["750000", "500"],
             "code_lines": 245
         },
+        "keogh": {
+            "app_folder": "keogh",
+            "app_params": ["256", "22500000", "100"],
+            "code_lines": 143
+        },
         "jacobi": {
             "app_folder": "jacobi",
             "app_params": [""],

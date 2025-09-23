@@ -21,6 +21,11 @@
             "app_params": ["750000", "500"],
             "code_lines": 245
         },
+        "floydwarshall": {
+            "app_folder": "floydwarshall",
+            "app_params": ["2048", "100", "256"],
+            "code_lines": 295
+        },
         "keogh": {
             "app_folder": "keogh",
             "app_params": ["256", "22500000", "100"],

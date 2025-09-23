@@ -3,7 +3,7 @@
 #include <math.h>
 #include <chrono>
 #include <hip/hip_runtime.h>
-#include "reference.h"
+#include "/home/cc/lassi/LASSI-EE/source_codes/HeCBench/keogh/reference.h"
 
 // calculate LB_Keogh
 __global__

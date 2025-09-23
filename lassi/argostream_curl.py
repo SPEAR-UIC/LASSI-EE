@@ -7,6 +7,9 @@ def argo_fetch_with_curl(data):
     url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
     headers = [
         "-H", "Content-Type: application/json",
+        "-H", "Accept-Encoding: identity",
+        "-H", "Accept: text/plain",
+        "-H", "Cache-Control: no-cache",
         "-H", "Host: apps-dev.inside.anl.gov"
     ]
 

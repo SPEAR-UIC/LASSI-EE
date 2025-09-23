@@ -1,13 +1,13 @@
 from IPython.display import display, Markdown
 import re
-from lassi.llm_config import argo_llm, ollama_llm, ollama_llm_nostream
+from lassi.llm_config import argo_llm, cerebras_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
 
 
 def llm_code_compare(prompts, input_content_llmjudge_dict, source_duration, source_total_energy_joules, source_ave_power, refactored_duration, refactored_total_energy_joules, refactored_ave_power, llm_source, model, num_ctx, system_prompt, display_response, verifyprompt, uri):
     print("\n\n----- " + color.BOLD + color.BLUE + "FINAL CODE COMPARISON: Source Code vs. Best Refactored Code" + color.END + " -----\n")
             
-    compare_code = prompts.get_code_comparison("cuda_cpp")
+    compare_code = prompts.get_code_comparison(input_content_llmjudge_dict["refactored_code_lang"] + "_cpp")
     compare_code = compare_code + "\n\n" + "[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_content_llmjudge_dict["source_code"]
     compare_code = compare_code + "\n\nOUTPUT: \n\n" + input_content_llmjudge_dict["source_stdout"]
     compare_code = compare_code + "\n\nCode execution duration: " + str(round(source_duration, 2)) + " s"
@@ -31,6 +31,8 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
    
     if intent == "refactoring plan":
         print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to write a refactoring plan." + color.END + "\n")
+    if intent == "code analysis":
+        print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to perform code analysis." + color.END + "\n")
         
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt, uri)
@@ -38,6 +40,10 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
@@ -46,7 +52,7 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
     return response_text
 
 
-def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, display_response, verifyprompt=False, uri="remote"):
+def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_content_dict, power_measure, run_code_analysis, sourcecode_analysis, display_response, verifyprompt=False, uri="remote"):
 
     intent = "code validation judge"
 
@@ -67,18 +73,15 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
     # <insert runtime output>
     # "METRICS"
     # <insert measurements>
-    content_prompt = """
-    Please compare the difference between the following two codes written in CUDA C++.\n
-    First, I will provide you first with the SOURCE CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
+    content_prompt = f"""
+    Please compare the difference between the following two codes written in {target_lang} C++.\n
+    First, I will provide you with the SOURCE CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
     Next, I will provide you with a REFACTORED CODE followed by its STANDARD OUTPUT and METRICS measured during code runtime.\n
-    After you have reviewed both codes and their output, while the REFACTORED CODE may run faster and potentially use less energy than the SOURCE CODE, it should still produce equivalent functionality and identical standard output in layout and content.\n
-    Your task is to strictly evaluate whether the REFACTORED CODE preserves all intended functionality of the SOURCE CODE and produces equivalent standard output, including its layout and content, compared to the SOURCE CODE.\n
-    Your careful evaluation should focus on functional equivalence of the two codes and nearly exact standard output of the two codes. Minor differences in numerical values are acceptable in the standard output only if they are consistent with the REFACTORED CODE improving energy efficiency and these specific values are reasonable and consistent with the SOURCE CODE's intended purpose.\n
-    Please explain your reasoning, and then conclude your response with VALID if the refactored code is functionally equivalent, or INVALID if it is not.
+    After you have reviewed both codes and their output, the REFACTORED CODE is expected to produce equivalent functionality and reasonably similar standard output in its layout and content. However, the REFACTORED CODE may not meet these expectations.\n
+    Your task is to strictly evaluate whether the REFACTORED CODE (1) preserves all intended functionality of the SOURCE CODE and (2) produces printed nearly equivalent standard output, including its displayed layout and content, compared to the SOURCE CODE.\n
+    Your careful evaluation should focus on the functional equivalence of the two codes and nearly exact printed standard output of the two codes. Minor differences in numerical values are acceptable in the printed standard output only if they are consistent with the REFACTORED CODE improving energy efficiency and these specific values are reasonable and consistent with the SOURCE CODE's intended purpose. Formatting differences are acceptable as long as key details are included that are seen in the standard output of the SOURCE CODE.\n
+    Please explain your reasoning, and then conclude your response with VALID if the REFACTORED CODE is functionally equivalent, or INVALID if it is not.
     """
-    # Please evaluate if you think the refactored code should be considered valid in terms of providing the same code functionality while also having the exact same standard output as compared with the the source code, other than the specific numerical values. However, these numerical values must still make sense for the given functionality and intent of the code for the refactored code to be considered valud. \n
-    # If you think the refactored code is valid, then please conclude your response with VALID. Otherwise, conclude with INVALID.
-    #"""
 
     content_prompt += f"\n\n# [SOURCE CODE]\n {input_content_dict['source_code']}"
     content_prompt += f"\n\n## [STANDARD OUTPUT]\n {input_content_dict['source_stdout']}"
@@ -98,6 +101,10 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
@@ -114,8 +121,37 @@ def llm_judge(llm_source, model, num_ctx, system_prompt, input_content_dict, pow
         response_validation = "VALID"
     else:
         response_validation = "NONE"
+
+    # If valid, then run test case agent:
+    # 1) prompt with source code 
+
+    # APPLY CODE ANALYSIS TO JUDGE REVIEW
+    code_analysis = "None"
+    if run_code_analysis:
+        if response_validation == "VALID":
+            print("\n\nLLM JUDGE: START CODE ANALYSIS ---- ")
+            
+            code_analysis_instructions = f"""
+                Your are a {target_lang} code evaluator. Your task is to determine if the provided {target_lang} code satisfies a given list of characteristics.
+                The characteristics will be given in a json format and will be given between the tags: "<rubric>" and "</rubric>".
+                The {target_lang} code you are to evaluate will be given between "<code>" and "</code>".
+                Please give a simple "PASS" or "FAIL" evaluation and also list which criteria pass and which fail (without additional details).
+                Please put your final, overall evaluation between the tags: "<result>" and "</result>" and put the list in a table format.
+                """
+            code_rubric = "\n\n<rubric>\n" + sourcecode_analysis + "\n</rubric>"
+            code_to_analyze = "\n\n<code>\n" + input_content_dict['refactored_code'] + "\n</code>"
+            code_analysis_instructions = code_analysis_instructions + code_rubric + code_to_analyze
+            code_analysis = llm_call("code analysis", llm_source, model, num_ctx, system_prompt, code_analysis_instructions, display_response, verifyprompt)
+            # print("\n\nCODE ANALYSIS RESULT: " + str(code_analysis))
     
-    return response_validation
+            # Change the validation response if code analysis fails
+            code_analysis_result = re.search(r'<result>(.*?)</result>', code_analysis, re.DOTALL)
+            code_analysis_result = code_analysis_result.group(1).strip().lower()  # Normalize: remove whitespace and make lowercase
+            if code_analysis_result == "fail":
+                print("-- CHANGE JUDGE VALIDATION RESULT! --")
+                response_validation = "INVALID"
+
+    return response_validation, response_text, code_analysis
 
     
 def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context, target_lang, display_response, verifyprompt=False):
@@ -142,6 +178,10 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "CONTEXT KNOWLEDGE SUMMARY" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -177,6 +217,10 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "CODE DESCRIPTION and ANALYSIS" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -186,7 +230,7 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
     return response_text
 
 
-def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system_details, display_response, verifyprompt=False):
+def system_description_llm(llm_source, target_lang, model, num_ctx, system_prompt, gpu_system_details, display_response, verifyprompt=False):
 
     # content_prompt = """
     # Please provide a detailed summary describing the functionality of the following source code.  
@@ -196,8 +240,15 @@ def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system
     # [BEGIN SOURCE CODE] \n\n
     # """
 
-    content_prompt = """
-    Below are the detailed system metrics of the GPU and related hardware used for executing CUDA C++ code. Your task is to analyze this information and provide a complete, clear description of the system that highlights any details relevant to assessing and improving energy efficiency. In your description, focus on key aspects such as power consumption, clock speeds, utilization, thermal metrics, PCIe configuration, and any CPU/memory details provided. Your description should included specific system details important as background context for the task of identifying inefficiencies and developing a refactoring plan for energy efficient CUDA C++ code.\n\nPlease respond with only your detailed descriptive summary of the system. Do not include any code examples or additional extraneous information.
+    content_prompt = f"""
+    Below are the detailed system metrics of the GPU and related hardware used for executing {target_lang} C++ code.
+    Your task is to analyze this information and provide a complete, clear description of the system that highlights
+    any details relevant to assessing and improving energy efficiency. 
+    In your description, focus on key aspects such as power consumption, clock speeds, utilization, thermal metrics, PCIe configuration,
+    and any CPU/memory details provided. 
+    Your description should included specific system details important as background context for the task of identifying
+    inefficiencies and developing a refactoring plan for energy efficient {target_lang} C++ code.
+    \n\nPlease respond with only your detailed descriptive summary of the system. Do not include any code examples or additional extraneous information.
     """
     
     content_prompt = content_prompt + "\n[CPU/GPU SYSTEM DETAILS TO DESCRIBE]\n\n" + gpu_system_details + "\n"
@@ -208,6 +259,10 @@ def system_description_llm(llm_source, model, num_ctx, system_prompt, gpu_system
         response_text = lmstudio_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    else:
+        print("Invalid LLM source")
 
     print("\n\n----- " + color.BOLD + color.BLUE + "GPU SYSTEM DESCRIPTION" + color.END + " -----")
     print(" (generated by the LLM)\n")
@@ -235,6 +290,10 @@ def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_
         response_text = lmstudio_llm(model, system_prompt, content_prompt, temp, verifyprompt)
     elif llm_source == "ollama":
         response_text = ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
+    elif llm_source == "cerebras":
+        response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
+    else:
+        print("Invalid LLM source")
         
     print("\n\n----- " + color.BOLD + color.BLUE + "THE GENERATED CODE" + color.END + " -----\n")
     if display_response:

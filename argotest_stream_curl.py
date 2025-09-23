@@ -4,9 +4,12 @@ def fetch_with_curl():
     url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
     headers = [
         "-H", "Content-Type: application/json",
+        "-H", "Accept-Encoding: identity",
+        "-H", "Cache-Control: no-cache",
         "-H", "Host: apps-dev.inside.anl.gov"
     ]
-    data = '{"user": "mdearingtest", "model": "gpto3mini", "system": "You are a large language model with the name Argo.", "prompt": ["Tell me something interesting about quantum mechanics."], "stop": [], "temperature": 0.2, "top_p": 0.9}'
+    data = '{"user": "mdearing", "model": "claudesonnet4", "system": "You are a large language model with the name Argo.", "prompt": ["Tell me something interesting about quantum mechanics."], "stop": [], "temperature": 0.2, "top_p": 0.9}'
+    # data = '{"user": "mdearing", "model": "gpto3mini", "messages": [{"role": "system", "content": "You are a large language model with the name Argo"}, {"role": "user", "content": "What is your name?"}], "stop": [], "temperature": 0.2, "top_p": 0.9}'
 
     # Run curl as a subprocess, capturing output as it streams
     process = subprocess.Popen(

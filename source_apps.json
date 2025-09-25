@@ -83,8 +83,13 @@
         },
         "entropy": {
             "app_folder": "entropy",
-            "app_params": ["8192", "8192", "500"],
+            "app_params": ["10000", "1024", "1"],
             "code_lines": 171
+        },
+        "extrema": {
+            "app_folder": "extrema",
+            "app_params": ["750"],
+            "code_lines": 349
         },
         "colorwheel": {
             "app_folder": "colorwheel",

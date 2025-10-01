@@ -3,7 +3,7 @@
 #include <math.h>
 #include <chrono>
 #include <cuda.h>
-#include "reference.h"
+#include "/home/cc/lassi/LASSI-EE/source_codes/HeCBench/entropy/reference.h"
 
 __global__ 
 void entropy(

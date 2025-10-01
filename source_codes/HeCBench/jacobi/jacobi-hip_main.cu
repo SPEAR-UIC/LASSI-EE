@@ -21,7 +21,7 @@
 #include <hip/hip_runtime.h>
 
 // A multiple of thread block size
-#define N 2048
+#define N 16384
 
 #define IDX(i, j) ((i) + (j) * N)
 

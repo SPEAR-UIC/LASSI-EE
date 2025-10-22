@@ -1043,7 +1043,9 @@ def auto_code_llmgeneration_pipeline(prompts,
             best_index = smallest_index
         else:
             best_index = tracking_best_version
-        
+
+        # TODO: Instead of N/A we want to record the least 'energy_history' of the best_index > 1
+        # Then, record the corresponding values for this same index
         experiment_data["lassiee_energy_J"] = energy_history[best_index] if best_index > 0  else "N/A"
         experiment_data["lassiee_avg_power_W"] = power_history[best_index] if best_index > 0  else "N/A"
         experiment_data["lassiee_runtime_s"] = runtime_history[best_index] if best_index > 0  else "N/A"

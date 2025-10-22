@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import time
 import shlex  # for splitting command line arguments
@@ -61,6 +62,36 @@ def execute_code_selectvendor(experiment_data_directory, code_version, zero_shot
                           code_source, target_lang, build_script, make_script, wait)
 
 
+def filter_compiler_output(text):
+    """Filter out compiler warnings and verbose output"""
+    if not text:
+        return ""
+    
+    # Patterns to remove
+    patterns = [
+        r'.*ptxas info.*',
+        r'.*warning:.*',
+        r'.*bytes stack frame.*',
+        r'.*In function.*',
+        r'.*In member function.*',
+        r'.*\s+\d+\s+\|.*',  # Compiler diagnostic lines with line numbers
+        r'.*~~~\^.*',         # Compiler pointer lines
+        r'.*fscanf\(fp,.*',
+        r'.*printf\(.*',
+        r'.*sscanf\(.*',
+    ]
+    
+    lines = text.split('\n')
+    filtered_lines = []
+    
+    for line in lines:
+        # Keep line if it doesn't match any pattern
+        if not any(re.match(pattern, line) for pattern in patterns):
+            filtered_lines.append(line)
+    
+    return '\n'.join(filtered_lines)
+
+    
 def make_script_code(folder, code_compiler_kwds):
     print("Make - current dir: " + str(os.getcwd()))
     
@@ -90,6 +121,7 @@ def make_script_code(folder, code_compiler_kwds):
     # print("make_script_file: ", make_script_file)
     result = subprocess.run(
         cmd,
+        # shell=True,  # run the command through the shell, which allows it to interpret the pipes (|) and the grep commands properly.
         cwd=target_dir,
         env=env,
         capture_output=True,
@@ -97,12 +129,14 @@ def make_script_code(folder, code_compiler_kwds):
         check=False  # True if you want a CalledProcessError on failure
     )
 
+    # Filter the output in Python:
+
     # Debug printouts
     print(f"Running: {' '.join(cmd)} in {target_dir}")
     print("STDOUT:")
-    print(result.stdout)
+    print(filter_compiler_output(result.stdout))
     print("STDERR:")
-    print(result.stderr)
+    print(filter_compiler_output(result.stderr))
 
     return_result = ""
     if result.returncode == 0:

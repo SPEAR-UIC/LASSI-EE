@@ -556,8 +556,12 @@ def auto_code_llmgeneration_pipeline(prompts,
             # instead of creating a new file.
             print("SAVING THE CODE - WHERE ARE WE: ", os.getcwd())
             file_name_save = input_code_file_subdirectory + file_name
-            # file_path = os.getcwd() + "/" + file_name_save + "." + refactored_code_extension
-            file_path = experiment_data_directory  + "/" + file_name_save + "." + refactored_code_extension
+            file_path = os.getcwd() + "/" + file_name_save + "." + refactored_code_extension
+            file_versioning_path = experiment_data_directory  + "/" + file_name_save + "." + refactored_code_extension
+            os.makedirs(os.path.dirname(file_versioning_path), exist_ok=True)
+            with open(file_versioning_path, 'w') as file:
+                file.write(code_block)
+            file.close()
         else:
             file_name_save = file_name + "_" + dt_string
             # file_path = directory + "/" + file_name_save + "." + refactored_code_extension

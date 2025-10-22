@@ -17,6 +17,13 @@ export GPU_INCLUDE_PATH=/usr/local/cuda/include
 export GPU_LIBRARY_PATH=/usr/local/cuda/lib64
 ```
 
+For HIP:
+```bash
+export HIP_PLATFORM=${PLATFORM} 
+export GPU_LIBRARY_PATH=/opt/rocm-${ROCMV}/lib 
+export GPU_INCLUDE_PATH=/opt/rocm-${ROCMV}/include 
+```
+
 ---
 
 ## 2. Add A100 Support to Makefile
@@ -61,6 +68,10 @@ Use the following command to launch docking:
 ```bash
 ./bin/autodock_cuda_nv_64wi -lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100
 ```
+
+or
+
+./bin/autodock_gpu_64wi -lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100
 
 ### To increase run time:
 

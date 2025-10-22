@@ -6,6 +6,11 @@
             "app_params": ["30000", "100"],
             "code_lines": 107
         },
+        "marchingCubes": {
+            "app_folder": "marchingCubes",
+            "app_params": ["100"],
+            "code_lines": 574
+        },
         "stu-matrix-rotate": {
             "app_folder": "stu-matrix-rotate",
             "app_params": ["30000", "100"],

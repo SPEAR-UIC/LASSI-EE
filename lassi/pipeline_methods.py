@@ -157,10 +157,14 @@ def test_source_code(experiment_data_directory,
         compile_result = lassi.code_manager.build_script_code("source_codes", code_build_script)
         execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level1/" + file_nameexe_input_parameters
     elif make_script:
-        compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds)
+        compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
         if compile_result == "":
-            execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+            if source_lang == "CUDA":
+                execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
+            elif source_lang == "HIP":
+                execute_file = "bin/autodock_hip_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
     else:
         compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
     

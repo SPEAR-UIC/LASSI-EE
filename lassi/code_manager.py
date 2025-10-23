@@ -92,7 +92,7 @@ def filter_compiler_output(text):
     return '\n'.join(filtered_lines)
 
     
-def make_script_code(folder, code_compiler_kwds):
+def make_script_code(folder, code_compiler_kwds, source_lang):
     print("Make - current dir: " + str(os.getcwd()))
     
     # split your single-string of flags into a list
@@ -106,8 +106,13 @@ def make_script_code(folder, code_compiler_kwds):
     
     # copy current env and inject your exports
     env = os.environ.copy()
-    env['GPU_INCLUDE_PATH']  = '/usr/local/cuda/include'
-    env['GPU_LIBRARY_PATH']  = '/usr/local/cuda/lib64'
+    if source_lang == "CUDA":
+        env['GPU_INCLUDE_PATH']  = '/usr/local/cuda/include'
+        env['GPU_LIBRARY_PATH']  = '/usr/local/cuda/lib64'
+    elif source_lang == "HIP":
+        env['GPU_INCLUDE_PATH']  = '/opt/rocm-6.3.3/include'
+        env['GPU_LIBRARY_PATH']  = '/opt/rocm-6.3.3/lib'
+        env['HIP_PATH'] = '/opt/rocm-6.3.3'
 
     # disable all warnings in gcc/g++ (and NVCC’s host compiler)
     # env['CFLAGS'] = env.get('CFLAGS', '') + ' -w'

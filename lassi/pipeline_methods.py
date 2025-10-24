@@ -127,7 +127,7 @@ def get_gpu_system_details():
     return "\n".join(details)
 
 
-def test_source_code(experiment_data_directory,
+def test_source_code(app_name, experiment_data_directory,
                      code_version,
                      trial_number,
                      source_file_path,
@@ -163,8 +163,12 @@ def test_source_code(experiment_data_directory,
                 execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
                 exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
             elif source_lang == "HIP":
-                execute_file = "bin/autodock_hip_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
+                if app_name == "miniMDock":
+                    execute_file = "bin/autodock_hip_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+                    exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
+                elif app_name == "XSBench":
+                    execute_file = "XSBench"  # HARD CODED FOR XSBENCH
+                    exe_input_parameters = "-m event -l 1700000000".split()
     else:
         compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
     

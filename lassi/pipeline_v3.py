@@ -79,7 +79,8 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      trial_number,
                                      experiment_data_directory,
                                      experiment_data_file_object,
-                                     experiment_data
+                                     experiment_data,
+                                     app_name
                                     ):
 
     # -----------------
@@ -170,7 +171,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     if test_code_first:
         """Initial stage to run the SOURCE CODE and gather metrics."""
         (idle_energy_joules, idle_ave_power, input_content_llmjudge_dict, sourcecode_total_energy_joules, sourcecode_ave_power, duration,
-         energy_history, power_history, runtime_history, valid_code_history) = lassi.pipeline_methods.test_source_code(experiment_data_directory, code_version, trial_number, source_file_path, build_script, make_script, directory, source_lang, target_lang,
+         energy_history, power_history, runtime_history, valid_code_history) = lassi.pipeline_methods.test_source_code(app_name, experiment_data_directory, code_version, trial_number, source_file_path, build_script, make_script, directory, source_lang, target_lang,
                                                                                                 exe_input_parameters, code_compiler, code_compiler_kwds,
                                                                                                 yes_execute, power_measure, input_content_llmjudge_dict,
                                                                                                 energy_history, power_history, runtime_history, valid_code_history
@@ -581,10 +582,14 @@ def auto_code_llmgeneration_pipeline(prompts,
         elif make_script:
             # run make command
             print("\n** RUN MAKE COMMAND TO COMPILE **")
-            compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds)
+            compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
             # print("compile_result: ", compile_result)
-            execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+            if app_name == "miniMDock":
+                execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+            elif app_name == "XSBench":
+                execute_file = "XSBench"  # HARD CODED FOR XSBENCH
+                exe_input_parameters = "-m event -l 1700000000".split()
         else:
             compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
 
@@ -1065,7 +1070,10 @@ def auto_code_llmgeneration_pipeline(prompts,
         if match_code_comparison_response:
             optimization_list_text = match_code_comparison_response.group(1).strip()
         else:
-            optimization_list_text = "None"
+            if tracking_best_version_label == "SOURCE":
+                optimization_list_text = "SOURCE"
+            else:
+                optimization_list_text = "None"
         experiment_data["lassiee_optimization_methods"] = str(optimization_list_text)
         experiment_data["total_selfcorrections"] = self_correction_counter
         experiment_data["total_eeiterations"] = ee_iterations
@@ -1118,7 +1126,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Write meta data for this experiment
     if make_script:
         # filename = directory + "/" + "metadata" + "_" + experiment + ".txt"
-        filename = os.path.join(experiment_data_directory, "metadata" + "_" + experiment + ".txt")
+        filename = os.path.join(experiment_data_directory, "metadata" + "_" + experiment.replace("/", "_") + "_Trial" + str(trial_number) + ".txt")
     else:
         # filename = directory + "/" + "metadata" + "_" + file_name_save + ".txt"
         filename = os.path.join(experiment_data_directory, "metadata" + "_" + file_name_save + "_Trial" + str(trial_number) + ".txt")

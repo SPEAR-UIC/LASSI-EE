@@ -121,6 +121,11 @@
             "app_folder": "miniMDock",
             "app_params": ["-lfile", "./input/7cpa/7cpa_ligand.pdbqt", "-nrun 250"],
             "code_lines": 2394
+        },
+        "XSBench": {
+            "app_folder": "XSBench/hip",
+            "app_params": ["-m", "event", "-l", "1700000000"],
+            "code_lines": 1472
         }
     }
 }

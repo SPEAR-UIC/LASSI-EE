@@ -119,7 +119,7 @@
         "source_folder": "Miniapps",
         "miniMDock": {
             "app_folder": "miniMDock",
-            "app_params": ["-lfile", "./input/7cpa/7cpa_ligand.pdbqt", "-nrun 100"],
+            "app_params": ["-lfile", "./input/7cpa/7cpa_ligand.pdbqt", "-nrun 250"],
             "code_lines": 2394
         }
     }

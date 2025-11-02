@@ -184,7 +184,7 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
     return return_result, output_file
 
 
-def execute_code(experiment_data_directory, code_version, zero_shot, trial_number, directory, executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=10):
+def execute_code(experiment_data_directory, code_version, zero_shot, trial_number, directory, executable_file, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, wait=10, execution_timeout=300):
 
     # Wait 20 seconds for the system to settle down
     # print("...WAITING.")
@@ -299,32 +299,61 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
                     print("\n----- < BEGIN: STANDARD OUTPUT FROM CODE EXECUTION > -----\n")
                     try:
                         # Read stdout in a separate thread or in a non-blocking way
-                        while True:
-                            line = process.stdout.readline()
-                            if not line:
-                                break
-                            print(line, end='')  # Print each line as it is received
-                            stdout_lines.append(line)
-                        process.stdout.close()
+                        ## while True:
+                        ##     line = process.stdout.readline()
+                        ##     if not line:
+                        ##         break
+                        ##     print(line, end='')  # Print each line as it is received
+                        ##     stdout_lines.append(line)
+                        ## process.stdout.close()
                 
                         # Read stderr in a separate thread or in a non-blocking way
-                        while True:
-                            line = process.stderr.readline()
-                            if not line:
-                                break
-                            stderr_lines.append(line)
-                        process.stderr.close()
+                        ## while True:
+                        ##     line = process.stderr.readline()
+                        ##     if not line:
+                        ##         break
+                        ##     stderr_lines.append(line)
+                        ## process.stderr.close()
                     
                         # Wait for the process to complete and get the return code
-                        return_code = process.wait()
+                        ## return_code = process.wait()
+
+                        # Use communicate with timeout
+                        stdout_output, stderr_output = process.communicate(timeout=execution_timeout)
+                        
+                        # Print the captured output
+                        print(stdout_output, end='')
+                        stdout_lines.append(stdout_output)
+                        stderr_lines.append(stderr_output)
+                        
+                        return_code = process.returncode
                         
                         if return_code != 0:
-                            error_output = ''.join(stderr_lines)
+                            ## error_output = ''.join(stderr_lines)
+                            error_output = stderr_output
                             print("Program Execution Error:", error_output)
     
+                    except subprocess.TimeoutExpired:
+                        print(f"\n***** TIMEOUT: Process exceeded {execution_timeout} seconds *****")
+                        process.kill()  # Kill the process
+                        process.wait()  # Wait for it to terminate
+                        return_code = -999  # Custom return code for timeout
+                        exception_error = f"Execution timeout after {execution_timeout} seconds"
+                        
+                        # Try to get any partial output
+                        try:
+                            stdout_output, stderr_output = process.communicate(timeout=5)
+                            stdout_lines.append(stdout_output)
+                            stderr_lines.append(stderr_output)
+                        except:
+                            pass
+            
                     except Exception as e:
                         print("An error occurred while executing the program: ", e)
                         exception_error = str(e)
+                        return_code = -998  # Custom return code for other exceptions
+                        process.kill()
+                        process.wait()
 
                     print("\n----- < END: Standard Output > -----\n")
 

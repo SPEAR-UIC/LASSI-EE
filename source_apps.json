@@ -105,6 +105,11 @@
             "app_folder": "lid-driven-cavity",
             "app_params": [""],
             "code_lines": 1079
+        },
+        "marchingCubes": {
+            "app_folder": "marchingCubes",
+            "app_params": ["100"],
+            "code_lines": 574
         }
     },
     "Altis": {

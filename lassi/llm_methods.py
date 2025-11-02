@@ -275,7 +275,7 @@ def system_description_llm(llm_source, target_lang, model, num_ctx, system_promp
 def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_prompt, display_response, verifyprompt=False):
 
     # Append critical instruction to repsond with complete code
-    content_prompt = content_prompt + """CRITICAL REQUIREMENT: You must output the COMPLETE, FULLY FUNCTIONAL code file. 
+    content_prompt = content_prompt + """\n\nCRITICAL REQUIREMENT: You must output the COMPLETE, FULLY FUNCTIONAL code file. 
     Do not use placeholders like '# ... rest of code unchanged ...' or '// ... existing code ...' or similar shortcuts. 
     Every single line of code must be present in your response, including all unchanged sections. 
     The output will be used directly in an automated pipeline that cannot fill in omitted code. 

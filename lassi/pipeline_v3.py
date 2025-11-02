@@ -584,7 +584,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds)
             # print("compile_result: ", compile_result)
             execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
         else:
             compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
 

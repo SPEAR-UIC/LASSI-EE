@@ -160,7 +160,7 @@ def test_source_code(experiment_data_directory,
         compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds)
         if compile_result == "":
             execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+            exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
     else:
         compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
     

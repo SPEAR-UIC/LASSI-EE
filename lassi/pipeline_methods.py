@@ -160,8 +160,12 @@ def test_source_code(app_name, experiment_data_directory,
         compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
         if compile_result == "":
             if source_lang == "CUDA":
-                execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
+                if app_name == "miniMDock":
+                    execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+                    exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
+                elif app_name == "XSBench":
+                    execute_file = "XSBench"  # HARD CODED FOR XSBENCH
+                    exe_input_parameters = "-m event -l 1700000000".split()
             elif source_lang == "HIP":
                 if app_name == "miniMDock":
                     execute_file = "bin/autodock_hip_gpu_64wi"  # HARD CODED FOR MINIMDOCK

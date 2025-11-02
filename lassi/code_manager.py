@@ -229,7 +229,7 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     # Change the working directory to the subdirectory of the executable
     if make_script:
         os.chdir(initial_dir)
-        executable = directory_path + "/" + executable
+        # executable = directory_path + "/" + executable
         # executable = experiment_data_directory
     else:
         # os.chdir(initial_dir + "/" + directory_path)
@@ -271,8 +271,8 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     if os.path.exists(executable):
         print("running: executable - ", executable)
         # Hack for now:
-        if make_script:
-            executable = "README.md"
+        # if make_script:
+        #     executable = "README.md"
         try:
             # Open the file to ensure it is accessible
             with open(executable, 'rb') as code_file:
@@ -360,8 +360,9 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
 
                 total_energy_joules = 0
                 ave_power = 0
+                
                 # Only continue power measurements if no exe error
-                if power_measure and return_code == 0:            
+                if power_measure and (return_code == 0 or any("RESULTS" in s for s in stdout_lines)):           
                     end_exe_time = time.time() - start_power_time
                     duration = end_exe_time - start_exe_time
                     # Continue collecting power data for a short time after inference
@@ -412,7 +413,7 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     
     # Check if the program ran successfully
     return_result = "0"  # default OK
-    if return_code == 0:
+    if any("RESULTS" in s for s in stdout_lines) or return_code == 0:
         print("\n" + color.BOLD + "Program executed successfully!" + color.END)
     else:
         # If there was an error during execution, print the error message

@@ -1,5 +1,4 @@
 import os
-import re
 import subprocess
 import time
 import shlex  # for splitting command line arguments
@@ -62,37 +61,7 @@ def execute_code_selectvendor(experiment_data_directory, code_version, zero_shot
                           code_source, target_lang, build_script, make_script, wait)
 
 
-def filter_compiler_output(text):
-    """Filter out compiler warnings and verbose output"""
-    if not text:
-        return ""
-    
-    # Patterns to remove
-    patterns = [
-        r'.*ptxas info.*',
-        r'.*warning:.*',
-        r'.*bytes stack frame.*',
-        r'.*In function.*',
-        r'.*In member function.*',
-        r'.*\s+\d+\s+\|.*',  # Compiler diagnostic lines with line numbers
-        r'.*~~~\^.*',         # Compiler pointer lines
-        r'.*fscanf\(fp,.*',
-        r'.*printf\(.*',
-        r'.*sscanf\(.*',
-    ]
-    
-    lines = text.split('\n')
-    filtered_lines = []
-    
-    for line in lines:
-        # Keep line if it doesn't match any pattern
-        if not any(re.match(pattern, line) for pattern in patterns):
-            filtered_lines.append(line)
-    
-    return '\n'.join(filtered_lines)
-
-    
-def make_script_code(folder, code_compiler_kwds):
+def make_script_code(folder, code_compiler_kwds, source_lang):
     print("Make - current dir: " + str(os.getcwd()))
     
     # split your single-string of flags into a list
@@ -106,8 +75,9 @@ def make_script_code(folder, code_compiler_kwds):
     
     # copy current env and inject your exports
     env = os.environ.copy()
-    env['GPU_INCLUDE_PATH']  = '/usr/local/cuda/include'
-    env['GPU_LIBRARY_PATH']  = '/usr/local/cuda/lib64'
+    if source_lang == "CUDA":
+        env['GPU_INCLUDE_PATH']  = '/usr/local/cuda/include'
+        env['GPU_LIBRARY_PATH']  = '/usr/local/cuda/lib64'
 
     # disable all warnings in gcc/g++ (and NVCC’s host compiler)
     # env['CFLAGS'] = env.get('CFLAGS', '') + ' -w'
@@ -121,7 +91,6 @@ def make_script_code(folder, code_compiler_kwds):
     # print("make_script_file: ", make_script_file)
     result = subprocess.run(
         cmd,
-        # shell=True,  # run the command through the shell, which allows it to interpret the pipes (|) and the grep commands properly.
         cwd=target_dir,
         env=env,
         capture_output=True,
@@ -129,14 +98,12 @@ def make_script_code(folder, code_compiler_kwds):
         check=False  # True if you want a CalledProcessError on failure
     )
 
-    # Filter the output in Python:
-
     # Debug printouts
     print(f"Running: {' '.join(cmd)} in {target_dir}")
     print("STDOUT:")
-    print(filter_compiler_output(result.stdout))
+    print(result.stdout)
     print("STDERR:")
-    print(filter_compiler_output(result.stderr))
+    print(result.stderr)
 
     return_result = ""
     if result.returncode == 0:
@@ -262,7 +229,7 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     # Change the working directory to the subdirectory of the executable
     if make_script:
         os.chdir(initial_dir)
-        executable = directory_path + "/" + executable
+        # executable = directory_path + "/" + executable
         # executable = experiment_data_directory
     else:
         # os.chdir(initial_dir + "/" + directory_path)
@@ -304,8 +271,8 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     if os.path.exists(executable):
         print("running: executable - ", executable)
         # Hack for now:
-        if make_script:
-            executable = "README.md"
+        # if make_script:
+        #     executable = "README.md"
         try:
             # Open the file to ensure it is accessible
             with open(executable, 'rb') as code_file:
@@ -326,8 +293,7 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
                 stdout_lines = []
                 stderr_lines = []
                 for i in range(0, repeat):
-                    process = subprocess.Popen(execute_command, stdout=subprocess.PIPE,
-                                               stderr=subprocess.PIPE, text=True)
+                    process = subprocess.Popen(execute_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     exception_error = ""
                     
                     # Print the output in real-time
@@ -394,8 +360,9 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
 
                 total_energy_joules = 0
                 ave_power = 0
+                
                 # Only continue power measurements if no exe error
-                if power_measure and return_code == 0:            
+                if power_measure and (return_code == 0 or any("RESULTS" in s for s in stdout_lines)):           
                     end_exe_time = time.time() - start_power_time
                     duration = end_exe_time - start_exe_time
                     # Continue collecting power data for a short time after inference
@@ -446,7 +413,7 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     
     # Check if the program ran successfully
     return_result = "0"  # default OK
-    if return_code == 0:
+    if any("RESULTS" in s for s in stdout_lines) or return_code == 0:
         print("\n" + color.BOLD + "Program executed successfully!" + color.END)
     else:
         # If there was an error during execution, print the error message
@@ -520,7 +487,7 @@ def execute_code_amd(experiment_data_directory, code_version, zero_shot, trial_n
 
     if make_script:
         os.chdir(initial_dir)
-        executable = directory_path + "/" + executable
+        # executable = directory_path + "/" + executable
     else:
         os.chdir(directory_path)
         
@@ -556,8 +523,8 @@ def execute_code_amd(experiment_data_directory, code_version, zero_shot, trial_n
     
     if os.path.exists(executable):
         print("running: executable - ", executable)
-        if make_script:
-            executable = "README.md"
+        # if make_script:
+            # executable = "README.md"
         try:
             with open(executable, 'rb') as code_file:
                 if power_measure:
@@ -612,7 +579,7 @@ def execute_code_amd(experiment_data_directory, code_version, zero_shot, trial_n
                 total_energy_joules = 0
                 ave_power = 0
                 
-                if power_measure and return_code == 0:            
+                if power_measure and (return_code == 0 or any("RESULTS" in s for s in stdout_lines)):            
                     end_exe_time = time.time() - start_power_time
                     duration = end_exe_time - start_exe_time
                     time.sleep(15)
@@ -653,7 +620,7 @@ def execute_code_amd(experiment_data_directory, code_version, zero_shot, trial_n
     
     # ... (copy the return logic from original execute_code) ...
     return_result = "0"
-    if return_code == 0:
+    if any("RESULTS" in s for s in stdout_lines) or return_code == 0:
         print("\n" + color.BOLD + "Program executed successfully!" + color.END)
     else:
         return_result = "Program exited with return code: " + str(return_code) + " "

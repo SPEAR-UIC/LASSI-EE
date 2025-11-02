@@ -2,6 +2,8 @@
 
 ---
 
+https://github.com/ORNL-PE/miniMDock
+
 ## 1. Environment Setup
 
 Make sure your system has:
@@ -17,12 +19,20 @@ export GPU_INCLUDE_PATH=/usr/local/cuda/include
 export GPU_LIBRARY_PATH=/usr/local/cuda/lib64
 ```
 
-For HIP:
+For HIP: (check the version number with ```bash ls /opt/rocm* ```)
 ```bash
-export HIP_PLATFORM=${PLATFORM} 
-export GPU_LIBRARY_PATH=/opt/rocm-${ROCMV}/lib 
-export GPU_INCLUDE_PATH=/opt/rocm-${ROCMV}/include 
+export HIP_PLATFORM=amd
+export GPU_LIBRARY_PATH=/opt/rocm-6.3.3/lib
+export GPU_INCLUDE_PATH=/opt/rocm-6.3.3/include
+export HIP_PATH=/opt/rocm-6.3.3
 ```
+
+Need to modify the makefile for deprecated assignment (because using a new version of ROCm 6.x):
+Change:
+IFLAGS=-I$(COMMON_DIR) -I$(HOST_INC_DIR) -I$(GPU_INCLUDE_PATH) -I$(HIP_PATH) -D__HIP_PLATFORM_HCC__  -I$(KRNL_DIR)
+
+To:
+IFLAGS=-I$(COMMON_DIR) -I$(HOST_INC_DIR) -I$(GPU_INCLUDE_PATH) -I$(HIP_PATH) -D__HIP_PLATFORM_AMD__  -I$(KRNL_DIR)
 
 ---
 
@@ -59,6 +69,27 @@ You may optionally rename it for clarity:
 mv ./bin/autodock_gpu_64wi ./bin/autodock_cuda_nv_64wi
 ```
 
+more changes for HIP:
+
+1) In host/src/main.cpp, remove the third parameter:
+#ifndef USE_KOKKOS
+#ifdef USE_OMPT
+        cData.devnum = 0;
+	setup_gpu_for_docking(cData);
+#else
+	setup_gpu_for_docking(cData, tData);  // removed mypars [mtd]
+#endif
+#endif
+
+2) In Makefile.Hip.Amd, add AFTER the HIP_FLAGS settings:
+
+# [mtd] add
+# Suppress excessive warnings for ROCm / GCC
+HIP_FLAGS += -Wno-pass-failed -w
+CFLAGS    += -Wno-unused-result -Wno-format -w
+
+3) In Makefile.Hip.Amd, add no-pie to:
+CPP = g++ -no-pie
 ---
 
 ## 4. Run miniMDock

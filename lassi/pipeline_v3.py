@@ -70,6 +70,7 @@ def auto_code_llmgeneration_pipeline(prompts,
                                      power_measure,
                                      test_code_first,
                                      yes_power_feedback,
+                                     yes_runtime_feedback,
                                      dt_string,
                                      baseline_oneshot_goal,
                                      use_self_prompting,
@@ -490,7 +491,6 @@ def auto_code_llmgeneration_pipeline(prompts,
             print("\n\n" + color.BOLD + color.GREEN + "----- REFACTORING PLAN WITH INSTRUCTIONS PROMPT " + color.END + "(energy efficiency *iteration* with code, token count: " + str(refactoring_plan_iteration_tokens) + "): ")  # + refactoring_plan_iteration + "\n\n")
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to generate code for energy efficiency -- improvement iteration." + color.END + "\n\n")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, round(code_gen_temp,1), system_prompt, refactoring_plan_guide_iteration, display_response, verifyprompt)        
-
         
         elif compile_result == "energy_efficiency" and energy_efficiency_refactor_success == True and not zero_shot:  #baseline_oneshot_goal:
 
@@ -536,6 +536,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             # refactoring_plan_iteration = re.sub('\n', '', refactoring_plan)
             print("\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to generate code for energy efficiency -- with a new refactoring plan." + color.END + "\n\n")
             code_response, code_block = lassi.llm_methods.code_generator_llm(llm_source, model_coder, num_ctx_coder, code_gen_temp, system_prompt, refactoring_plan_guide, display_response, verifyprompt)
+        
         else:
             print("\n\n ????? NO CONDITION MET DURING ITERATION ?????")
             print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
@@ -677,10 +678,9 @@ def auto_code_llmgeneration_pipeline(prompts,
             experiment_data["base_v1_runtime_diff"] = "NA"
             # Reset flag because this should be a one-time action.
             force_save_baseline_llm = False
-                    
-            
+                     
         # Begin POWER METRICS feedback loop
-        if yes_power_feedback and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= self_correction_power_counter_max:
+        if (yes_power_feedback or yes_runtime_feedback) and yes_execute and compile_result == "" and execute_result == "0" and self_correction_power_counter <= self_correction_power_counter_max:
 
             print("\n\n----- " + color.BOLD + color.BLUE + "POWER METRICS Feedback Loop " + color.END + " -----\n")
             print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
@@ -697,7 +697,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             valid_code_flag, judge_response_text, code_analysis = lassi.llm_methods.llm_judge(target_lang, llm_source, model_judge, num_ctx, system_prompt, input_content_llmjudge_dict, power_measure, run_code_analysis, verification_log["sourcecode_analysis"], display_response, verifyprompt)
             
             # Handle scenario where we might have a bad power measurement
-            if total_energy_joules_refactor == 0:
+            if (total_energy_joules_refactor == 0 and yes_power_feedback):
                 valid_code_flag = "INVALID"
             # valid_code_flag can be: (1) "VALID", (2) "INVALID", or (3) "NONE"
             if not zero_shot:
@@ -741,9 +741,18 @@ def auto_code_llmgeneration_pipeline(prompts,
                     experiment_data["base_v1_avg_power_W"] = ave_power_refactor
                     experiment_data["base_v1_runtime_s"] = duration_refactor
                     experiment_data["base_v1_valid"] = valid_code_flag
-                    experiment_data["base_v1_energy_diff"] = round(((total_energy_joules_refactor - sourcecode_total_energy_joules) / sourcecode_total_energy_joules) * 100 ,2)
-                    experiment_data["base_v1_avg_power_diff"] = round(((ave_power_refactor - sourcecode_ave_power) / sourcecode_ave_power) * 100 ,2)
-                    experiment_data["base_v1_runtime_diff"] = round(((duration_refactor - duration) / duration) * 100 ,2)
+                    experiment_data["base_v1_energy_diff"] = (
+                        round(((total_energy_joules_refactor - sourcecode_total_energy_joules) / sourcecode_total_energy_joules) * 100 ,2)
+                        if sourcecode_total_energy_joules != 0 else "NA"
+                    )
+                    experiment_data["base_v1_avg_power_diff"] = (
+                        round(((ave_power_refactor - sourcecode_ave_power) / sourcecode_ave_power) * 100 ,2)
+                        if sourcecode_ave_power != 0 else "NA"
+                    )
+                    experiment_data["base_v1_runtime_diff"] = (
+                        round(((duration_refactor - duration) / duration) * 100 ,2)
+                        if duration != 0 else "NA"
+                    )
                     # experiment_data["base_v1_optimization_methods"] = "None"
                 elif stage == "stage2":
                     experiment_data["base_v2_energy_J"] = total_energy_joules_refactor
@@ -751,14 +760,29 @@ def auto_code_llmgeneration_pipeline(prompts,
                     experiment_data["base_v2_runtime_s"] = duration_refactor
                     experiment_data["base_v2_valid"] = valid_code_flag
                     experiment_data["base_v2_selfcorrections"] = iteration_log["v2"]["self_correction_count"]
-                    experiment_data["base_v2_energy_diff"] = round(((total_energy_joules_refactor - sourcecode_total_energy_joules) / sourcecode_total_energy_joules) * 100 ,2)
-                    experiment_data["base_v2_avg_power_diff"] = round(((ave_power_refactor - sourcecode_ave_power) / sourcecode_ave_power) * 100 ,2)
-                    experiment_data["base_v3_runtime_diff"] = round(((duration_refactor - duration) / duration) * 100 ,2)
+                    experiment_data["base_v2_energy_diff"] = (
+                        round(((total_energy_joules_refactor - sourcecode_total_energy_joules) / sourcecode_total_energy_joules) * 100 ,2)
+                        if sourcecode_total_energy_joules != 0 else "NA"
+                    )
+                    experiment_data["base_v2_avg_power_diff"] = (
+                        round(((ave_power_refactor - sourcecode_ave_power) / sourcecode_ave_power) * 100 ,2)
+                        if sourcecode_ave_power != 0 else "NA"
+                    )
+                    experiment_data["base_v3_runtime_diff"] = (
+                        round(((duration_refactor - duration) / duration) * 100 ,2)
+                        if duration != 0 else "NA"
+                    )
                     experiment_data["base_v2_optimization_methods"] = "None"
+            
             if (
-                total_energy_joules_refactor < energy_history[tracking_best_version]
-                and valid_code_flag == "VALID"
-            ):  
+                yes_power_feedback and 
+                total_energy_joules_refactor < energy_history[tracking_best_version] and
+                valid_code_flag == "VALID"
+            ) or (
+                not yes_power_feedback and yes_runtime_feedback and
+                duration_refactor < runtime_history[tracking_best_version] and
+                valid_code_flag == "VALID"
+            ): 
                 # WE HAVE A WINNER!
                 # sourcecode_total_energy_joules:  # or ave_power_refactor < sourcecode_ave_power:
                 # Save the Refactoring Plan for this code version
@@ -780,7 +804,10 @@ def auto_code_llmgeneration_pipeline(prompts,
                         zero_shot = False  # Stop base LLM attempt after one try.
                 
                 """ Let's only care about the total energy consumption and not average power. """
-                print("\n\n***** Generated refactored code is more energy efficient than source or previous code! *****")
+                if yes_power_feedback:
+                    print("\n\n***** Generated refactored code is more energy efficient than source or previous code! *****")
+                elif not yes_power_feedback and yes_runtime_feedback:
+                    print("\n\n***** Generated refactored code is faster than source or previous code! *****")
                 print("... based on refactoring from code at index: " + str(tracking_best_version) + "\n\n")
                 energy_efficiency_iteration += 1
                 energy_efficiency_refactor_success = True
@@ -802,6 +829,8 @@ def auto_code_llmgeneration_pipeline(prompts,
                         current_energy = energy_history[-1]
                         previous_power = power_history[tracking_best_version]
                         current_power = power_history[-1]
+                        previous_runtime = runtime_history[tracking_best_version]
+                        current_runtime = runtime_history[-1]
                     else:
                         # If we haven't saved a "best" code refactor,
                         # then just compare to the source code
@@ -809,15 +838,19 @@ def auto_code_llmgeneration_pipeline(prompts,
                         current_energy = energy_history[-1]
                         previous_power = power_history[0]
                         current_power = power_history[-1]
+                        previous_runtime = runtime_history[0]
+                        current_runtime = runtime_history[-1]
                     
                     # Track the "best" code generation
                     # If current_energy is < previous_energy, 
                     # then update tracking version to this current code generation.
                     # Otherwise, do not change the tracking version (keep it the same)
-                    if current_energy < previous_energy:
+                    if yes_power_feedback and (current_energy < previous_energy):
                         tracking_best_version = code_version  # IGNORE this comment: code_version has already been incremented, so we need to step one back
+                    elif (not yes_power_feedback and yes_runtime_feedback) and (current_runtime < previous_runtime):
+                        tracking_best_version = code_version 
                     
-                    print("\n\n----- " + color.BOLD + color.BLUE + "COMPARING CURRENT vs PREV ENERGY VALUES " + color.END + " -----\n")
+                    print("\n\n----- " + color.BOLD + color.BLUE + "COMPARING CURRENT vs PREV ENERGY OR RUNTIME VALUES " + color.END + " -----\n")
                     print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
                     
                     # Calculate the fractional improvement
@@ -829,27 +862,52 @@ def auto_code_llmgeneration_pipeline(prompts,
                         power_improvement = (previous_power - current_power) / previous_power
                     else:
                         power_improvement = current_power
+                    if previous_runtime != 0:
+                        runtime_improvement = (previous_runtime - current_runtime) / previous_runtime
+                    else:
+                        runtime_improvement = current_runtime
 
                     # Check if an improvement is < 1% AND that measurement is still better than the source code
                     energy_stagnant = energy_improvement < 0.011 and current_energy < energy_history[0]
                     power_stagnant = power_improvement < 0.011 and current_power < power_history[0]
+                    runtime_stagnant = runtime_improvement < 0.011 and current_runtime < runtime_history[0]
 
                     # Stopping condition:
                     # Stop if at least one metric is stagnant, while the other is not improving by more than 1%
                     # Do NOT stop if both are worsening (negative improvement values)    
                     # Adjustment (03.20.2025): only allow stagnation stop on energy consuption, increase min ee iteration
                     if (
+                        yes_power_feedback and
                         energy_efficiency_iteration > 4 
                         and
-                        (energy_stagnant)  # or power_stagnant)
+                        (energy_stagnant)
                         and
                         (energy_improvement > 0 or power_improvement > 0)
                     ):
                         print("\n\n-----> LASSI for Energy Efficiency IS FINISHED! <-----\n")
                         print(" energy_stagnant = " + str(energy_stagnant))
                         print(" power_stagnant = " + str(power_stagnant))
+                        print(" runtime_stagnant = " + str(runtime_stagnant))
                         print(" energy_improvement = " + str(round(energy_improvement, 2)))
                         print(" power_improvement = " + str(round(power_improvement, 2)))
+                        print(" runtime_improvement = " + str(round(runtime_improvement, 2)))
+                        print("\n\n")
+                        break
+                    elif (
+                        not yes_power_feedback and yes_runtime_feedback and
+                        energy_efficiency_iteration > 4
+                        and
+                        runtime_stagnant
+                        and
+                        (runtime_improvement > 0)
+                    ):
+                        print("\n\n-----> LASSI for Runtime Optimization IS FINISHED! <-----\n")
+                        print(" energy_stagnant = " + str(energy_stagnant))
+                        print(" power_stagnant = " + str(power_stagnant))
+                        print(" runtime_stagnant = " + str(runtime_stagnant))
+                        print(" energy_improvement = " + str(round(energy_improvement, 2)))
+                        print(" power_improvement = " + str(round(power_improvement, 2)))
+                        print(" runtime_improvement = " + str(round(runtime_improvement, 2)))
                         print("\n\n")
                         break
             else:

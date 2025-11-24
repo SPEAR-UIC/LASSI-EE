@@ -6,8 +6,9 @@ import html
 import re
 from IPython.display import display, HTML
 
-def argo_fetch_with_curl(data):
-    url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
+def argo_fetch_with_curl(data, dark_mode=True):
+    # url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
+    url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
     headers = [
         "-H", "Content-Type: application/json",
         "-H", "Accept-Encoding: identity",
@@ -15,6 +16,18 @@ def argo_fetch_with_curl(data):
         "-H", "Cache-Control: no-cache",
         "-H", "Host: apps-dev.inside.anl.gov"
     ]
+
+    # Theme settings
+    if dark_mode:
+        bg_color = "#1e1e1e"
+        text_color = "#ffffff"
+        border_color = "#444"
+        think_color = "#ff6b6b"
+    else:
+        bg_color = "#f8f8f8"
+        text_color = "#000000"
+        border_color = "#ddd"
+        think_color = "#d32f2f"
 
     # Check if payload is large (> 50KB as a safety threshold)
     use_file = len(data) > 50000
@@ -57,12 +70,12 @@ def argo_fetch_with_curl(data):
             # (Optional) If you want to add specific styling to tags, e.g. <think> tags:
             styled_text = re.sub(
                 r'&lt;think&gt;',
-                '<span style="color: #d32f2f; font-weight: bold;">&lt;think&gt;</span>',
+                f'<span style="color: {think_color}; font-weight: bold;">&lt;think&gt;</span>',
                 escaped_text
             )
             styled_text = re.sub(
                 r'&lt;/think&gt;',
-                '<span style="color: #d32f2f; font-weight: bold;">&lt;/think&gt;</span>',
+                f'<span style="color: {think_color}; font-weight: bold;">&lt;/think&gt;</span>',
                 styled_text
             )
             
@@ -73,8 +86,9 @@ def argo_fetch_with_curl(data):
             # Use dedent to remove any leading whitespace from the HTML template
             # Put everything on one line to avoid extra whitespace
             html_content = (
-                f"<pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;"
-                f"white-space:pre-wrap;font-family:monospace;margin:0;'>{display_text}</pre>"
+                f"<pre style='background:{bg_color};color:{text_color};padding:10px;"
+                f"border-radius:5px;border:1px solid {border_color};white-space:pre-wrap;"
+                f"font-family:monospace;margin:0;'>{display_text}</pre>"
                 f"<style>"
                 f"@keyframes blink {{0%{{opacity:1}}50%{{opacity:0}}100%{{opacity:1}}}}"
                 f"</style>"

@@ -166,6 +166,13 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
         # Construct the compilation command
         compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
         
+    elif lang == "C":
+        # The desired name of the compiled program
+        output_file = source_file.split('.c')[0]
+        # Construct the compilation command
+        compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
+
+    print(os.getcwd())
     print("Compile command: " + str(compile_command))
     
     # Execute the compilation command
@@ -277,6 +284,7 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
             # Open the file to ensure it is accessible
             with open(executable, 'rb') as code_file:
                 # If power measurement is enabled, set it up
+                start_power_time = 0
                 if power_measure:
                     start_power_time = time.time()
                     power_queue = queue.Queue()
@@ -361,10 +369,10 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
                 total_energy_joules = 0
                 ave_power = 0
                 
+                end_exe_time = time.time() - start_power_time
+                duration = end_exe_time - start_exe_time
                 # Only continue power measurements if no exe error
                 if power_measure and (return_code == 0 or any("RESULTS" in s for s in stdout_lines)):           
-                    end_exe_time = time.time() - start_power_time
-                    duration = end_exe_time - start_exe_time
                     # Continue collecting power data for a short time after inference
                     time.sleep(15)
                     end_power_time = time.time()            
@@ -402,6 +410,9 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
                         nvmlShutdown()
                     except NVMLError as err:
                         print(f"Failed to shutdown NVML: {err}")
+                
+                if metrics_results_string == "":
+                    metrics_results_string += f"\nCode execution duration: {duration:.2f} seconds" 
         
         except IOError as e:
             print(f"Pipeline error | An I/O error occurred: {e.strerror}")

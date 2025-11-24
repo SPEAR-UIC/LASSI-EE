@@ -234,6 +234,8 @@ def selfprompting_context_builder(generate_context_flag,
             general_system_prompt = prompts.get_system_prompt("general_system_cuda_ee")
         elif source_lang == "HIP":
             general_system_prompt = prompts.get_system_prompt("general_system_hip_ee")
+        elif source_lang == "C":
+            general_system_prompt = prompts.get_system_prompt("general_system_c_ee")
         # Inject provided knowledge context--must be provided from top-level LASSI framework script.
         content = "" + input_context + "\n\n"  # [BEGIN CONTEXT KNOWLEDGE]  [/END CONTEXT KNOWLEDGE]
 
@@ -274,6 +276,8 @@ def selfprompting_context_builder(generate_context_flag,
             general_system_prompt = prompts.get_system_prompt("general_system_nocontext_cuda_ee")
         elif source_lang == "HIP":
             general_system_prompt = prompts.get_system_prompt("general_system_nocontext_hip_ee")
+        elif source_lang == "C":
+            general_system_prompt = prompts.get_system_prompt("general_system_nocontext_c_ee")
         content = ""  # "Think carefully before developing the code following these instructions."
         content = content + "\n\n" + prompts.get_code_ee_refactoring_prompt(str(source_lang + "_baseline_nocontext"))
         

@@ -120,6 +120,14 @@
     "Altis": {
         "xxx":"xxx"
     },
+    "PolyBenchC": {
+        "source_folder": "PolyBenchC-4.2.1",
+        "3mm": {
+            "app_folder": "linear-algebra/kernels/3mm",
+            "app_params": [""],
+            "code_lines": 169
+        }
+    },
     "Miniapps": {
         "source_folder": "Miniapps",
         "miniMDock": {

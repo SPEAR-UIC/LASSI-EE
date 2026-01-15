@@ -7,7 +7,7 @@ import re
 from IPython.display import display, HTML
 
 def argo_fetch_with_curl(data):
-    url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
+    url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
     headers = [
         "-H", "Content-Type: application/json",
         "-H", "Accept-Encoding: identity",

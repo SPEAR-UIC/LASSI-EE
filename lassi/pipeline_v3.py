@@ -588,8 +588,11 @@ def auto_code_llmgeneration_pipeline(prompts,
                 execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
                 exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
             elif app_name == "XSBench":
+                # XSBench CUDA/HIP smoke-test defaults.
+                # NOTE: the notebook can override exe_input_parameters, but we ensure a small-ish
+                # workload here so the initial pipeline test completes quickly.
                 execute_file = "XSBench"  # HARD CODED FOR XSBENCH
-                exe_input_parameters = "-m event -l 1700000000".split()
+                exe_input_parameters = "-m event -l 1000000".split()
         else:
             compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
 

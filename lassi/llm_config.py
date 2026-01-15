@@ -328,7 +328,7 @@ def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False,
     else:
         url = "https://localhost:5000/argoapi/api/v1/resource/streamchat/"
     # url = "https://localhost:5000/argoapi/api/v1/resource/chat/"
-    # url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
+    url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
     
     
     if model == "gpto1preview":

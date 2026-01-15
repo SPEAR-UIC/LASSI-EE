@@ -62,8 +62,17 @@ def execute_code_selectvendor(experiment_data_directory, code_version, zero_shot
 
 
 def make_script_code(folder, code_compiler_kwds, source_lang):
+    """Build code via a Makefile.
+
+    Notes:
+    - `code_compiler_kwds` is treated as a list of `make` variable assignments/flags.
+      Example: `"-j SM_VERSION=80 CFLAGS=-std=c++17"`.
+    - XSBench CUDA (CUDA 13+) requires C++17+; the recommended override is
+      `CFLAGS=-std=c++17` (see [`LASSI-EE/test_xsbench_cuda_build_run.py`](LASSI-EE/test_xsbench_cuda_build_run.py:1)).
+    """
+
     print("Make - current dir: " + str(os.getcwd()))
-    
+
     # split your single-string of flags into a list
     cmd = ['make'] + code_compiler_kwds.split()
 
@@ -72,30 +81,45 @@ def make_script_code(folder, code_compiler_kwds, source_lang):
         target_dir = os.getcwd()
     else:
         target_dir = os.path.join(os.getcwd(), folder)
-    
+
     # copy current env and inject your exports
     env = os.environ.copy()
     if source_lang == "CUDA":
-        env['GPU_INCLUDE_PATH']  = '/usr/local/cuda/include'
-        env['GPU_LIBRARY_PATH']  = '/usr/local/cuda/lib64'
+        env['GPU_INCLUDE_PATH'] = '/usr/local/cuda/include'
+        env['GPU_LIBRARY_PATH'] = '/usr/local/cuda/lib64'
 
-    # disable all warnings in gcc/g++ (and NVCC’s host compiler)
-    # env['CFLAGS'] = env.get('CFLAGS', '') + ' -w'
-    # env['CXXFLAGS'] = env.get('CXXFLAGS', '') + ' -w'
-    # if you’re using nvcc directly in your Makefile you may need:
-    # env['NVCCFLAGS'] = env.get('NVCCFLAGS', '') + ' -w'
-    
-    # Execute the Make file script command
-    # make_script_file = str(os.getcwd()) + "/" + folder + "/" + "make"
-    #subprocess.run(['chmod', '+x', build_script_file], check=True)
-    # print("make_script_file: ", make_script_file)
+    # XSBench CUDA: ensure C++17 override is present (CUDA 13+ requirement).
+    # We do this defensively here so the pipeline works even if the notebook
+    # config forgets to pass `CFLAGS=-std=c++17`.
+    if source_lang == "CUDA":
+        has_cflags_override = any(tok.startswith("CFLAGS=") for tok in code_compiler_kwds.split())
+        if not has_cflags_override:
+            cmd.append("CFLAGS=-std=c++17")
+
+    # Clean first to avoid stale objects when the pipeline overwrites sources.
+    clean_cmd = ['make', 'clean']
+    clean = subprocess.run(
+        clean_cmd,
+        cwd=target_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    print(f"Running: {' '.join(clean_cmd)} in {target_dir}")
+    if clean.stdout.strip():
+        print("STDOUT:\n" + clean.stdout)
+    if clean.stderr.strip():
+        print("STDERR:\n" + clean.stderr)
+
+    # Execute the Makefile build
     result = subprocess.run(
         cmd,
         cwd=target_dir,
         env=env,
         capture_output=True,
         text=True,
-        check=False  # True if you want a CalledProcessError on failure
+        check=False,  # True if you want a CalledProcessError on failure
     )
 
     # Debug printouts

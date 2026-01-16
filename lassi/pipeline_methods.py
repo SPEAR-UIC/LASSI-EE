@@ -1,3 +1,4 @@
+import os
 import subprocess
 import lassi.code_manager
 from lassi.format_colors import color
@@ -127,37 +128,41 @@ def get_gpu_system_details():
     return "\n".join(details)
 
 
-def test_source_code(app_name, experiment_data_directory,
-                     code_version,
-                     trial_number,
-                     source_file_path,
-                     build_script,
-                     make_script,
-                     directory,
-                     source_lang,
-                     target_lang,
-                     exe_input_parameters,
-                     code_compiler,
-                     code_compiler_kwds,
-                     yes_execute,
-                     power_measure,
-                     input_content_llmjudge_dict,
-                     energy_history,
-                     power_history,
-                     runtime_history,
-                     valid_code_history
-                    ):
+def test_source_code(
+    app_name,
+    experiment_data_directory,
+    code_version,
+    trial_number,
+    source_file_path,
+    build_script,
+    make_script,
+    directory,
+    source_lang,
+    target_lang,
+    exe_input_parameters,
+    code_compiler,
+    code_compiler_kwds,
+    yes_execute,
+    power_measure,
+    input_content_llmjudge_dict,
+    energy_history,
+    power_history,
+    runtime_history,
+    valid_code_history,
+):
     """
     Compile, execute, and measure power profile of source code.
     """
     code_source = "source"  # generated
     print("\n\n----- " + color.BLUE + "SOURCE CODE: Test compile and execute" + color.END + " -----")
     print("\nTest compile the original source code: " + str(source_file_path))
-    if build_script:
-        compile_result = lassi.code_manager.build_script_code("source_codes", code_build_script)
-        execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level1/" + file_nameexe_input_parameters
-    elif make_script:
-        compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
+
+    # For Makefile-based apps, Stage 0 must build from the *source* tree, not the generated tree.
+    # The `directory` argument passed down from the notebook/pipeline is typically the output
+    # directory (e.g., generated_codes/...), so we override it here.
+    if make_script:
+        make_dir = os.path.dirname(source_file_path)
+        compile_result = lassi.code_manager.make_script_code(make_dir, code_compiler_kwds, source_lang)
         if compile_result == "":
             if source_lang == "CUDA":
                 if app_name == "miniMDock":
@@ -185,7 +190,22 @@ def test_source_code(app_name, experiment_data_directory,
         print("\nTest executing the compiled original source code: " + str(execute_file))
         exe_file_path = execute_file  # directory + "/" + execute_file
         zero_shot = False
-        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code_selectvendor(experiment_data_directory, code_version, zero_shot, trial_number, directory, exe_file_path, exe_input_parameters, power_measure, code_source, target_lang, build_script, make_script, gpu_vendor="auto", wait=1)
+        execute_result, exe_output_source, total_energy_joules, ave_power, std_power, duration, metrics_results_string = lassi.code_manager.execute_code_selectvendor(
+            experiment_data_directory,
+            code_version,
+            zero_shot,
+            trial_number,
+            make_dir if make_script else directory,
+            exe_file_path,
+            exe_input_parameters,
+            power_measure,
+            code_source,
+            target_lang,
+            build_script,
+            make_script,
+            gpu_vendor="auto",
+            wait=1,
+        )
         input_content_llmjudge_dict["source_stdout"] = exe_output_source
         input_content_llmjudge_dict["source_metrics"] = metrics_results_string
         # Save source code energy metrics:

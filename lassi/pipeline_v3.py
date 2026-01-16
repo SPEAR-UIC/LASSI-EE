@@ -170,12 +170,46 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Collect baseline energy measurements.
     if test_code_first:
         """Initial stage to run the SOURCE CODE and gather metrics."""
-        (idle_energy_joules, idle_ave_power, input_content_llmjudge_dict, sourcecode_total_energy_joules, sourcecode_ave_power, duration,
-         energy_history, power_history, runtime_history, valid_code_history) = lassi.pipeline_methods.test_source_code(app_name, experiment_data_directory, code_version, trial_number, source_file_path, build_script, make_script, directory, source_lang, target_lang,
-                                                                                                exe_input_parameters, code_compiler, code_compiler_kwds,
-                                                                                                yes_execute, power_measure, input_content_llmjudge_dict,
-                                                                                                energy_history, power_history, runtime_history, valid_code_history
-                                                                                               )
+        test_result = lassi.pipeline_methods.test_source_code(
+            app_name,
+            experiment_data_directory,
+            code_version,
+            trial_number,
+            source_file_path,
+            build_script,
+            make_script,
+            directory,
+            source_lang,
+            target_lang,
+            exe_input_parameters,
+            code_compiler,
+            code_compiler_kwds,
+            yes_execute,
+            power_measure,
+            input_content_llmjudge_dict,
+            energy_history,
+            power_history,
+            runtime_history,
+            valid_code_history,
+        )
+
+        if test_result is False:
+            print(color.BOLD + color.RED + "\n❌ PIPELINE ERROR: Source code failed to compile and/or execute during Stage 0.\n" + color.END)
+            return False
+
+        (
+            idle_energy_joules,
+            idle_ave_power,
+            input_content_llmjudge_dict,
+            sourcecode_total_energy_joules,
+            sourcecode_ave_power,
+            duration,
+            energy_history,
+            power_history,
+            runtime_history,
+            valid_code_history,
+        ) = test_result
+
         # Save the output details for this as the "best" code version for metadata record
         # This is necessary to capture now if no better refactored code is generated:
         best_refactored_code_dict = input_content_llmjudge_dict

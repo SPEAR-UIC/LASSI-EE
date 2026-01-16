@@ -76,11 +76,13 @@ def make_script_code(folder, code_compiler_kwds, source_lang):
     # split your single-string of flags into a list
     cmd = ['make'] + code_compiler_kwds.split()
 
-    # build the absolute path to your target folder
-    if folder in str(os.getcwd()):
-        target_dir = os.getcwd()
-    else:
-        target_dir = os.path.join(os.getcwd(), folder)
+    # Build the absolute path to the Makefile directory.
+    #
+    # IMPORTANT: `folder` is expected to be a relative path like
+    # "generated_codes/Miniapps/XSBench/cuda" or "source_codes/Miniapps/XSBench/cuda".
+    # The previous logic treated any `folder` substring match as "already in the right dir",
+    # which is wrong when CWD is the repo root (it contains "LASSI-EE" but not the subdir).
+    target_dir = folder if os.path.isabs(folder) else os.path.join(os.getcwd(), folder)
 
     # copy current env and inject your exports
     env = os.environ.copy()

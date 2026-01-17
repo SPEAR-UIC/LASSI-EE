@@ -39,7 +39,7 @@ class PromptDictionary:
             
             "SYCL_to_CUDA": "You are a professional coding AI assistant that specializes in translating parallelized C++ code using SYCL to the CUDA framework. Provide only complete code without explanation. Surround your new generated code with the three characters ```.",
 
-            "CUDA_to_SYCL": "You are a professional coding AI assistant that specializes in translating parallelized CUDA code to C++ code using SYCL. Provide only complete code without explanation. Surround your new generated code with the three characters ```.",
+            "CUDA_to_SYCL": "You are a professional coding AI assistant that specializes in translating CUDA C++ to SYCL C++ (SYCL 2020). Provide only the complete translated code file with no explanation. Output MUST be a single fenced code block using triple backticks (```), and nothing else. The generated SYCL code will be compiled using AdaptiveCpp (acpp). HARD CONSTRAINTS: (1) Do NOT include or reference oneAPI, oneDPL, dpct, or SYCLomatic. (2) Do NOT include any headers under <oneapi/...> or <dpct/...>. (3) Do NOT use oneAPI extensions like sycl::ext::oneapi::* unless they are part of core SYCL 2020. (4) Use only standard C++17 + core SYCL headers (e.g., <sycl/sycl.hpp> or <CL/sycl.hpp>) and implement any needed algorithms manually. (5) Preserve program behavior and stdout output.",
             
         }
         
@@ -126,7 +126,7 @@ class PromptDictionary:
             
             "SYCL_to_CUDA": "Translate the following parallelized C++ program written with the SYCL framework to instead use the CUDA framework.",
 
-            "CUDA_to_SYCL": "Translate the following parallelized CUDA program to instead use C++ code written with the SYCL framework.",
+            "CUDA_to_SYCL": "Translate the following parallelized CUDA program to SYCL 2020 C++ that compiles with AdaptiveCpp (acpp). Requirements: output a single complete .cpp file only (no explanation). Use only standard C++17 and core SYCL headers (<sycl/sycl.hpp> or <CL/sycl.hpp>). Do NOT use oneDPL / oneAPI headers (<oneapi/dpl/...>), dpct, SYCLomatic, or sycl::ext::oneapi::* APIs. Preserve the original program’s behavior and stdout output.",
         }
 
         # Code Comparison Prompts
@@ -209,6 +209,8 @@ class PromptDictionary:
         # Code Refactoring for Energy Efficiency TASK Prompts
         self.code_error_correction_prompt_dict = {
             "CUDA_error": "[Goal] Refactor the code below with a fix to eliminate the following stated error. [Key Requirements] Maintain Function Signatures & Kernel Logic: Keep all existing function and kernel names, class structures, parameters, and return types in your refactored code while fixing the error. Ensure Compilability: The corrected code must compile with NVCC. Avoid describing the entire code flow. Do Not Repeat the Plan or Give Explanations Outside the Code: Only provide the updated source code. [Return Format] Output Only the Refactored Source Code wrapped in triple backticks. No additional commentary before or after. [Warnings] Preserve all original behavior. Avoid renaming or removing functions, classes, kernels. Do not include extra text describing the changes outside of code comments. Be sure to fix the stated error.",
+
+            "CUDA_to_SYCL_error": "[Goal] Fix the SYCL translation code below to eliminate the stated compile/runtime error. [Key Requirements] Preserve behavior: preserve all original functionality and stdout output. Maintain structure: keep function names and program flow unless required to fix the error. Ensure Compilability: the corrected code must compile with AdaptiveCpp (acpp) using C++17 and core SYCL 2020. HARD CONSTRAINTS: do NOT include or reference oneAPI, oneDPL, dpct, or SYCLomatic; do NOT include headers under <oneapi/...> or <dpct/...>; do NOT use sycl::ext::oneapi::* APIs. Use only <sycl/sycl.hpp> (or <CL/sycl.hpp>) plus standard C++ headers. [Return Format] Output ONLY the complete corrected .cpp source code wrapped in triple backticks, and nothing else.",
 
             "HIP_error": "[Goal] Refactor the code below with a fix to eliminate the following stated error. [Key Requirements] Maintain Function Signatures & Kernel Logic: Keep all existing function and kernel names, class structures, parameters, and return types in your refactored code while fixing the error. Ensure Compilability: The corrected code must compile with HIPCC. Avoid describing the entire code flow. Do Not Repeat the Plan or Give Explanations Outside the Code: Only provide the updated source code. [Return Format] Output Only the Refactored Source Code wrapped in triple backticks. No additional commentary before or after. [Warnings] Preserve all original behavior. Avoid renaming or removing functions, classes, kernels. Do not include extra text describing the changes outside of code comments. Be sure to fix the stated error."
 

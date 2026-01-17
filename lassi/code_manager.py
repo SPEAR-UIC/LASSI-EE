@@ -2,15 +2,42 @@ import os
 import subprocess
 import time
 import shlex  # for splitting command line arguments
-from tqdm import tqdm  # for progress bar feature
+
+# tqdm is optional; the pipeline should still run in minimal environments.
+try:
+    from tqdm import tqdm  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    def tqdm(iterable, desc=None):
+        return iterable
+
 # Used for power consumption
 import csv
 from threading import Thread
 import threading
 from queue import Queue
 import queue
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage, nvmlShutdown
-import lassi.get_power
+
+# pynvml is optional; only required when power measurement is enabled.
+try:
+    from pynvml import (  # type: ignore
+        nvmlInit,
+        nvmlDeviceGetHandleByIndex,
+        nvmlDeviceGetPowerUsage,
+        nvmlShutdown,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    nvmlInit = None
+    nvmlDeviceGetHandleByIndex = None
+    nvmlDeviceGetPowerUsage = None
+    nvmlShutdown = None
+
+# get_power depends on pandas; make it optional so translation-only runs work
+# in minimal environments.
+try:
+    import lassi.get_power  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    lassi = None  # will be checked at runtime when power_measure=True
+
 from lassi.format_colors import color
 
 # AMD vendor GPU support imports
@@ -69,37 +96,43 @@ def make_script_code(folder, code_compiler_kwds, source_lang):
       Example: `"-j SM_VERSION=80 CFLAGS=-std=c++17"`.
     - XSBench CUDA (CUDA 13+) requires C++17+; the recommended override is
       `CFLAGS=-std=c++17` (see [`LASSI-EE/test_xsbench_cuda_build_run.py`](LASSI-EE/test_xsbench_cuda_build_run.py:1)).
+
+    IMPORTANT:
+    - `folder` may be an absolute path (preferred) or a path relative to the repo root.
+    - We always run `make` with `cwd=target_dir` unless the caller explicitly uses `-C`.
     """
 
     print("Make - current dir: " + str(os.getcwd()))
 
-    # split your single-string of flags into a list
-    cmd = ['make'] + code_compiler_kwds.split()
+    # Split your single-string of flags into a list.
+    # IMPORTANT: use shlex.split so tokens like "CFLAGS=-std=c++17" and "SRC=Main.cpp" are preserved.
+    # Also guard against accidentally passing a full "make ..." command string.
+    kwds = shlex.split(code_compiler_kwds)
+    if kwds and kwds[0] == "make":
+        kwds = kwds[1:]
+    cmd = ["make"] + kwds
 
     # Build the absolute path to the Makefile directory.
-    #
-    # IMPORTANT: `folder` is expected to be a relative path like
-    # "generated_codes/Miniapps/XSBench/cuda" or "source_codes/Miniapps/XSBench/cuda".
-    # The previous logic treated any `folder` substring match as "already in the right dir",
-    # which is wrong when CWD is the repo root (it contains "LASSI-EE" but not the subdir).
+    # If `folder` is already absolute, keep it.
+    # If relative, interpret it relative to the repo root (current CWD).
     target_dir = folder if os.path.isabs(folder) else os.path.join(os.getcwd(), folder)
 
     # copy current env and inject your exports
     env = os.environ.copy()
     if source_lang == "CUDA":
-        env['GPU_INCLUDE_PATH'] = '/usr/local/cuda/include'
-        env['GPU_LIBRARY_PATH'] = '/usr/local/cuda/lib64'
+        env["GPU_INCLUDE_PATH"] = "/usr/local/cuda/include"
+        env["GPU_LIBRARY_PATH"] = "/usr/local/cuda/lib64"
+        # Ensure nvcc is discoverable even when running from Jupyter/CI where PATH is minimal.
+        env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
 
     # XSBench CUDA: ensure C++17 override is present (CUDA 13+ requirement).
-    # We do this defensively here so the pipeline works even if the notebook
-    # config forgets to pass `CFLAGS=-std=c++17`.
     if source_lang == "CUDA":
-        has_cflags_override = any(tok.startswith("CFLAGS=") for tok in code_compiler_kwds.split())
+        has_cflags_override = any(tok.startswith("CFLAGS=") for tok in kwds)
         if not has_cflags_override:
             cmd.append("CFLAGS=-std=c++17")
 
     # Clean first to avoid stale objects when the pipeline overwrites sources.
-    clean_cmd = ['make', 'clean']
+    clean_cmd = ["make", "clean"]
     clean = subprocess.run(
         clean_cmd,
         cwd=target_dir,
@@ -114,14 +147,19 @@ def make_script_code(folder, code_compiler_kwds, source_lang):
     if clean.stderr.strip():
         print("STDERR:\n" + clean.stderr)
 
-    # Execute the Makefile build
+    # Execute the Makefile build.
+    # If the caller uses `-C <dir>`, do not also set cwd to that same dir.
+    run_cwd = target_dir
+    if any(tok == "-C" or tok.startswith("-C") for tok in cmd):
+        run_cwd = os.getcwd()
+
     result = subprocess.run(
         cmd,
-        cwd=target_dir,
+        cwd=run_cwd,
         env=env,
         capture_output=True,
         text=True,
-        check=False,  # True if you want a CalledProcessError on failure
+        check=False,
     )
 
     # Debug printouts
@@ -135,7 +173,10 @@ def make_script_code(folder, code_compiler_kwds, source_lang):
     if result.returncode == 0:
         print("\n" + color.BOLD + "Make build/Compilation of code successful!\n" + color.END)
     else:
-        return_result = result.stderr
+        # Prefer stderr, but if make prints errors to stdout, include that too.
+        return_result = (result.stderr or "")
+        if not return_result.strip() and result.stdout.strip():
+            return_result = result.stdout
 
     return return_result
         
@@ -163,7 +204,7 @@ def build_script_code(folder, code_build_script):
 
 
 def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
-       
+
     # Split the compile keywords into a list of arguments
     compile_kwds_list = shlex.split(code_compiler_kwds)
 
@@ -172,13 +213,13 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
         output_file = source_file.split('.cpp')[0]
         # Construct the compilation command
         compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
-    
+
     elif lang == "CUDA":
         # The desired name of the compiled program
         output_file = source_file.split('.cu')[0]
         # Construct the compilation command
         compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
-    
+
     elif lang == "HIP":  # NEW: Add HIP support
         # The desired name of the compiled program
         if source_file.endswith('.cu'):
@@ -191,9 +232,21 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
             output_file = source_file + '_compiled'  # Fallback
         # Construct the compilation command
         compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
-        
+
+    elif lang == "SYCL":
+        # SYCL is standard C++ source; we expect .cpp by default.
+        # The toolchain must provide the correct compiler and flags (e.g., -fsycl).
+        if source_file.endswith('.cpp'):
+            output_file = source_file.split('.cpp')[0]
+        else:
+            output_file = source_file + '_compiled'
+        compile_command = [code_compiler] + compile_kwds_list + [source_file, '-o', output_file]
+
+    else:
+        raise ValueError(f"Unsupported language for compilation: {lang}")
+
     print("Compile command: " + str(compile_command))
-    
+
     # Execute the compilation command
     result = subprocess.run(compile_command, capture_output=True, text=True)
 
@@ -207,7 +260,7 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
         print("\n" + color.BOLD + color.RED + "***** Compilation failed.\n" + color.END)
         print(" Error message: ")
         print(return_result)
-        
+
     return return_result, output_file
 
 
@@ -232,16 +285,33 @@ def execute_code(experiment_data_directory, code_version, zero_shot, trial_numbe
     for _ in tqdm(range(wait), desc="Waiting for the system to settle down for " + str(wait) + " seconds..."):
         time.sleep(1)
 
+    # Ensure these are always defined even if we fail early (e.g., missing executable)
+    stdout_lines = []
+    stderr_lines = []
+    exception_error = ""
     return_code = ""
 
     print("executable_file: ", executable_file)
     # Capture current directory to switch back after code execution
     if make_script:
-        # build the absolute path to your target folder
-        if directory in str(os.getcwd()):
-            initial_dir = os.getcwd()
+        # For make-based builds:
+        # - Stage 0 (source CUDA/HIP) produces the binary in the *source* tree.
+        # - Stage 1+ (generated SYCL) produces the binary in the *experiment* dir.
+        #
+        # Prefer the executable's directory when an absolute path is provided.
+        # This is the most reliable for generated-code runs where the binary is
+        # emitted into the experiment directory.
+        if os.path.isabs(executable_file):
+            initial_dir = os.path.dirname(executable_file) or os.getcwd()
         else:
-            initial_dir = os.path.join(os.getcwd(), directory)
+            # Otherwise, use the caller-provided `directory`.
+            # NOTE: `directory` can be a relative path like `generated_codes/.../sycl`
+            # which is relative to the repo root.
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            if os.path.isabs(directory):
+                initial_dir = directory
+            else:
+                initial_dir = os.path.join(repo_root, directory) if directory else repo_root
     else:
         initial_dir = os.getcwd()
     print("initial_dir: ", initial_dir)

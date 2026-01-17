@@ -1,0 +1,131 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+GPU Vendor: NVIDIA
+Date-time: 01-16-2026_t20_56_58
+Application: XSBench/cuda
+
+LLM Source: argo
+Model: gpt52
+Model coder: gpt52
+Model judge: gpt52
+
+Power measurement: False
+
+----- PIPELINE METRICS -----
+GPU Device Vendor: nvidia
+Experiment date-time: 01-16-2026_t20_56_58
+Time (sec): 356.18 | 5.94 (min)
+Experiment trial: 1
+Code Error Self-correction iteration count: 1
+Energy Efficiency Self-improvement iteration count: 0
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+================================================================================
+                   __   __ ___________                 _                        
+                   \ \ / //  ___| ___ \               | |                       
+                    \ V / \ `--.| |_/ / ___ _ __   ___| |__                     
+                    /   \  `--. \ ___ \/ _ \ '_ \ / __| '_ \                    
+                   / /^\ \/\__/ / |_/ /  __/ | | | (__| | | |                   
+                   \/   \/\____/\____/ \___|_| |_|\___|_| |_|                   
+
+================================================================================
+                    Developed at Argonne National Laboratory
+                                   Version: 20
+================================================================================
+                                  INPUT SUMMARY
+================================================================================
+Programming Model:            CUDA
+CUDA Device:                  NVIDIA RTX 5000 Ada Generation Laptop GPU
+Simulation Method:            Event Based
+Grid Type:                    Unionized Grid
+Materials:                    12
+H-M Benchmark Size:           large
+Total Nuclides:               355
+Gridpoints (per Nuclide):     11,303
+Unionized Energy Gridpoints:  4,012,565
+Total XS Lookups:             1,000,000
+Est. Memory Usage (MB):       5,649
+Binary File Mode:             Off
+================================================================================
+                         INITIALIZATION - DO NOT PROFILE
+================================================================================
+Intializing nuclide grids...
+Intializing unionized grid...
+Intializing material data...
+Intialization complete. Allocated 5648 MB of data on CPU.
+Allocating and moving simulation data to GPU memory space...
+GPU Intialization complete. Allocated 5656 MB of data on GPU.
+
+================================================================================
+                                   SIMULATION
+================================================================================
+Running baseline event-based simulation...
+Reducing verification results...
+
+Simulation complete.
+================================================================================
+                                     RESULTS
+================================================================================
+NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis
+Runtime:     0.038 seconds
+Lookups:     1,000,000
+Lookups/s:   26,646,743
+Verification checksum: 995778 (WARNING - INAVALID CHECKSUM!)
+================================================================================
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+==============================================================================
+                   __   __ ___________                 _                        
+                   \ \ / //  ___| ___ \               | |                       
+                    \ V / \ `--.| |_/ / ___ _ __   ___| |__                     
+                    /   \  `--. \ ___ \/ _ \ '_ \ / __| '_ \                    
+                   / /^\ \/\__/ / |_/ /  __/ | | | (__| | | |                   
+                   \/   \/\____/\____/ \___|_| |_|\___|_| |_|                   
+
+==============================================================================
+                    Developed at Argonne National Laboratory
+                                   Version: 20
+==============================================================================
+                                  INPUT SUMMARY
+==============================================================================
+Programming Model:            SYCL
+SYCL Device:                  NVIDIA RTX 5000 Ada Generation Laptop GPU
+Simulation Method:            Event Based
+Grid Type:                    Unionized Grid
+Materials:                    12
+H-M Benchmark Size:           large
+Total Nuclides:               355
+Gridpoints (per Nuclide):     11,303
+Unionized Energy Gridpoints:  4,012,565
+Total XS Lookups:             100,000,000
+Est. Memory Usage (MB):       5,649
+Binary File Mode:             Off
+==============================================================================
+                         INITIALIZATION - DO NOT PROFILE
+==============================================================================
+Intializing nuclide grids...
+Intializing unionized grid...
+Intializing material data...
+Intialization complete. Allocated 5648 MB of data on CPU.
+Allocating and moving simulation data to GPU memory space...
+GPU Intialization complete. Allocated 6411 MB of data on GPU.
+
+==============================================================================
+                                   SIMULATION
+==============================================================================
+Running baseline event-based simulation...
+Reducing verification results...
+
+Simulation complete.
+==============================================================================
+                                     RESULTS
+==============================================================================
+NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis
+Runtime:     3.359 seconds
+Lookups:     100,000,000
+Lookups/s:   29,774,442
+Verification checksum: 21314 (WARNING - INAVALID CHECKSUM!)
+==============================================================================

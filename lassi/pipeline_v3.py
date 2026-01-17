@@ -110,6 +110,9 @@ def auto_code_llmgeneration_pipeline(prompts,
     self_correction_max = 10
     self_correction_power_counter_max = 10
     exe_output_source = ""
+    # NOTE: v3 pipeline was originally written for energy-efficiency (EE) refactoring.
+    # For translation-only runs (e.g., CUDA->SYCL) we keep the base self-correction loop,
+    # but we do NOT want to enter any EE prompt-strategy branches.
     energy_efficiency_refactor_success = False
     energy_efficiency_iteration = 0
     code_version = 0
@@ -170,20 +173,36 @@ def auto_code_llmgeneration_pipeline(prompts,
     # Collect baseline energy measurements.
     if test_code_first:
         """Initial stage to run the SOURCE CODE and gather metrics."""
+
+        # IMPORTANT: Stage 0 must compile/run the *original source* using the source toolchain.
+        # For CUDA miniapps this is typically the Makefile (nvcc under the hood).
+        # Do NOT use the generated-code toolchain (e.g., SYCL compiler) for Stage 0.
+        stage0_make_script = make_script
+        stage0_build_script = build_script
+        stage0_code_compiler = code_compiler
+        stage0_code_compiler_kwds = code_compiler_kwds
+
+        if source_lang == "CUDA":
+            stage0_make_script = True
+            stage0_build_script = False
+            stage0_code_compiler = "make"
+            # Keep the known-good XSBench smoke-test flags.
+            stage0_code_compiler_kwds = "-j SM_VERSION=80 CFLAGS=-std=c++17"
+
         test_result = lassi.pipeline_methods.test_source_code(
             app_name,
             experiment_data_directory,
             code_version,
             trial_number,
             source_file_path,
-            build_script,
-            make_script,
+            stage0_build_script,
+            stage0_make_script,
             directory,
             source_lang,
             target_lang,
             exe_input_parameters,
-            code_compiler,
-            code_compiler_kwds,
+            stage0_code_compiler,
+            stage0_code_compiler_kwds,
             yes_execute,
             power_measure,
             input_content_llmjudge_dict,
@@ -196,6 +215,30 @@ def auto_code_llmgeneration_pipeline(prompts,
         if test_result is False:
             print(color.BOLD + color.RED + "\n❌ PIPELINE ERROR: Source code failed to compile and/or execute during Stage 0.\n" + color.END)
             return False
+
+        (
+            idle_energy_joules,
+            idle_ave_power,
+            input_content_llmjudge_dict,
+            sourcecode_total_energy_joules,
+            sourcecode_ave_power,
+            duration,
+            energy_history,
+            power_history,
+            runtime_history,
+            valid_code_history,
+        ) = test_result
+
+        # Save the output details for this as the "best" code version for metadata record
+        # This is necessary to capture now if no better refactored code is generated:
+        best_refactored_code_dict = input_content_llmjudge_dict
+
+        experiment_data["source_v0_energy_J"] = sourcecode_total_energy_joules
+        experiment_data["source_v0_avg_power_W"] = sourcecode_ave_power
+        experiment_data["source_v0_runtime_s"] = duration
+
+        print(print("\n----- END OF STAGE 0: TEST SOURCE -----\n"))
+        print(color.BOLD + color.DARKORANGE + "\n*** DEBUG: code_version: " + str(code_version) + " | tracking_best_version: " + str(tracking_best_version) + " ***"  + color.END)
 
         (
             idle_energy_joules,
@@ -415,7 +458,12 @@ def auto_code_llmgeneration_pipeline(prompts,
             # error_correction_prompt_outro = " Eliminate this specific error by re-factoring the above code with an appropriate fix while also using the following background context: " + original_context_content_prompt
             # error_prompt = code_block + error_correction_prompt_intro + error_message + error_correction_prompt_outro
             # error_correction_prompt_outro = " Eliminate this specific error by re-factoring the above code with an appropriate fix."
-            error_correction_prompt = prompts.get_code_error_correction_prompt(source_lang + "_error")
+            # For translation runs (e.g., CUDA->SYCL), use a target-specific error prompt so the
+            # self-correction loop doesn't assume NVCC/HIPCC or reintroduce oneAPI-only deps.
+            if target_lang == "SYCL" and source_lang == "CUDA":
+                error_correction_prompt = prompts.get_code_error_correction_prompt("CUDA_to_SYCL_error")
+            else:
+                error_correction_prompt = prompts.get_code_error_correction_prompt(source_lang + "_error")
             # TODO: maybe not include context for the code errors? original_context_content_prompt
             error_prompt = error_correction_prompt + "\n\n" + "[START OF CODE TO FIX] " + code_block + "\n\n" + "[/END OF CODE TO FIX] " + "\n\n" + error_correction_prompt_intro + "\n\n" + error_message
             error_prompt_tokens = lassi.token_analysis.token_count(error_prompt)
@@ -606,6 +654,20 @@ def auto_code_llmgeneration_pipeline(prompts,
         with open(file_path, 'w') as file:
             file.write(code_block)
         file.close()
+
+        # If we're compiling generated SYCL via make, drop a reusable Makefile into the experiment dir.
+        # The Makefile is generic; we just pass SRC/OUT and toolchain vars via make arguments.
+        if target_lang == "SYCL" and make_script:
+            try:
+                template_path = os.path.join(os.path.dirname(__file__), "sycl_makefile_template.mk")
+                makefile_dst = os.path.join(experiment_data_directory, "Makefile")
+                with open(template_path, "r") as src_f:
+                    template_contents = src_f.read()
+                with open(makefile_dst, "w") as dst_f:
+                    dst_f.write(template_contents)
+                print("Wrote SYCL Makefile:", makefile_dst)
+            except Exception as e:
+                print(color.BOLD + color.YELLOW + "\n⚠️  Could not write SYCL Makefile template: " + str(e) + color.END)
     
         # Compile the generated code, compile_result == "" if no error
         if build_script:
@@ -616,19 +678,80 @@ def auto_code_llmgeneration_pipeline(prompts,
         elif make_script:
             # run make command
             print("\n** RUN MAKE COMMAND TO COMPILE **")
-            compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
-            # print("compile_result: ", compile_result)
-            if app_name == "miniMDock":
-                execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
-            elif app_name == "XSBench":
-                # XSBench CUDA/HIP smoke-test defaults.
-                # NOTE: the notebook can override exe_input_parameters, but we ensure a small-ish
-                # workload here so the initial pipeline test completes quickly.
-                execute_file = "XSBench"  # HARD CODED FOR XSBENCH
-                exe_input_parameters = "-m event -l 1000000".split()
+
+            if target_lang == "SYCL":
+                # Build the generated SYCL file in the experiment directory.
+                # IMPORTANT: Stage 0 (CUDA) still uses the XSBench Makefile in the source tree.
+                sycl_src = os.path.basename(file_path)
+                sycl_out = file_name_save  # executable name
+
+                # Ensure the SYCL compiler is discoverable.
+                sycl_compiler = code_compiler
+                if sycl_compiler in ["acpp", "<SYCL_COMPILER>"]:
+                    acpp_default = "/home/vchirio/adaptivecpp/bin/acpp"
+                    if os.path.exists(acpp_default):
+                        sycl_compiler = acpp_default
+
+                # Write a hardcoded Makefile into the experiment directory that compiles the
+                # generated SYCL source file. This avoids passing `SYCL_FLAGS=-O3 -std=c++17`
+                # via the make command line (which breaks because make parses `-std=c++17` as
+                # a make option when args are whitespace-split).
+                hardcoded_mk = os.path.join(os.path.dirname(__file__), "sycl_makefile_hardcoded.mk")
+                makefile_dst = os.path.join(experiment_data_directory, "Makefile")
+                try:
+                    with open(hardcoded_mk, "r") as src_f:
+                        template_contents = src_f.read()
+                    template_contents = template_contents.replace("<SYCL_COMPILER>", sycl_compiler)
+                    template_contents = template_contents.replace("<SYCL_FLAGS>", code_compiler_kwds)
+                    template_contents = template_contents.replace("<SYCL_LDFLAGS>", "")
+                    template_contents = template_contents.replace("<SYCL_SRC>", file_path)
+                    template_contents = template_contents.replace("<SYCL_OUT>", sycl_out)
+                    with open(makefile_dst, "w") as dst_f:
+                        dst_f.write(template_contents)
+                    print("Wrote SYCL Makefile:", makefile_dst)
+                except Exception as e:
+                    print(color.BOLD + color.YELLOW + "\n⚠️  Could not write hardcoded SYCL Makefile: " + str(e) + color.END)
+
+                # Now build using that Makefile.
+                make_args = f"-C {experiment_data_directory}"
+                compile_result = lassi.code_manager.make_script_code(".", make_args, "SYCL")
+                execute_file = os.path.join(experiment_data_directory, sycl_out)
+            else:
+                compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
+                # print("compile_result: ", compile_result)
+                if app_name == "miniMDock":
+                    execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
+                    exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+                elif app_name == "XSBench":
+                    # XSBench CUDA/HIP smoke-test defaults.
+                    # NOTE: the notebook can override exe_input_parameters, but we ensure a small-ish
+                    # workload here so the initial pipeline test completes quickly.
+                    execute_file = "XSBench"  # HARD CODED FOR XSBENCH
+                    exe_input_parameters = "-m event -l 1000000".split()
         else:
+            # For SYCL, we expect the caller to provide a SYCL compiler + flags.
+            # If the toolchain is not installed, compilation will fail.
             compile_result, execute_file = lassi.code_manager.compile_code(file_path, target_lang, code_compiler, code_compiler_kwds)
+
+            # Translation-only mode: if SYCL toolchain is missing, do not abort the pipeline.
+            # We still want the notebook run to complete and leave the generated SYCL code on disk.
+            if target_lang == "SYCL" and compile_result != "":
+                print(
+                    color.BOLD
+                    + color.YELLOW
+                    + "\n⚠️  SYCL compilation failed (likely SYCL compiler not installed/configured)."
+                    + color.END
+                )
+                print("Generated SYCL code saved at:", file_path)
+                print("Compiler:", code_compiler)
+                print("Compiler flags:", code_compiler_kwds)
+                print("Compile error:\n", compile_result)
+
+                # Stop further self-correction/EE logic and finish successfully.
+                # Ensure we don't attempt to execute.
+                yes_execute = False
+                compile_result = ""
+                execute_file = ""
 
         print("\nExecute file: " + str(execute_file))
 
@@ -637,8 +760,10 @@ def auto_code_llmgeneration_pipeline(prompts,
             # Force the switch to LASSI-EE pipeline.
             # Still need to record empty values for history
             stage = ""
-            compile_result = "energy_efficiency"
-            change_strategy = True
+            # Translation-only: treat this as a normal compile failure so we stay in the
+            # base self-correction loop and do not enter EE prompt-strategy branches.
+            compile_result = "compile_error" if target_lang == "SYCL" else "energy_efficiency"
+            change_strategy = False if target_lang == "SYCL" else True
             zero_shot = False  # Stop base LLM attempt after one try.
             force_save_baseline_llm = True  # We need to save Null data to maintain history tracking
         
@@ -660,8 +785,10 @@ def auto_code_llmgeneration_pipeline(prompts,
                     # Force the switch to LASSI-EE pipeline.
                     # Still need to record empty values for history
                     stage = ""
-                    compile_result = "energy_efficiency"
-                    change_strategy = True
+                    # Translation-only: treat this as a normal compile failure so we stay in the
+                    # base self-correction loop and do not enter EE prompt-strategy branches.
+                    compile_result = "compile_error" if target_lang == "SYCL" else "energy_efficiency"
+                    change_strategy = False if target_lang == "SYCL" else True
                     zero_shot = False  # Stop base LLM attempt after one try.
                     force_save_baseline_llm = True  # We need to save Null data to maintain history tracking
             else:

@@ -129,12 +129,12 @@
         },
         "XSBench_hip": {
             "app_folder": "XSBench/hip",
-            "app_params": ["-m", "event", "-l", "1700000000"],
+            "app_params": ["-m", "event", "-l", "100000000"],
             "code_lines": 1472
         },
         "XSBench": {
             "app_folder": "XSBench/cuda",
-            "app_params": ["-m", "event", "-l", "1700000000"],
+            "app_params": ["-m", "event", "-l", "100000000"],
             "code_lines": 2200
         }
     }

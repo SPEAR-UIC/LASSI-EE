@@ -293,13 +293,24 @@ def selfprompting_context_builder(generate_context_flag,
         # For initial zero-shot attempt
         # Fetch system prompt when not using context
         if source_lang == "CUDA":
-            general_system_prompt = prompts.get_system_prompt("general_system_nocontext_cuda_ee")
+            # If we're translating CUDA->SYCL, use the translation system prompt.
+            if target_lang == "SYCL":
+                general_system_prompt = prompts.get_system_prompt("CUDA_to_SYCL")
+            else:
+                general_system_prompt = prompts.get_system_prompt("general_system_nocontext_cuda_ee")
         elif source_lang == "HIP":
             general_system_prompt = prompts.get_system_prompt("general_system_nocontext_hip_ee")
-        content = ""  # "Think carefully before developing the code following these instructions."
-        content = content + "\n\n" + prompts.get_code_ee_refactoring_prompt(str(source_lang + "_baseline_nocontext"))
-        
-    
+
+        content = ""
+
+        # If we're translating, use the translation task prompt.
+        if source_lang == "CUDA" and target_lang == "SYCL":
+            content = content + "\n\n" + prompts.get_codetranslate_prompt("CUDA_to_SYCL")
+        else:
+            # Default: energy-efficiency refactor prompt
+            content = content + "\n\n" + prompts.get_code_ee_refactoring_prompt(str(source_lang + "_baseline_nocontext"))
+
+
     # Save the original context prompt for re-use during error correction.
     # original_context_content_prompt = content
     # This token count does not include the source code

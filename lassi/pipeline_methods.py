@@ -170,16 +170,16 @@ def test_source_code(
                     exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
                 elif app_name == "XSBench":
                     execute_file = "XSBench"  # HARD CODED FOR XSBENCH
-                    # XSBench smoke-test workload (matches [`LASSI-EE/test_xsbench_cuda_build_run.py`](LASSI-EE/test_xsbench_cuda_build_run.py:1))
-                    exe_input_parameters = "-m event -l 1000000".split()
+                    # Use the exact same CLI args as the notebook/pipeline provided.
+                    # (Do not override with a smoke-test workload.)
             elif source_lang == "HIP":
                 if app_name == "miniMDock":
                     execute_file = "bin/autodock_hip_gpu_64wi"  # HARD CODED FOR MINIMDOCK
                     exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
                 elif app_name == "XSBench":
                     execute_file = "XSBench"  # HARD CODED FOR XSBENCH
-                    # XSBench smoke-test workload (matches [`LASSI-EE/test_xsbench_cuda_build_run.py`](LASSI-EE/test_xsbench_cuda_build_run.py:1))
-                    exe_input_parameters = "-m event -l 1000000".split()
+                    # Use the exact same CLI args as the notebook/pipeline provided.
+                    # (Do not override with a smoke-test workload.)
     else:
         compile_result, execute_file = lassi.code_manager.compile_code(source_file_path, source_lang, code_compiler, code_compiler_kwds)
     

@@ -2,7 +2,7 @@
 
 This standalone bundle intentionally supports **only** the Argo gateway.
 
-Implementation is based on the original project’s
+Implementation is based on the original project's
 [`lassi.llm_config.argo_llm()`](../../lassi/llm_config.py:368) behavior:
 - POST to `https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/`
 - JSON payload with keys: `user`, `model`, `system`, `prompt` (list), `stop`, `temperature`, `top_p`
@@ -12,8 +12,6 @@ Auth:
 - The original code relies on being on the ANL network and does not include an API key.
 - If your deployment requires auth, set `ARGO_API_KEY` and it will be sent as a Bearer token.
 """
-
-from __future__ import annotations
 
 import json
 import os
@@ -83,7 +81,8 @@ def argo_llm(
 
     cmd += ["-d", payload]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # Python 3.6 compatible: use stdout/stderr instead of capture_output
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     if proc.returncode != 0:
         raise RuntimeError(f"Argo curl call failed (rc={proc.returncode}): {proc.stderr.strip()}")
 

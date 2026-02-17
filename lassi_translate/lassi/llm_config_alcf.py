@@ -1,7 +1,7 @@
 """ALCF Inference Endpoints backend.
 
 This module provides access to ALCF's inference endpoints using the OpenAI-compatible API.
-Requires Globus authentication token.
+Requires Globus authentication token via the globus_env conda environment.
 
 Documentation: https://docs.alcf.anl.gov/ai-testbed/inference-endpoints/
 """
@@ -9,43 +9,6 @@ Documentation: https://docs.alcf.anl.gov/ai-testbed/inference-endpoints/
 import json
 import os
 import subprocess
-import sys
-
-
-def get_alcf_token():
-    """Get ALCF access token using inference_auth_token.py helper."""
-    # Check if token helper exists
-    token_helper_path = os.path.expanduser("~/inference_auth_token.py")
-
-    if not os.path.exists(token_helper_path):
-        raise RuntimeError(
-            "ALCF token helper not found. Please download it:\n"
-            "wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py\n"
-            "Then authenticate: python inference_auth_token.py authenticate"
-        )
-
-    # Import the authentication module directly instead of subprocess
-    # This ensures it uses the same Python environment (venv)
-    try:
-        # Add the helper's directory to Python path
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("inference_auth_token", token_helper_path)
-        auth_module = importlib.util.module_from_spec(spec)
-        sys.modules["inference_auth_token"] = auth_module
-        spec.loader.exec_module(auth_module)
-
-        # Get the access token
-        token = auth_module.get_access_token()
-
-        if token:
-            return token
-        else:
-            raise RuntimeError("Empty token returned")
-
-    except ImportError as e:
-        raise RuntimeError(f"Failed to import authentication module: {e}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to get ALCF token: {e}")
 
 
 def alcf_llm(
@@ -54,12 +17,12 @@ def alcf_llm(
     content_prompt: str,
     temp: float = 0.2,
     verifyprompt: bool = False,
-    cluster: str = "sophia",
+    cluster: str = "metis",
 ) -> str:
     """Call ALCF Inference Endpoints.
 
     Args:
-        model: Model name (e.g., "meta-llama/Llama-3.3-70B-Instruct")
+        model: Model name (e.g., "gpt-oss-120b")
         system_prompt: System prompt
         content_prompt: User prompt
         temp: Temperature (0.0-1.0)
@@ -92,12 +55,6 @@ def alcf_llm(
     else:
         print("\n=====< LLM Prompt Not Shown >=====\n")
 
-    # Get authentication token
-    try:
-        token = get_alcf_token()
-    except Exception as e:
-        raise RuntimeError(f"Authentication failed: {e}")
-
     # Build request payload (OpenAI format)
     data = {
         "model": model,
@@ -111,25 +68,43 @@ def alcf_llm(
 
     payload = json.dumps(data)
 
-    # Build curl command string (used both directly and via SSH)
-    # Shell-escape the payload for safe passing through SSH
+    # Shell-escape the payload for safe passing through bash/SSH
     payload_escaped = payload.replace("'", "'\\''")
-    curl_cmd = (
+
+    # The curl command uses $access_token (set by the shell command below)
+    curl_part = (
         f"curl -sS --connect-timeout 10 --max-time 60"
         f" -X POST '{url}'"
-        f" -H 'Authorization: Bearer {token}'"
+        f" -H \"Authorization: Bearer $access_token\""
         f" -H 'Content-Type: application/json'"
         f" -d '{payload_escaped}'"
     )
 
+    # Conda env to use (can be overridden via ALCF_CONDA_ENV env var)
+    conda_env = os.environ.get("ALCF_CONDA_ENV", "globus_env")
+
+    # Full shell command: source bashrc (to initialize conda), activate env,
+    # get token, validate it, then run curl.
+    # $HOME/inference_auth_token.py is used so the shell expands ~ correctly.
+    shell_cmd = (
+        f"source ~/.bashrc 2>/dev/null || true; "
+        f"conda activate {conda_env} 2>/dev/null || true; "
+        f"access_token=$(python $HOME/inference_auth_token.py get_access_token); "
+        f"if [ -z \"$access_token\" ]; then echo 'ERROR: empty token from inference_auth_token.py' >&2; exit 1; fi; "
+        f"{curl_part}"
+    )
+
     # Detect if on compute node (hostname starts with 'x' on Aurora)
-    hostname = subprocess.run(["hostname"], stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE,
-                              universal_newlines=True).stdout.strip()
+    hostname = subprocess.run(
+        ["hostname"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True
+    ).stdout.strip()
     on_compute_node = hostname.startswith('x')
 
     if on_compute_node:
-        # SSH to login node to execute the curl command
+        # SSH to login node to execute the full shell command there
         # PBS_O_HOST is the node the job was submitted from (a login node)
         login_node = os.environ.get("PBS_O_HOST", "aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov")
         print(f"[Compute node detected] Routing API call via login node: {login_node}")
@@ -139,12 +114,13 @@ def alcf_llm(
             "-o", "ConnectTimeout=10",
             "-o", "BatchMode=yes",  # Fail immediately if password needed
             login_node,
-            curl_cmd
+            shell_cmd
         ]
-        timeout = 80
+        timeout = 90
     else:
-        cmd = ["bash", "-c", curl_cmd]
-        timeout = 70
+        # Already on login node - run directly
+        cmd = ["bash", "-c", shell_cmd]
+        timeout = 80
 
     # Execute request
     try:
@@ -187,15 +163,18 @@ def argo_llm(
 ) -> str:
     """Drop-in replacement for argo_llm that uses ALCF endpoints.
 
-    Set ALCF_CLUSTER environment variable to choose cluster (default: sophia)
-    Set ALCF_MODEL to override the model (default: meta-llama/Llama-3.3-70B-Instruct)
+    Environment variable overrides:
+      ALCF_CLUSTER   - cluster to use (default: metis)
+      ALCF_MODEL     - override model name
+      ALCF_CONDA_ENV - conda env with globus_sdk (default: globus_env)
     """
-    cluster = os.environ.get("ALCF_CLUSTER", "sophia")
+    cluster = os.environ.get("ALCF_CLUSTER", "metis")
 
-    # Map common model names to ALCF models
+    # Map common Argo model names to ALCF models
+    # gpt-oss-120b on metis is confirmed working
     model_mapping = {
-        "gpt4o": "meta-llama/Llama-3.3-70B-Instruct",
-        "gpt52": "meta-llama/Llama-3.3-70B-Instruct",
+        "gpt4o": "gpt-oss-120b",
+        "gpt52": "gpt-oss-120b",
         "gpt4turbo": "meta-llama/Llama-3.1-70B-Instruct",
         "gpt35": "meta-llama/Llama-3.1-8B-Instruct",
     }

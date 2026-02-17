@@ -20,15 +20,9 @@ echo "Start Time: $(date)"
 echo "Working Directory: $PBS_O_WORKDIR"
 echo "========================================================================"
 
-# Change to the lassi_translate directory (not submission directory)
-SCRIPT_DIR="/home/vchirio/Desktop/LASSI-EE/lassi_translate"
-echo "Attempting to change to: $SCRIPT_DIR"
-if cd "$SCRIPT_DIR"; then
-    echo "Successfully changed to: $(pwd)"
-else
-    echo "ERROR: Failed to change directory to $SCRIPT_DIR"
-    exit 1
-fi
+# Change to the directory where the script is located
+cd $PBS_O_WORKDIR || exit 1
+echo "Working in: $(pwd)"
 echo ""
 
 # Show Python version

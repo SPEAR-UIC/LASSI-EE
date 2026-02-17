@@ -1,0 +1,174 @@
+#!/bin/bash
+#PBS -l select=1
+#PBS -l walltime=00:30:00
+#PBS -l filesystems=flare
+#PBS -A EE-ECP
+#PBS -q debug
+#PBS -N compile_test
+
+# Autonomous workflow compilation and test script
+# This runs on Aurora compute nodes to compile and test generated code
+# Results are saved back to the experiment directory for analysis
+
+echo "========================================================================"
+echo "AURORA COMPILATION AND TEST JOB"
+echo "========================================================================"
+echo "Job ID: $PBS_JOBID"
+echo "Hostname: $(hostname)"
+echo "Start Time: $(date)"
+echo "Experiment: $EXPERIMENT"
+echo "========================================================================"
+
+# Change to experiment directory
+if [ -z "$EXPERIMENT" ]; then
+    echo "ERROR: EXPERIMENT variable not set"
+    exit 1
+fi
+
+cd ~/LASSI-EE/$EXPERIMENT || exit 1
+echo "Working in: $(pwd)"
+echo ""
+
+# Create results directory
+mkdir -p results
+COMPILE_LOG="compile.log"
+TEST_LOG="test.log"
+STATUS_FILE="status.json"
+
+# Initialize status
+cat > $STATUS_FILE << EOF
+{
+  "job_id": "$PBS_JOBID",
+  "hostname": "$(hostname)",
+  "start_time": "$(date -Iseconds)",
+  "experiment": "$EXPERIMENT",
+  "status": "running"
+}
+EOF
+
+echo "========================================================================"
+echo "STEP 1: Load Modules"
+echo "========================================================================"
+
+# Load required modules for Aurora
+module load intel
+module load sycl
+module list
+
+echo ""
+echo "========================================================================"
+echo "STEP 2: Compile Generated Code"
+echo "========================================================================"
+
+# Compile the generated SYCL code
+if [ -f "generated.cpp" ]; then
+    echo "Compiling generated.cpp..."
+
+    icpx -fsycl -o generated_app generated.cpp > $COMPILE_LOG 2>&1
+    COMPILE_STATUS=$?
+
+    if [ $COMPILE_STATUS -eq 0 ]; then
+        echo "✓ Compilation successful"
+        cat > $STATUS_FILE << EOF
+{
+  "job_id": "$PBS_JOBID",
+  "hostname": "$(hostname)",
+  "start_time": "$(date -Iseconds)",
+  "experiment": "$EXPERIMENT",
+  "status": "compiled",
+  "compile_status": "success"
+}
+EOF
+    else
+        echo "✗ Compilation failed"
+        echo "See $COMPILE_LOG for details"
+        head -50 $COMPILE_LOG
+
+        cat > $STATUS_FILE << EOF
+{
+  "job_id": "$PBS_JOBID",
+  "hostname": "$(hostname)",
+  "start_time": "$(date -Iseconds)",
+  "experiment": "$EXPERIMENT",
+  "status": "failed",
+  "compile_status": "failed",
+  "error": "compilation_error"
+}
+EOF
+        exit 1
+    fi
+else
+    echo "✗ ERROR: generated.cpp not found"
+    cat > $STATUS_FILE << EOF
+{
+  "job_id": "$PBS_JOBID",
+  "hostname": "$(hostname)",
+  "start_time": "$(date -Iseconds)",
+  "experiment": "$EXPERIMENT",
+  "status": "failed",
+  "error": "source_file_not_found"
+}
+EOF
+    exit 1
+fi
+
+echo ""
+echo "========================================================================"
+echo "STEP 3: Run Test"
+echo "========================================================================"
+
+# Run the compiled application
+if [ -f "generated_app" ]; then
+    echo "Running generated_app..."
+
+    ./generated_app > $TEST_LOG 2>&1
+    TEST_STATUS=$?
+
+    if [ $TEST_STATUS -eq 0 ]; then
+        echo "✓ Test passed"
+        cat > $STATUS_FILE << EOF
+{
+  "job_id": "$PBS_JOBID",
+  "hostname": "$(hostname)",
+  "start_time": "$(date -Iseconds)",
+  "end_time": "$(date -Iseconds)",
+  "experiment": "$EXPERIMENT",
+  "status": "success",
+  "compile_status": "success",
+  "test_status": "success"
+}
+EOF
+    else
+        echo "✗ Test failed (exit code: $TEST_STATUS)"
+        echo "See $TEST_LOG for details"
+        head -50 $TEST_LOG
+
+        cat > $STATUS_FILE << EOF
+{
+  "job_id": "$PBS_JOBID",
+  "hostname": "$(hostname)",
+  "start_time": "$(date -Iseconds)",
+  "end_time": "$(date -Iseconds)",
+  "experiment": "$EXPERIMENT",
+  "status": "failed",
+  "compile_status": "success",
+  "test_status": "failed",
+  "error": "test_failure"
+}
+EOF
+        exit 1
+    fi
+else
+    echo "✗ ERROR: Executable not found"
+    exit 1
+fi
+
+echo ""
+echo "========================================================================"
+echo "JOB COMPLETE"
+echo "========================================================================"
+echo "End Time: $(date)"
+echo "Status: SUCCESS"
+echo "========================================================================"
+
+exit 0

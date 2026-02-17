@@ -1,0 +1,48 @@
+#!/bin/bash
+#PBS -l select=1
+#PBS -l walltime=00:15:00
+#PBS -l filesystems=flare
+#PBS -A EE-ECP
+#PBS -q debug
+#PBS -N argo_diagnostic
+
+# Comprehensive diagnostic job for Argo API connectivity
+
+echo "========================================================================"
+echo "ARGO API COMPREHENSIVE DIAGNOSTIC"
+echo "========================================================================"
+echo "Job ID: $PBS_JOBID"
+echo "Job Name: $PBS_JOBNAME"
+echo "Hostname: $(hostname)"
+echo "Start Time: $(date)"
+echo "========================================================================"
+
+# Change to the lassi_translate directory
+SCRIPT_DIR="/home/vchirio/LASSI-EE/lassi_translate"
+cd "$SCRIPT_DIR" || exit 1
+echo "Working in: $(pwd)"
+echo ""
+
+# Show versions
+echo "Python: $(python3 --version 2>&1)"
+echo "Curl: $(curl --version 2>&1 | head -n 1)"
+echo ""
+
+# Run comprehensive diagnostic
+echo "========================================================================"
+echo "Running Comprehensive Diagnostic Tests"
+echo "========================================================================"
+echo ""
+
+python3 test_argo_diagnostic.py
+TEST_EXIT_CODE=$?
+
+echo ""
+echo "========================================================================"
+echo "DIAGNOSTIC JOB COMPLETE"
+echo "========================================================================"
+echo "Exit Code: $TEST_EXIT_CODE"
+echo "End Time: $(date)"
+echo "========================================================================"
+
+exit $TEST_EXIT_CODE

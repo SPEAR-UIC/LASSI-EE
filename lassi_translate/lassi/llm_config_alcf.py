@@ -83,16 +83,20 @@ def alcf_llm(
     # Conda env to use (can be overridden via ALCF_CONDA_ENV env var)
     conda_env = os.environ.get("ALCF_CONDA_ENV", "globus_env")
 
-    # Full shell command: source bashrc (to initialize conda), activate env,
-    # get token, validate it, then run curl.
-    # $HOME/inference_auth_token.py is used so the shell expands ~ correctly.
-    shell_cmd = (
-        f"source ~/.bashrc 2>/dev/null || true; "
-        f"conda activate {conda_env} 2>/dev/null || true; "
-        f"access_token=$(python $HOME/inference_auth_token.py get_access_token); "
-        f"if [ -z \"$access_token\" ]; then echo 'ERROR: empty token from inference_auth_token.py' >&2; exit 1; fi; "
-        f"{curl_part}"
-    )
+    # Shell script to run on the login node.
+    # Uses 'bash -l' (login shell) so .bash_profile is sourced, which initializes
+    # conda - cannot use 'source ~/.bashrc' in non-interactive SSH sessions because
+    # .bashrc has an early-return guard for non-interactive shells.
+    # The script is passed via stdin to avoid quoting issues with the JSON payload.
+    shell_script = "\n".join([
+        f"conda activate {conda_env} 2>/dev/null || true",
+        # Try 'python' (conda default), fall back to 'python3' (system)
+        "PYTHON_CMD=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)",
+        'if [ -z "$PYTHON_CMD" ]; then echo "ERROR: no python found" >&2; exit 1; fi',
+        'access_token=$($PYTHON_CMD $HOME/inference_auth_token.py get_access_token)',
+        'if [ -z "$access_token" ]; then echo "ERROR: empty token from inference_auth_token.py" >&2; exit 1; fi',
+        curl_part,
+    ])
 
     # Detect if on compute node (hostname starts with 'x' on Aurora)
     hostname = subprocess.run(
@@ -104,28 +108,30 @@ def alcf_llm(
     on_compute_node = hostname.startswith('x')
 
     if on_compute_node:
-        # SSH to login node to execute the full shell command there
-        # PBS_O_HOST is the node the job was submitted from (a login node)
+        # SSH to login node and run a login shell there, feeding the script via stdin.
+        # Login shell (bash -l) reads .bash_profile which initializes conda.
+        # BatchMode=yes ensures we fail immediately if SSH keys aren't set up.
         login_node = os.environ.get("PBS_O_HOST", "aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov")
         print(f"[Compute node detected] Routing API call via login node: {login_node}")
         cmd = [
             "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", "ConnectTimeout=10",
-            "-o", "BatchMode=yes",  # Fail immediately if password needed
+            "-o", "BatchMode=yes",
             login_node,
-            shell_cmd
+            "bash", "-l",
         ]
         timeout = 90
     else:
-        # Already on login node - run directly
-        cmd = ["bash", "-c", shell_cmd]
+        # Already on login node - run login shell directly
+        cmd = ["bash", "-l"]
         timeout = 80
 
-    # Execute request
+    # Execute request, passing the script via stdin to avoid quoting issues
     try:
         proc = subprocess.run(
             cmd,
+            input=shell_script,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,

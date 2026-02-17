@@ -111,27 +111,40 @@ def alcf_llm(
 
     payload = json.dumps(data)
 
-    # Build curl command
-    cmd = [
-        "curl",
-        "-sS",
-        "--connect-timeout", "30",
-        "--max-time", "300",
-        "-X", "POST",
-        url,
-        "-H", f"Authorization: Bearer {token}",
-        "-H", "Content-Type: application/json",
-        "-d", payload
-    ]
+    # Build curl command string (used both directly and via SSH)
+    # Shell-escape the payload for safe passing through SSH
+    payload_escaped = payload.replace("'", "'\\''")
+    curl_cmd = (
+        f"curl -sS --connect-timeout 10 --max-time 60"
+        f" -X POST '{url}'"
+        f" -H 'Authorization: Bearer {token}'"
+        f" -H 'Content-Type: application/json'"
+        f" -d '{payload_escaped}'"
+    )
 
-    # Try using ALCF proxy if on compute node
-    hostname = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
-    if hostname.startswith('x'):  # Compute node
-        # Try proxy for internal ALCF services
-        proxy = os.environ.get("ALCF_INTERNAL_PROXY", "http://proxy.alcf.anl.gov:3128")
-        cmd.insert(1, "-x")
-        cmd.insert(2, proxy)
-        print(f"[Compute node detected] Using proxy: {proxy}")
+    # Detect if on compute node (hostname starts with 'x' on Aurora)
+    hostname = subprocess.run(["hostname"], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              universal_newlines=True).stdout.strip()
+    on_compute_node = hostname.startswith('x')
+
+    if on_compute_node:
+        # SSH to login node to execute the curl command
+        # PBS_O_HOST is the node the job was submitted from (a login node)
+        login_node = os.environ.get("PBS_O_HOST", "aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov")
+        print(f"[Compute node detected] Routing API call via login node: {login_node}")
+        cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=yes",  # Fail immediately if password needed
+            login_node,
+            curl_cmd
+        ]
+        timeout = 80
+    else:
+        cmd = ["bash", "-c", curl_cmd]
+        timeout = 70
 
     # Execute request
     try:
@@ -140,10 +153,10 @@ def alcf_llm(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
-            timeout=320
+            timeout=timeout
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError("ALCF API call timed out after 320 seconds")
+        raise RuntimeError(f"ALCF API call timed out after {timeout} seconds")
 
     if proc.returncode != 0:
         raise RuntimeError(f"ALCF API call failed (rc={proc.returncode}): {proc.stderr.strip()}")

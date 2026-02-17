@@ -15,36 +15,35 @@ import sys
 def get_alcf_token():
     """Get ALCF access token using inference_auth_token.py helper."""
     # Check if token helper exists
-    token_helper = os.path.expanduser("~/inference_auth_token.py")
+    token_helper_path = os.path.expanduser("~/inference_auth_token.py")
 
-    if not os.path.exists(token_helper):
+    if not os.path.exists(token_helper_path):
         raise RuntimeError(
             "ALCF token helper not found. Please download it:\n"
             "wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py\n"
             "Then authenticate: python inference_auth_token.py authenticate"
         )
 
-    # Get access token
+    # Import the authentication module directly instead of subprocess
+    # This ensures it uses the same Python environment (venv)
     try:
-        result = subprocess.run(
-            ["python3", token_helper, "get_access_token"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            timeout=30
-        )
+        # Add the helper's directory to Python path
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inference_auth_token", token_helper_path)
+        auth_module = importlib.util.module_from_spec(spec)
+        sys.modules["inference_auth_token"] = auth_module
+        spec.loader.exec_module(auth_module)
 
-        if result.returncode == 0:
-            token = result.stdout.strip()
-            if token:
-                return token
-            else:
-                raise RuntimeError("Empty token returned")
+        # Get the access token
+        token = auth_module.get_access_token()
+
+        if token:
+            return token
         else:
-            raise RuntimeError(f"Token retrieval failed: {result.stderr}")
+            raise RuntimeError("Empty token returned")
 
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Token retrieval timed out")
+    except ImportError as e:
+        raise RuntimeError(f"Failed to import authentication module: {e}")
     except Exception as e:
         raise RuntimeError(f"Failed to get ALCF token: {e}")
 

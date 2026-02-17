@@ -77,7 +77,12 @@ def argo_llm(
     if api_key:
         cmd += ["-H", f"Authorization: Bearer {api_key}"]
 
-    cmd += ["-x", "http://proxy.alcf.anl.gov:3128"]
+    # Proxy configuration: only use if explicitly set
+    # By default, NO proxy - apps-dev.inside.anl.gov is internal-only
+    # and not reachable through the external proxy
+    proxy = os.environ.get("ARGO_PROXY")
+    if proxy:
+        cmd += ["-x", proxy]
 
     cmd += ["-d", payload]
 

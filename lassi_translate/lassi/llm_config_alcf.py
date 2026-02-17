@@ -27,7 +27,7 @@ def get_alcf_token():
     # Get access token
     try:
         result = subprocess.run(
-            ["python", token_helper, "get_access_token"],
+            ["python3", token_helper, "get_access_token"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,

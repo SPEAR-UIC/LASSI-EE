@@ -32,25 +32,6 @@ echo "Python version:"
 python3 --version
 echo ""
 
-# Activate pre-created venv
-VENV_PATH="$HOME/alcf_venv"
-if [ ! -d "$VENV_PATH" ]; then
-    echo "ERROR: Virtual environment not found at $VENV_PATH"
-    echo "Please run setup_alcf_env.sh on a login node first:"
-    echo "  bash lassi_translate/setup_alcf_env.sh"
-    exit 1
-fi
-
-echo "Activating virtual environment at $VENV_PATH"
-source $VENV_PATH/bin/activate
-echo ""
-
-# Verify packages are available
-echo "Verifying required packages..."
-python3 -c "import globus_sdk; print('✓ globus_sdk available')" || echo "✗ globus_sdk NOT available"
-python3 -c "import openai; print('✓ openai available')" || echo "✗ openai NOT available"
-echo ""
-
 # Check if token helper is available
 echo "Checking for ALCF token helper..."
 if [ -f ~/inference_auth_token.py ]; then

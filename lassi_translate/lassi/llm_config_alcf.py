@@ -83,17 +83,14 @@ def alcf_llm(
     # Conda env to use (can be overridden via ALCF_CONDA_ENV env var)
     conda_env = os.environ.get("ALCF_CONDA_ENV", "globus_env")
 
-    # Shell script to run on the login node.
-    # Uses 'bash -l' (login shell) so .bash_profile is sourced, which initializes
-    # conda - cannot use 'source ~/.bashrc' in non-interactive SSH sessions because
-    # .bashrc has an early-return guard for non-interactive shells.
-    # The script is passed via stdin to avoid quoting issues with the JSON payload.
+    # Shell script to run on the login node (passed via stdin to 'bash -l').
+    # Uses 'conda run -n globus_env' to explicitly invoke the globus_env Python
+    # without requiring conda to be activated in the shell - avoids the issue where
+    # 'conda activate' silently fails in non-interactive shells (.bashrc guard).
+    # 'conda' itself must be in PATH, which bash -l (login shell) provides via
+    # .bash_profile.
     shell_script = "\n".join([
-        f"conda activate {conda_env} 2>/dev/null || true",
-        # Try 'python3' first, fall back to 'python'
-        "PYTHON_CMD=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)",
-        'if [ -z "$PYTHON_CMD" ]; then echo "ERROR: no python found" >&2; exit 1; fi',
-        'access_token=$($PYTHON_CMD $HOME/inference_auth_token.py get_access_token)',
+        f'access_token=$(conda run -n {conda_env} python3 $HOME/inference_auth_token.py get_access_token)',
         'if [ -z "$access_token" ]; then echo "ERROR: empty token from inference_auth_token.py" >&2; exit 1; fi',
         curl_part,
     ])

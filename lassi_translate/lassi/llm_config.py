@@ -77,7 +77,7 @@ def argo_llm(
     if api_key:
         cmd += ["-H", f"Authorization: Bearer {api_key}"]
 
-    cmd += ["-x", "https://proxy.alcf.anl.gov:3128"]
+    cmd += ["-x", "http://proxy.alcf.anl.gov:3128"]
 
     cmd += ["-d", payload]
 

@@ -90,8 +90,8 @@ def alcf_llm(
     # The script is passed via stdin to avoid quoting issues with the JSON payload.
     shell_script = "\n".join([
         f"conda activate {conda_env} 2>/dev/null || true",
-        # Try 'python' (conda default), fall back to 'python3' (system)
-        "PYTHON_CMD=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)",
+        # Try 'python3' first, fall back to 'python'
+        "PYTHON_CMD=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)",
         'if [ -z "$PYTHON_CMD" ]; then echo "ERROR: no python found" >&2; exit 1; fi',
         'access_token=$($PYTHON_CMD $HOME/inference_auth_token.py get_access_token)',
         'if [ -z "$access_token" ]; then echo "ERROR: empty token from inference_auth_token.py" >&2; exit 1; fi',

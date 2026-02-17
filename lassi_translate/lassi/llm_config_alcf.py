@@ -124,6 +124,15 @@ def alcf_llm(
         "-d", payload
     ]
 
+    # Try using ALCF proxy if on compute node
+    hostname = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
+    if hostname.startswith('x'):  # Compute node
+        # Try proxy for internal ALCF services
+        proxy = os.environ.get("ALCF_INTERNAL_PROXY", "http://proxy.alcf.anl.gov:3128")
+        cmd.insert(1, "-x")
+        cmd.insert(2, proxy)
+        print(f"[Compute node detected] Using proxy: {proxy}")
+
     # Execute request
     try:
         proc = subprocess.run(

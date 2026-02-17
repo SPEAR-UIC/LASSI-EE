@@ -36,32 +36,21 @@ def test_alcf_connection():
         print("2. Authenticate: python inference_auth_token.py authenticate")
         return False
 
-    # Test 2: Get token
-    print("\n[TEST 2] Retrieving access token...")
-    try:
-        from llm_config_alcf import get_alcf_token
-        token = get_alcf_token()
-        print(f"✓ Token retrieved successfully (length: {len(token)})")
-        print(f"  Token preview: {token[:20]}...")
-    except Exception as e:
-        print(f"✗ Token retrieval failed: {e}")
-        return False
-
-    # Test 3: Simple API call
-    print("\n[TEST 3] Testing ALCF API with simple request...")
-    print("Model: meta-llama/Llama-3.3-70B-Instruct")
-    print("Cluster: sophia")
+    # Test 2: Simple API call
+    print("\n[TEST 2] Testing ALCF API with simple request...")
+    print("Model: gpt-oss-120b")
+    print("Cluster: metis")
 
     try:
         from llm_config_alcf import alcf_llm
 
         response = alcf_llm(
-            model="meta-llama/Llama-3.3-70B-Instruct",
+            model="gpt-oss-120b",
             system_prompt="You are a helpful assistant.",
             content_prompt="Say 'Hello from ALCF!' and nothing else.",
             temp=0.2,
             verifyprompt=False,
-            cluster="sophia"
+            cluster="metis"
         )
 
         print("✓ API call successful!")
@@ -77,7 +66,7 @@ def test_alcf_connection():
         print(traceback.format_exc())
         return False
 
-    # Test 4: Test drop-in replacement
+    # Test 3: Test drop-in replacement
     print("\n[TEST 4] Testing drop-in argo_llm replacement...")
     try:
         from llm_config_alcf import argo_llm

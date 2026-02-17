@@ -22,9 +22,34 @@ cd /home/vchirio/LASSI-EE/lassi_translate || exit 1
 echo "Working directory: $(pwd)"
 echo ""
 
+# Load Aurora frameworks module for Python environment
+echo "Loading Aurora frameworks module..."
+module load frameworks
+echo ""
+
 # Show Python version
 echo "Python version:"
 python3 --version
+echo ""
+
+# Create venv if it doesn't exist
+VENV_PATH="$HOME/alcf_venv"
+if [ ! -d "$VENV_PATH" ]; then
+    echo "Creating Python virtual environment at $VENV_PATH..."
+    python3 -m venv $VENV_PATH --system-site-packages
+    source $VENV_PATH/bin/activate
+    pip install --upgrade pip
+    pip install globus_sdk openai
+else
+    echo "Using existing virtual environment at $VENV_PATH"
+    source $VENV_PATH/bin/activate
+fi
+echo ""
+
+# Verify packages are available
+echo "Verifying required packages..."
+python3 -c "import globus_sdk; print('✓ globus_sdk available')"
+python3 -c "import openai; print('✓ openai available')"
 echo ""
 
 # Check if token helper is available

@@ -5,8 +5,6 @@
 #PBS -A EE-ECP
 #PBS -q debug
 #PBS -N argo_api_test
-#PBS -o argo_test_${PBS_JOBID}.out
-#PBS -e argo_test_${PBS_JOBID}.err
 
 # PBS Job Script for Testing Argo API Connection
 # This script runs a simple test to verify Argo API connectivity
@@ -22,10 +20,15 @@ echo "Start Time: $(date)"
 echo "Working Directory: $PBS_O_WORKDIR"
 echo "========================================================================"
 
-# Change to the directory where the job was submitted
-cd $PBS_O_WORKDIR || exit 1
-
-echo "Current directory: $(pwd)"
+# Change to the lassi_translate directory (not submission directory)
+SCRIPT_DIR="/home/vchirio/Desktop/LASSI-EE/lassi_translate"
+echo "Attempting to change to: $SCRIPT_DIR"
+if cd "$SCRIPT_DIR"; then
+    echo "Successfully changed to: $(pwd)"
+else
+    echo "ERROR: Failed to change directory to $SCRIPT_DIR"
+    exit 1
+fi
 echo ""
 
 # Show Python version

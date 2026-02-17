@@ -84,12 +84,12 @@ def alcf_llm(
     conda_env = os.environ.get("ALCF_CONDA_ENV", "globus_env")
 
     # Shell script to run on the login node (passed via stdin to 'bash -l').
-    # Uses 'conda run -n globus_env' to explicitly invoke the globus_env Python
-    # without requiring conda to be activated in the shell - avoids the issue where
-    # 'conda activate' silently fails in non-interactive shells (.bashrc guard).
-    # 'conda' itself must be in PATH, which bash -l (login shell) provides via
-    # .bash_profile.
+    # bash -l initializes the module system (via /etc/profile). We then load the
+    # frameworks module which brings conda into PATH on Aurora login nodes, and use
+    # 'conda run -n globus_env' to invoke globus_env's Python directly without
+    # needing 'conda activate'.
     shell_script = "\n".join([
+        "module load frameworks 2>/dev/null",
         f'access_token=$(conda run -n {conda_env} python3 $HOME/inference_auth_token.py get_access_token)',
         'if [ -z "$access_token" ]; then echo "ERROR: empty token from inference_auth_token.py" >&2; exit 1; fi',
         curl_part,

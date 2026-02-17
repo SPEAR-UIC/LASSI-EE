@@ -1,0 +1,91 @@
+#!/bin/bash
+#PBS -l select=1
+#PBS -l walltime=01:00:00
+#PBS -l filesystems=flare
+#PBS -A EE-ECP
+#PBS -q debug
+#PBS -N lassi_alcf_translate
+
+# Full LASSI Translation Pipeline using ALCF Inference Endpoints
+# This runs entirely on Aurora compute nodes with no external dependencies
+
+echo "========================================================================"
+echo "LASSI TRANSLATION - ALCF INFERENCE ENDPOINTS"
+echo "========================================================================"
+echo "Job ID: $PBS_JOBID"
+echo "Hostname: $(hostname)"
+echo "Start Time: $(date)"
+echo "========================================================================"
+
+# Change to working directory
+cd /home/vchirio/LASSI-EE/lassi_translate || exit 1
+echo "Working directory: $(pwd)"
+echo ""
+
+# Configuration (can be overridden via qsub -v)
+SOURCE_FILE=${SOURCE_FILE:-"example_cuda.cu"}
+OUTPUT_DIR=${OUTPUT_DIR:-"generated_codes/exp_$(date +%Y%m%d_%H%M%S)"}
+MODEL=${MODEL:-"gpt52"}
+MAX_ITERATIONS=${MAX_ITERATIONS:-"5"}
+ALCF_CLUSTER=${ALCF_CLUSTER:-"sophia"}
+
+echo "Configuration:"
+echo "  Source file: $SOURCE_FILE"
+echo "  Output directory: $OUTPUT_DIR"
+echo "  Model: $MODEL"
+echo "  Max iterations: $MAX_ITERATIONS"
+echo "  ALCF cluster: $ALCF_CLUSTER"
+echo ""
+
+# Load Intel compiler modules (for compilation testing)
+echo "Loading modules..."
+module load intel
+module load sycl
+module list
+echo ""
+
+# Export configuration
+export SOURCE_FILE
+export OUTPUT_DIR
+export MODEL
+export MAX_ITERATIONS
+export ALCF_CLUSTER
+
+# Check for token helper
+if [ ! -f ~/inference_auth_token.py ]; then
+    echo "ERROR: ALCF token helper not found!"
+    echo "Please download it:"
+    echo "  wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py"
+    echo "  python inference_auth_token.py authenticate"
+    exit 1
+fi
+
+echo "========================================================================"
+echo "Running LASSI Translation Pipeline"
+echo "========================================================================"
+
+# Run the translation pipeline
+python3 run_lassi_alcf.py
+PIPELINE_EXIT_CODE=$?
+
+echo ""
+echo "========================================================================"
+echo "JOB SUMMARY"
+echo "========================================================================"
+echo "Pipeline exit code: $PIPELINE_EXIT_CODE"
+echo "End Time: $(date)"
+
+if [ $PIPELINE_EXIT_CODE -eq 0 ]; then
+    echo "Status: SUCCESS ✓"
+    echo ""
+    echo "Generated code available in: $OUTPUT_DIR"
+    echo "Check metadata.json for details"
+else
+    echo "Status: FAILED ✗"
+    echo ""
+    echo "Check output above for error details"
+fi
+
+echo "========================================================================"
+
+exit $PIPELINE_EXIT_CODE

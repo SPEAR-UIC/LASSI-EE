@@ -1,0 +1,69 @@
+#!/bin/bash
+#PBS -l select=1
+#PBS -l walltime=00:10:00
+#PBS -l filesystems=flare
+#PBS -A EE-ECP
+#PBS -q debug
+#PBS -N test_alcf_api
+
+# Test ALCF Inference Endpoints from Aurora compute node
+# This verifies that compute nodes can access ALCF's inference service
+
+echo "========================================================================"
+echo "ALCF INFERENCE ENDPOINTS TEST FROM COMPUTE NODE"
+echo "========================================================================"
+echo "Job ID: $PBS_JOBID"
+echo "Hostname: $(hostname)"
+echo "Start Time: $(date)"
+echo "========================================================================"
+
+# Change to test directory
+cd /home/vchirio/LASSI-EE/lassi_translate || exit 1
+echo "Working directory: $(pwd)"
+echo ""
+
+# Show Python version
+echo "Python version:"
+python3 --version
+echo ""
+
+# Check if token helper is available
+echo "Checking for ALCF token helper..."
+if [ -f ~/inference_auth_token.py ]; then
+    echo "✓ Token helper found"
+else
+    echo "✗ Token helper not found"
+    echo "Please download it:"
+    echo "  wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py"
+    exit 1
+fi
+echo ""
+
+echo "========================================================================"
+echo "Running ALCF Connection Test"
+echo "========================================================================"
+
+# Run the test script
+python3 test_alcf_connection.py
+TEST_EXIT_CODE=$?
+
+echo ""
+echo "========================================================================"
+echo "TEST SUMMARY"
+echo "========================================================================"
+echo "Exit code: $TEST_EXIT_CODE"
+echo "End Time: $(date)"
+
+if [ $TEST_EXIT_CODE -eq 0 ]; then
+    echo "Status: SUCCESS ✓"
+    echo ""
+    echo "ALCF Inference Endpoints are accessible from Aurora compute nodes!"
+else
+    echo "Status: FAILED ✗"
+    echo ""
+    echo "See output above for error details"
+fi
+
+echo "========================================================================"
+
+exit $TEST_EXIT_CODE

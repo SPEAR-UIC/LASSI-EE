@@ -58,6 +58,8 @@ def argo_llm(
         "curl",
         "-k",
         "-sS",
+        "--connect-timeout", "30",  # 30 seconds to establish connection
+        "--max-time", "300",  # 5 minutes total timeout for response
         "-X",
         "POST",
         url,
@@ -87,7 +89,18 @@ def argo_llm(
     cmd += ["-d", payload]
 
     # Python 3.6 compatible: use stdout/stderr instead of capture_output
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    # Set a long timeout (300s = 5 minutes) for LLM responses which can be slow
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=300
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Argo API call timed out after 300 seconds")
+
     if proc.returncode != 0:
         raise RuntimeError(f"Argo curl call failed (rc={proc.returncode}): {proc.stderr.strip()}")
 

@@ -60,9 +60,9 @@ echo ""
 
 # ── Load Python environment ──────────────────────────────────────────────────
 echo "Loading modules..."
-module load frameworks 2>&1 | tail -3
+module load frameworks
 echo ""
-echo "Python: $(python3 --version)"
+echo "Python (globus_env): $(conda run -n globus_env python3 --version)"
 echo ""
 
 # ── SYCL toolchain (icpx from default oneAPI env on Aurora) ──────────────────
@@ -88,7 +88,7 @@ echo "  Starting LASSI Translation Pipeline"
 echo "========================================================================"
 echo ""
 
-python3 -u run_lassi_translate_v3.py \
+conda run -n globus_env python3 -u run_lassi_translate_v3.py \
     --source-collection  Miniapps \
     --source-app         XSBench \
     --source-lang        CUDA \

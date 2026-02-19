@@ -63,13 +63,18 @@ echo "Loading modules..."
 module load frameworks
 echo ""
 
-# Activate globus_env in the current shell so that python3 becomes 3.11 while
-# the full PATH from module load (oneAPI, sycl-ls, icpx, …) is preserved.
-# conda run would drop the oneAPI paths, causing GPU detection to fail.
+# Resolve the globus_env Python by absolute path so that conda activate never
+# touches PATH — conda activate inside a bash subshell deactivates whatever the
+# frameworks module set up, stripping the oneAPI bin dir (sycl-ls, icpx, …)
+# from the environment that Python inherits.
 CONDA_BASE=$(conda info --base 2>/dev/null)
-source "$CONDA_BASE/etc/profile.d/conda.sh"
-conda activate globus_env
-echo "Python (globus_env): $(python3 --version)"
+PYTHON3="$CONDA_BASE/envs/globus_env/bin/python3"
+if [ ! -x "$PYTHON3" ]; then
+    echo "ERROR: globus_env Python not found at $PYTHON3"
+    echo "  Recreate with: bash setup_alcf_env.sh  (on a login node)"
+    exit 1
+fi
+echo "Python (globus_env): $($PYTHON3 --version)"
 echo ""
 
 # ── SYCL toolchain (icpx from default oneAPI env on Aurora) ──────────────────
@@ -95,7 +100,7 @@ echo "  Starting LASSI Translation Pipeline"
 echo "========================================================================"
 echo ""
 
-python3 -u run_lassi_translate_v3.py \
+"$PYTHON3" -u run_lassi_translate_v3.py \
     --source-collection  Miniapps \
     --source-app         XSBench \
     --source-lang        CUDA \

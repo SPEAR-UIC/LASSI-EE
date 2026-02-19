@@ -67,11 +67,12 @@ echo ""
 # touches PATH — conda activate inside a bash subshell deactivates whatever the
 # frameworks module set up, stripping the oneAPI bin dir (sycl-ls, icpx, …)
 # from the environment that Python inherits.
-CONDA_BASE=$(conda info --base 2>/dev/null)
-PYTHON3="$CONDA_BASE/envs/globus_env/bin/python3"
+# We use "conda run -n globus_env which python3" only to LOCATE the interpreter;
+# the pipeline itself is invoked directly so PATH is fully preserved.
+PYTHON3=$(conda run -n globus_env which python3 2>/dev/null || true)
 if [ ! -x "$PYTHON3" ]; then
-    echo "ERROR: globus_env Python not found at $PYTHON3"
-    echo "  Recreate with: bash setup_alcf_env.sh  (on a login node)"
+    echo "ERROR: could not locate Python in globus_env conda environment."
+    echo "  Check: conda env list | grep globus_env"
     exit 1
 fi
 echo "Python (globus_env): $($PYTHON3 --version)"

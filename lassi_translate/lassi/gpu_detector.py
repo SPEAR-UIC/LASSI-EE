@@ -60,9 +60,12 @@ def detect_gpu_vendors() -> list[dict[str, Any]]:
     sycl_ls = _find_tool("sycl-ls")
     if sycl_ls:
         out = _run([sycl_ls])
-        # sycl-ls lists SYCL platforms/devices, e.g.:
-        #   [ext_oneapi_level_zero:gpu:0] Intel(R) Level-Zero, Intel(R) Data Center GPU Max 1550 ...
-        count = sum(1 for line in out.splitlines() if ":gpu:" in line.lower())
+        # sycl-ls lists one SYCL device per line.  The bracket prefix format
+        # varies by oneAPI version:
+        #   older: [ext_oneapi_level_zero:gpu:0] Intel(R) Level-Zero ...
+        #   newer: [level_zero:gpu] Intel(R) oneAPI Unified Runtime ...
+        # Both contain ":gpu" so match on that (not ":gpu:" which misses newer).
+        count = sum(1 for line in out.splitlines() if ":gpu" in line.lower())
         if count:
             vendors.append({"vendor": "intel", "count": count, "tool": "sycl-ls"})
 

@@ -8,7 +8,7 @@
 #   cd /home/vchirio/LASSI-EE/lassi_translate
 #   bash run_aurora_demo_interactive.sh
 
-set -euo pipefail
+set -eo pipefail
 
 echo "========================================================================"
 echo "  LASSI  |  XSBench CUDA→SYCL Autonomous Translation Demo"

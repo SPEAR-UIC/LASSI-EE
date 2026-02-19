@@ -125,8 +125,22 @@ def _load_source_code(source_apps: dict, source_collection: str, source_app: str
     source_dir = Path("source_codes") / source_folder / app_folder_name
     source_path = (source_dir / f"{file_name}.{input_code_extension}").resolve()
 
+    main_code = source_path.read_text(encoding="utf-8")
+
+    # Prepend any header files (.cuh / .h) from the same directory so the model
+    # receives the complete type definitions and function prototypes.
+    header_parts: List[str] = []
+    for ext in ("*.cuh", "*.h"):
+        for hdr in sorted(source_dir.glob(ext)):
+            header_parts.append(
+                f"// ===== HEADER: {hdr.name} =====\n"
+                + hdr.read_text(encoding="utf-8")
+                + f"\n// ===== END HEADER: {hdr.name} =====\n"
+            )
+    input_code = ("\n".join(header_parts) + "\n" + main_code) if header_parts else main_code
+
     return (
-        source_path.read_text(encoding="utf-8"),
+        input_code,
         source_path,
         source_folder,
         app_folder_name,

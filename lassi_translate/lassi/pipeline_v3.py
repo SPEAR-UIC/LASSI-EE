@@ -411,10 +411,33 @@ def auto_code_llmgeneration_pipeline(
                 if app_name == "XSBench":
                     src_key = _extract_xsbench_checksum(input_content["source_stdout"])
                     gen_key = _extract_xsbench_checksum(run_stdout)
+                    stdout_snippet = (run_stdout[:1000].strip() or "(program produced no output)") + ("\n...(truncated)" if len(run_stdout) > 1000 else "")
                     if src_key:
-                        detail = f"XSBench checksum line mismatch\nSOURCE: {src_key}\nGENERATED: {gen_key}\n"
+                        detail = (
+                            f"XSBench checksum line mismatch\n"
+                            f"SOURCE:    {src_key}\n"
+                            f"GENERATED: {gen_key}\n"
+                            f"\nYour program's actual stdout:\n{stdout_snippet}\n"
+                        )
                     else:
-                        detail = f"XSBench invalid checksum in generated output\nGENERATED: {gen_key}\n"
+                        detail = (
+                            f"XSBench checksum missing or invalid.\n"
+                            f"The program compiled and ran, but did NOT print the required "
+                            f"'Verification checksum: N' line.\n"
+                            f"\nYour program's actual stdout:\n{stdout_snippet}\n"
+                            f"\nThe print_results() function in the original source is responsible "
+                            f"for printing:\n"
+                            f'  printf("Verification checksum: %llu (WARNING - INAVALID CHECKSUM!)\\n", vhash);\n'
+                            f"or\n"
+                            f'  printf("Verification checksum: %llu (Valid)\\n", vhash);\n'
+                            f"\nYour SYCL translation MUST faithfully implement ALL functions from "
+                            f"the original CUDA source, including print_results(), "
+                            f"run_event_based_simulation_baseline(), and grid_init_do_not_profile().\n"
+                            f"Do NOT generate a simplified stub — translate the complete source.\n"
+                            f"\n[ORIGINAL CUDA SOURCE FOR REFERENCE]\n"
+                            f"{input_code}\n"
+                            f"[/ORIGINAL CUDA SOURCE]\n"
+                        )
                 else:
                     detail = (
                         "--- SOURCE STDOUT ---\n"

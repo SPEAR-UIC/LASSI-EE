@@ -4,11 +4,9 @@
 
 Workflow:
 1) Report available GPU devices.
-2) Build+run the selected source app (CUDA) and preserve stdout.
-3) Translate to target language (SYCL) via Argo LLM.
+2) Build+run the selected source app (CUDA) and preserve stdout (skipped with --no-test-source).
+3) Translate to target language (SYCL) via LLM (Argo or ALCF).
 4) Compile+run generated code with a self-correction loop on errors.
-
-Argo is the only supported LLM backend.
 """
 
 from __future__ import annotations
@@ -51,6 +49,7 @@ class RunnerConfig:
     display_response: bool
     verifyprompt: bool
     truncate_chars: int
+    test_source: bool
 
 
 def _log(msg: str) -> None:
@@ -83,6 +82,9 @@ def _device_report() -> Tuple[str, int]:
     if vendor == "AMD" and shutil.which("rocm-smi"):
         _log("rocm-smi summary:")
         os.system("rocm-smi --showid")
+    if vendor == "INTEL" and shutil.which("sycl-ls"):
+        _log("sycl-ls summary:")
+        os.system("sycl-ls")
 
     return vendor, count
 
@@ -156,6 +158,9 @@ def main() -> int:
     p.add_argument("--display-response", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--verifyprompt", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--truncate-chars", type=int, default=2000)
+    # Pass --no-test-source on Aurora (no CUDA compiler/GPU available)
+    p.add_argument("--test-source", action=argparse.BooleanOptionalAction, default=True,
+                   help="Build+run CUDA source before translating (disable on Aurora with --no-test-source)")
 
     args = p.parse_args()
 
@@ -175,18 +180,19 @@ def main() -> int:
         display_response=args.display_response,
         verifyprompt=args.verifyprompt,
         truncate_chars=args.truncate_chars,
+        test_source=args.test_source,
     )
-
-    if cfg.llm_source != "argo":
-        raise SystemExit("This standalone translation runner supports --llm-source=argo only")
 
     os.chdir(cfg.repo_root)
     _log(f"CWD={Path.cwd()}")
-    _log("Mode: device report → build+run source → translate → compile+run with self-correction")
+    _log(f"LLM backend: {cfg.llm_source}")
+    _log(f"Test source first: {cfg.test_source}")
+    _log("Mode: device report → translate → compile+run with self-correction")
 
-    # Ensure CUDA Toolkit nvcc is on PATH for Stage 0.
-    os.environ["PATH"] = "/usr/local/cuda/bin:" + os.environ.get("PATH", "")
-    _log(f"nvcc on PATH: {shutil.which('nvcc')}")
+    # Add CUDA Toolkit to PATH for Stage 0 (only needed when testing source on NVIDIA).
+    if cfg.test_source:
+        os.environ["PATH"] = "/usr/local/cuda/bin:" + os.environ.get("PATH", "")
+        _log(f"nvcc on PATH: {shutil.which('nvcc')}")
 
     detected_vendor, _gpu_count = _device_report()
 
@@ -300,7 +306,7 @@ def main() -> int:
         exe_input_parameters,
         meta,
         False,
-        True,
+        cfg.test_source,
         False,
         dt_string,
         True,

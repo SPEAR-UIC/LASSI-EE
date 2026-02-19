@@ -60,11 +60,9 @@ python3 -c "import globus_sdk; print('✓ globus_sdk available')"
 python3 -c "import openai; print('✓ openai available')"
 echo ""
 
-# Load Intel compiler modules (for compilation testing)
-echo "Loading additional modules for compilation..."
-module load intel
-module load sycl
-module list
+# oneAPI (icpx) is loaded by default on Aurora - no extra module load needed.
+echo "Active modules:"
+module list 2>&1 | head -20
 echo ""
 
 # Export configuration

@@ -1,4 +1,4 @@
-"""Argo-only LLM helpers."""
+"""LLM helpers supporting Argo and ALCF inference backends."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from typing import Optional, Tuple
 
 from lassi.format_colors import color
 from lassi.llm_call_logger import LLMCallLogger
-from lassi.llm_config import argo_llm
+import lassi.llm_config as _argo_mod
+import lassi.llm_config_alcf as _alcf_mod
 
 # Set by the runner (optional).
 LLM_CALL_LOGGER: Optional[LLMCallLogger] = None
@@ -38,11 +39,14 @@ def llm_call(
 ) -> str:
     global _CALL_ID
 
-    if llm_source != "argo":
-        raise ValueError("standalone bundle supports llm_source='argo' only")
-
-    _CALL_ID += 1
-    response_text = argo_llm(model, system_prompt, user_prompt, temp=0.2, verifyprompt=verifyprompt)
+    if llm_source == "argo":
+        _CALL_ID += 1
+        response_text = _argo_mod.argo_llm(model, system_prompt, user_prompt, temp=0.2, verifyprompt=verifyprompt)
+    elif llm_source == "alcf":
+        _CALL_ID += 1
+        response_text = _alcf_mod.argo_llm(model, system_prompt, user_prompt, temp=0.2, verifyprompt=verifyprompt)
+    else:
+        raise ValueError(f"Unsupported llm_source: {llm_source!r}. Use 'argo' or 'alcf'")
 
     if LLM_CALL_LOGGER is not None:
         LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent=intent, context_components={"system_prompt": True, "user_prompt": True})

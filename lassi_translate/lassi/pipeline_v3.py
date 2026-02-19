@@ -74,17 +74,48 @@ def _extract_xsbench_checksum(stdout_text: str) -> str:
     return ""
 
 
+def _xsbench_checksum_valid(stdout_text: str) -> bool:
+    """Return True if XSBench reports a passing checksum (no WARNING in checksum line)."""
+    line = _extract_xsbench_checksum(stdout_text)
+    if not line:
+        return False
+    return "(WARNING" not in line
+
+
 def _stdout_matches(app_name: str, source_stdout: str, generated_stdout: str) -> bool:
     """Return True if the user-defined verification output matches.
+
+    If source_stdout is empty (Stage 0 was skipped, e.g. on Aurora where CUDA
+    source cannot be executed), XSBench is still verified for a valid (warning-free)
+    checksum line; all other apps skip verification and return True.
 
     Default behavior: compare full normalized stdout.
 
     App-specific behavior:
-    - XSBench: compare only the "Verification checksum:" line.
+    - XSBench: if a reference stdout is available, compare checksum lines.
+               If no reference (Stage 0 skipped), verify the generated output
+               has a passing checksum (no WARNING - INAVALID CHECKSUM! message).
     """
 
     if app_name == "XSBench":
-        return _extract_xsbench_checksum(source_stdout) == _extract_xsbench_checksum(generated_stdout)
+        if not (source_stdout or "").strip():
+            # No CUDA reference - verify generated checksum is clean (no WARNING).
+            valid = _xsbench_checksum_valid(generated_stdout)
+            checksum_line = _extract_xsbench_checksum(generated_stdout)
+            if valid:
+                print(f"[VERIFY] XSBench checksum OK (no reference run): {checksum_line}")
+            else:
+                print(f"[VERIFY] XSBench checksum FAILED (invalid or missing): {checksum_line!r}")
+            return valid
+        src_key = _extract_xsbench_checksum(source_stdout)
+        gen_key = _extract_xsbench_checksum(generated_stdout)
+        match = src_key == gen_key
+        print(f"[VERIFY] XSBench checksum: source={src_key!r}  generated={gen_key!r}  match={match}")
+        return match
+
+    if not (source_stdout or "").strip():
+        print("[VERIFY] No source reference stdout available - skipping stdout verification.")
+        return True
 
     return _normalize_stdout_for_compare(source_stdout) == _normalize_stdout_for_compare(generated_stdout)
 
@@ -144,8 +175,8 @@ def auto_code_llmgeneration_pipeline(
     The signature is kept compatible with the original project.
     """
 
-    if llm_source != "argo":
-        raise ValueError("This standalone translation pipeline supports llm_source='argo' only")
+    if llm_source not in ("argo", "alcf"):
+        raise ValueError(f"Unsupported llm_source: {llm_source!r}. Use 'argo' or 'alcf'")
 
     # Minimal experiment bookkeeping.
     now = datetime.now(ZoneInfo("America/Chicago"))
@@ -250,8 +281,8 @@ def auto_code_llmgeneration_pipeline(
 
     for attempt in range(max_attempts + 1):
         if attempt == 0:
-            print("\n----- STAGE 1: CUDA→SYCL TRANSLATION (Argo) -----\n")
-            print("[STAGE1] Asking Argo to translate the source code into SYCL.")
+            print(f"\n----- STAGE 1: CUDA→SYCL TRANSLATION ({llm_source.upper()}) -----\n")
+            print(f"[STAGE1] Asking {llm_source} to translate the source code into SYCL.")
             print("[STAGE1] Context included in prompt: source code only (no extra context files).")
             _raw, code_block = lassi.llm_methods.code_generator_llm(
                 llm_source,
@@ -265,7 +296,7 @@ def auto_code_llmgeneration_pipeline(
             )
         else:
             print(f"\n----- STAGE 2: SELF-CORRECTION (attempt {attempt}/{max_attempts}) -----\n")
-            print("[STAGE2] Previous attempt failed. Re-prompting Argo with the error and the last generated code.")
+            print(f"[STAGE2] Previous attempt failed. Re-prompting {llm_source} with the error and the last generated code.")
             if compile_err == "execute_error":
                 error_intro = "\n -- Runtime error: "
                 error_message = run_err
@@ -378,7 +409,10 @@ def auto_code_llmgeneration_pipeline(
                 if app_name == "XSBench":
                     src_key = _extract_xsbench_checksum(input_content["source_stdout"])
                     gen_key = _extract_xsbench_checksum(run_stdout)
-                    detail = f"XSBench checksum line mismatch\nSOURCE: {src_key}\nGENERATED: {gen_key}\n"
+                    if src_key:
+                        detail = f"XSBench checksum line mismatch\nSOURCE: {src_key}\nGENERATED: {gen_key}\n"
+                    else:
+                        detail = f"XSBench invalid checksum in generated output\nGENERATED: {gen_key}\n"
                 else:
                     detail = (
                         "--- SOURCE STDOUT ---\n"

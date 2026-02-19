@@ -1,0 +1,180 @@
+#!/bin/bash
+#PBS -l select=1
+#PBS -l walltime=01:00:00
+#PBS -l filesystems=flare
+#PBS -A EE-ECP
+#PBS -q debug
+#PBS -N lassi_aurora_xsbench
+
+# LASSI XSBench CUDA→SYCL Translation Pipeline on Aurora
+#
+# Uses ALCF Inference Endpoints (via login-node SSH) for LLM calls and
+# Intel icpx -fsycl for SYCL compilation on Aurora's PVC GPUs.
+#
+# Submit from login node (from the lassi_translate directory):
+#   qsub run_lassi_aurora.pbs
+#
+# Override model or cluster:
+#   qsub -v LLM_MODEL=gpt-oss-120b,ALCF_CLUSTER=metis run_lassi_aurora.pbs
+
+echo "========================================================================"
+echo "LASSI XSBench CUDA→SYCL TRANSLATION - AURORA"
+echo "========================================================================"
+echo "Job ID:     $PBS_JOBID"
+echo "Hostname:   $(hostname)"
+echo "Login node: ${PBS_O_HOST:-unknown}"
+echo "Start Time: $(date -u)"
+echo "========================================================================"
+
+cd /home/vchirio/LASSI-EE/lassi_translate || { echo "ERROR: could not cd to lassi_translate"; exit 1; }
+echo "Working directory: $(pwd)"
+echo ""
+
+# ── Configurable parameters (override with qsub -v KEY=val) ──────────────────
+LLM_MODEL=${LLM_MODEL:-"gpt-oss-120b"}
+ALCF_CLUSTER=${ALCF_CLUSTER:-"metis"}
+ALCF_CONDA_ENV=${ALCF_CONDA_ENV:-"globus_env"}
+SOURCE_APP=${SOURCE_APP:-"XSBench"}
+SOURCE_COLLECTION=${SOURCE_COLLECTION:-"Miniapps"}
+
+echo "Configuration:"
+echo "  Source app:       $SOURCE_APP ($SOURCE_COLLECTION)"
+echo "  LLM model:        $LLM_MODEL"
+echo "  ALCF cluster:     $ALCF_CLUSTER"
+echo "  ALCF conda env:   $ALCF_CONDA_ENV"
+echo ""
+
+# ── Sanity checks ─────────────────────────────────────────────────────────────
+if [ ! -f ~/inference_auth_token.py ]; then
+    echo "ERROR: ALCF token helper not found at ~/inference_auth_token.py"
+    echo "Download: wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py"
+    echo "Authenticate: conda run -n globus_env python3 ~/inference_auth_token.py authenticate"
+    exit 1
+fi
+echo "✓ ALCF token helper found"
+
+if [ ! -f source_codes/Miniapps/XSBench/cuda/Main.cu ]; then
+    echo "ERROR: XSBench source not found at source_codes/Miniapps/XSBench/cuda/Main.cu"
+    exit 1
+fi
+echo "✓ XSBench source found"
+echo ""
+
+# ── Load modules ──────────────────────────────────────────────────────────────
+# Per Aurora docs: the oneAPI programming environment (which provides icpx) is
+# loaded by DEFAULT for all users. We only need to load 'frameworks' here for
+# the Python/conda environment needed to run the pipeline Python code.
+echo "Loading modules..."
+module load frameworks
+echo "Module load complete."
+echo ""
+
+# Show loaded environment for diagnostics
+echo "Active modules:"
+module list 2>&1 | head -20
+echo ""
+
+# ── Python environment ────────────────────────────────────────────────────────
+echo "Python version:"
+python3 --version
+echo ""
+
+# ── SYCL toolchain ────────────────────────────────────────────────────────────
+# icpx is the Intel LLVM-based C++/SYCL compiler from the default oneAPI env.
+# -fsycl enables SYCL device compilation; targets Intel PVC GPUs on Aurora.
+export SYCL_COMPILER="icpx"
+export SYCL_CXXFLAGS="-O2 -std=c++17 -fsycl"
+export SYCL_LDFLAGS=""
+
+echo "SYCL toolchain:"
+ICPX_PATH=$(which icpx 2>/dev/null || echo "NOT FOUND IN PATH")
+echo "  Compiler: $SYCL_COMPILER  ($ICPX_PATH)"
+echo "  Version:  $(icpx --version 2>&1 | head -1)"
+echo "  CXXFLAGS: $SYCL_CXXFLAGS"
+echo ""
+
+if [ "$ICPX_PATH" = "NOT FOUND IN PATH" ]; then
+    echo "ERROR: icpx not found. The oneAPI environment should provide it by default."
+    echo "Check: module list"
+    exit 1
+fi
+
+# ── ALCF LLM configuration ───────────────────────────────────────────────────
+export ALCF_CLUSTER
+export ALCF_CONDA_ENV
+export ALCF_MODEL="$LLM_MODEL"
+
+echo "ALCF LLM configuration:"
+echo "  Cluster:   $ALCF_CLUSTER"
+echo "  Model:     $ALCF_MODEL"
+echo "  Conda env: $ALCF_CONDA_ENV"
+echo "  Login node (PBS_O_HOST): ${PBS_O_HOST:-not set}"
+echo ""
+
+# ── Run pipeline ──────────────────────────────────────────────────────────────
+echo "========================================================================"
+echo "Starting LASSI Translation Pipeline"
+echo "========================================================================"
+echo ""
+
+python3 -u run_lassi_translate_v3.py \
+    --source-collection "$SOURCE_COLLECTION" \
+    --source-app        "$SOURCE_APP" \
+    --source-lang       CUDA \
+    --target-lang       SYCL \
+    --model             "$LLM_MODEL" \
+    --model-coder       "$LLM_MODEL" \
+    --model-judge       "$LLM_MODEL" \
+    --llm-source        alcf \
+    --num-ctx           200000 \
+    --num-ctx-coder     200000 \
+    --no-test-source \
+    --no-display-response \
+    --no-verifyprompt \
+    --truncate-chars    4000
+
+PIPELINE_EXIT_CODE=$?
+
+echo ""
+echo "========================================================================"
+echo "JOB SUMMARY"
+echo "========================================================================"
+echo "Pipeline exit code: $PIPELINE_EXIT_CODE"
+echo "End Time: $(date -u)"
+echo ""
+
+# Print paths to all generated experiment directories for easy access
+echo "Generated experiment directories:"
+ls -td generated_codes/experiment/exp_xsbench_* 2>/dev/null | head -5
+echo ""
+
+if [ $PIPELINE_EXIT_CODE -eq 0 ]; then
+    echo "Status: SUCCESS ✓"
+    echo ""
+    # Show the latest experiment's key outputs
+    LATEST_EXP=$(ls -td generated_codes/experiment/exp_xsbench_* 2>/dev/null | head -1)
+    if [ -n "$LATEST_EXP" ]; then
+        echo "Latest experiment: $LATEST_EXP"
+        echo ""
+        echo "--- CSV results ---"
+        cat "$LATEST_EXP/lassi-translate_pipeline_data.csv" 2>/dev/null || true
+        echo ""
+        echo "--- Generated SYCL stdout ---"
+        cat "$LATEST_EXP/sycl_stdout.txt" 2>/dev/null || true
+    fi
+else
+    echo "Status: FAILED ✗"
+    echo ""
+    echo "Check the experiment directory for logs:"
+    LATEST_EXP=$(ls -td generated_codes/experiment/exp_xsbench_* 2>/dev/null | head -1)
+    [ -n "$LATEST_EXP" ] && echo "  $LATEST_EXP"
+    echo ""
+    echo "Key log files to inspect:"
+    echo "  sycl_build_attempt*.log  - compile errors"
+    echo "  run_trial*.log           - runtime errors"
+    echo "  llm_calls/               - full LLM prompts and responses"
+fi
+
+echo "========================================================================"
+
+exit $PIPELINE_EXIT_CODE

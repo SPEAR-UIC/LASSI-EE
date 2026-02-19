@@ -73,7 +73,7 @@ def alcf_llm(
 
     # The curl command uses $access_token (set by the shell command below)
     curl_part = (
-        f"curl -sS --connect-timeout 10 --max-time 60"
+        f"curl -sS --connect-timeout 10 --max-time 300"
         f" -X POST '{url}'"
         f" -H \"Authorization: Bearer $access_token\""
         f" -H 'Content-Type: application/json'"
@@ -118,11 +118,11 @@ def alcf_llm(
             login_node,
             "bash", "-l",
         ]
-        timeout = 90
+        timeout = 360
     else:
         # Already on login node - run login shell directly
         cmd = ["bash", "-l"]
-        timeout = 80
+        timeout = 340
 
     # Execute request, passing the script via stdin to avoid quoting issues
     try:

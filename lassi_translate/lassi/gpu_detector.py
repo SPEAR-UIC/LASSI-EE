@@ -36,4 +36,12 @@ def detect_gpu_vendors() -> list[dict[str, Any]]:
         if count:
             vendors.append({"vendor": "amd", "count": count, "tool": "rocm-smi"})
 
+    if shutil.which("sycl-ls"):
+        out = _run(["sycl-ls"])
+        # sycl-ls lists SYCL platforms/devices, e.g.:
+        #   [ext_oneapi_level_zero:gpu:0] Intel(R) Level-Zero, Intel(R) Data Center GPU Max 1550 ...
+        count = sum(1 for line in out.splitlines() if ":gpu:" in line.lower())
+        if count:
+            vendors.append({"vendor": "intel", "count": count, "tool": "sycl-ls"})
+
     return vendors

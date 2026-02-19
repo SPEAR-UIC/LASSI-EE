@@ -17,6 +17,7 @@ import difflib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -75,13 +76,13 @@ def _device_report() -> Tuple[str, int]:
     count = vendors[0]["count"]
     _log(f"Detected GPU vendor={vendor} count={count}")
 
-    # Best-effort extra info.
+    # Best-effort extra info — compact single-line summary per device type.
     if vendor == "NVIDIA" and shutil.which("nvidia-smi"):
-        _log("nvidia-smi summary:")
-        os.system("nvidia-smi -L")
+        out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True).stdout.strip()
+        _log(f"nvidia-smi: {out.splitlines()[0] if out else '(no output)'}" + (f" (+{len(out.splitlines())-1} more)" if len(out.splitlines()) > 1 else ""))
     if vendor == "AMD" and shutil.which("rocm-smi"):
-        _log("rocm-smi summary:")
-        os.system("rocm-smi --showid")
+        out = subprocess.run(["rocm-smi", "--showid"], capture_output=True, text=True).stdout.strip()
+        _log(f"rocm-smi: {out.splitlines()[0] if out else '(no output)'}" + (f" (+{len(out.splitlines())-1} more)" if len(out.splitlines()) > 1 else ""))
     if vendor == "INTEL":
         # sycl-ls may live next to icpx rather than on PATH (Aurora after conda activate).
         sycl_ls = shutil.which("sycl-ls")
@@ -92,11 +93,17 @@ def _device_report() -> Tuple[str, int]:
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                     sycl_ls = candidate
         if sycl_ls:
-            _log("sycl-ls summary:")
-            os.system(sycl_ls)
+            import subprocess as _sp
+            out = _sp.run([sycl_ls], capture_output=True, text=True).stdout.strip()
+            gpu_lines = [ln for ln in out.splitlines() if ":gpu" in ln.lower()]
+            if gpu_lines:
+                _log(f"sycl-ls: {gpu_lines[0]}" + (f" (×{len(gpu_lines)} tiles)" if len(gpu_lines) > 1 else ""))
+            else:
+                _log("sycl-ls: (no GPU devices found)")
         elif shutil.which("xpu-smi"):
-            _log("xpu-smi summary:")
-            os.system("xpu-smi discovery")
+            out = subprocess.run(["xpu-smi", "discovery"], capture_output=True, text=True).stdout.strip()
+            devlines = [ln for ln in out.splitlines() if "Device Name:" in ln]
+            _log(f"xpu-smi: {devlines[0] if devlines else '(no output)'}" + (f" (+{len(devlines)-1} more)" if len(devlines) > 1 else ""))
 
     return vendor, count
 
@@ -366,7 +373,7 @@ def main() -> int:
     else:
         _log("STDOUT diff: empty")
 
-    return 0
+    return 0 if complete else 1
 
 
 if __name__ == "__main__":

@@ -266,7 +266,7 @@ def auto_code_llmgeneration_pipeline(
 
     # Stage 1+: translate + self-correct.
     start_time = time.time()
-    max_attempts = 10
+    max_attempts = 15
 
     compile_err = ""
     run_err = ""
@@ -284,31 +284,32 @@ def auto_code_llmgeneration_pipeline(
             print(f"\n----- STAGE 1: CUDA→SYCL TRANSLATION ({llm_source.upper()}) -----\n")
             print(f"[STAGE1] Asking {llm_source} to translate the source code into SYCL.")
             print("[STAGE1] Context included in prompt: source code only (no extra context files).")
-            _raw, code_block = lassi.llm_methods.code_generator_llm(
-                llm_source,
-                model_coder,
-                num_ctx_coder,
-                0.2,
-                this_llm_systemcode_prompt,
-                translate_prompt,
-                False,  # never print full response to console
-                verifyprompt,
-            )
+            with lassi.llm_methods.Spinner(f"[LLM] Generating initial SYCL translation"):
+                _raw, code_block = lassi.llm_methods.code_generator_llm(
+                    llm_source,
+                    model_coder,
+                    num_ctx_coder,
+                    0.2,
+                    this_llm_systemcode_prompt,
+                    translate_prompt,
+                    False,  # never print full response to console
+                    verifyprompt,
+                )
         else:
             print(f"\n----- STAGE 2: SELF-CORRECTION (attempt {attempt}/{max_attempts}) -----\n")
-            print(f"[STAGE2] Previous attempt failed. Re-prompting {llm_source} with the error and the last generated code.")
+            print(f"[STAGE2] Previous attempt failed. Re-prompting {llm_source} with the error.")
             if compile_err == "execute_error":
                 error_intro = "\n -- Runtime error: "
                 error_message = run_err
-                print("[STAGE2] Error context included: runtime error (program crashed or returned non-zero).")
+                print("[STAGE2] Error type: runtime error.")
             elif compile_err.startswith("VERIFICATION MISMATCH"):
                 error_intro = "\n -- Verification mismatch: "
                 error_message = compile_err
-                print("[STAGE2] Error context included: verification mismatch (stdout differs from the source run).")
+                print("[STAGE2] Error type: verification mismatch.")
             else:
                 error_intro = "\n -- Compile error: "
                 error_message = compile_err
-                print("[STAGE2] Error context included: compile error (compiler output included).")
+                print("[STAGE2] Error type: compile error.")
 
             error_prompt = (
                 prompts.get_code_error_correction_prompt("CUDA_to_SYCL_error")
@@ -320,22 +321,23 @@ def auto_code_llmgeneration_pipeline(
                 + error_message
             )
 
-            _raw, code_block = lassi.llm_methods.code_generator_llm(
-                llm_source,
-                model_coder,
-                num_ctx_coder,
-                0.2,
-                this_llm_systemcode_prompt,
-                error_prompt,
-                False,  # never print full response to console
-                verifyprompt,
-            )
+            with lassi.llm_methods.Spinner(f"[LLM] Generating corrected code (attempt {attempt}/{max_attempts})"):
+                _raw, code_block = lassi.llm_methods.code_generator_llm(
+                    llm_source,
+                    model_coder,
+                    num_ctx_coder,
+                    0.2,
+                    this_llm_systemcode_prompt,
+                    error_prompt,
+                    False,  # never print full response to console
+                    verifyprompt,
+                )
 
-        # Normalize fenced code blocks.
-        if code_block.startswith("c++") or code_block.startswith("cpp"):
-            code_block = code_block[3:]
-        if code_block.startswith("c"):
-            code_block = code_block[1:]
+        # Show animated preview of the generated code.
+        lassi.llm_methods.show_code_preview(
+            code_block,
+            title=f"Stage {'1' if attempt == 0 else '2'} generated code — attempt {attempt + 1}",
+        )
 
         # Write generated code.
         out_stem = input_code_file_subdirectory + file_name

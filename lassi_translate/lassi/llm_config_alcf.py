@@ -63,7 +63,7 @@ def alcf_llm(
             {"role": "user", "content": content_prompt}
         ],
         "temperature": round(temp, 1),
-        "max_tokens": 4096,
+        "max_tokens": 16384,
     }
 
     payload = json.dumps(data)

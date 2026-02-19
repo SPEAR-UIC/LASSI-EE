@@ -82,9 +82,21 @@ def _device_report() -> Tuple[str, int]:
     if vendor == "AMD" and shutil.which("rocm-smi"):
         _log("rocm-smi summary:")
         os.system("rocm-smi --showid")
-    if vendor == "INTEL" and shutil.which("sycl-ls"):
-        _log("sycl-ls summary:")
-        os.system("sycl-ls")
+    if vendor == "INTEL":
+        # sycl-ls may live next to icpx rather than on PATH (Aurora after conda activate).
+        sycl_ls = shutil.which("sycl-ls")
+        if not sycl_ls:
+            icpx = shutil.which("icpx")
+            if icpx:
+                candidate = os.path.join(os.path.dirname(icpx), "sycl-ls")
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    sycl_ls = candidate
+        if sycl_ls:
+            _log("sycl-ls summary:")
+            os.system(sycl_ls)
+        elif shutil.which("xpu-smi"):
+            _log("xpu-smi summary:")
+            os.system("xpu-smi discovery")
 
     return vendor, count
 

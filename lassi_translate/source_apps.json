@@ -134,7 +134,7 @@
         },
         "XSBench": {
             "app_folder": "XSBench/cuda",
-            "app_params": [],
+            "app_params": ["-m", "event"],
             "code_lines": 2200
         }
     }

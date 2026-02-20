@@ -304,8 +304,13 @@ def auto_code_llmgeneration_pipeline(
                 stdout_ctx = " + stdout" if run_stdout.strip() else ""
                 if run_stdout.strip():
                     error_message += "\n\nProgram stdout before crash:\n" + run_stdout
+                error_message += (
+                    "\n\n[ORIGINAL CUDA SOURCE FOR REFERENCE]\n"
+                    + input_code
+                    + "\n[/ORIGINAL CUDA SOURCE]\n"
+                )
                 print(f"  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL_error]")
-                print(f"  Context : generated code + runtime error{stdout_ctx}")
+                print(f"  Context : generated code + runtime error{stdout_ctx} + CUDA source")
             elif compile_err.startswith("VERIFICATION MISMATCH"):
                 error_intro = "\n -- Verification mismatch: "
                 error_message = compile_err

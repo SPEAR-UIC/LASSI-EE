@@ -23,11 +23,6 @@ def _truncate(s: str, limit: int) -> str:
 
 @dataclass
 class LLMCallLogger:
-    """Persist per-call LLM context and responses.
-
-    This is intentionally lightweight and file-based so it works in batch runs.
-    """
-
     root_dir: str
     truncate_chars: int = 2000
 
@@ -69,22 +64,12 @@ class LLMCallLogger:
 
         with open(os.path.join(call_dir, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta_obj, f, indent=2)
-
         with open(os.path.join(call_dir, "system.txt"), "w", encoding="utf-8") as f:
             f.write(system_prompt)
-
         with open(os.path.join(call_dir, "user.txt"), "w", encoding="utf-8") as f:
             f.write(user_prompt)
-
         with open(os.path.join(call_dir, "response.txt"), "w", encoding="utf-8") as f:
             f.write(response_text)
 
-    def print_call_summary(
-        self,
-        *,
-        call_id: int,
-        intent: str,
-        context_components: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        # Minimal one-liner; full context is in the pre-call display and in log files.
+    def print_call_summary(self, *, call_id: int, intent: str, **_kwargs: Any) -> None:
         print(f"[LLM] call #{call_id:04d} complete")

@@ -102,20 +102,8 @@ echo "========================================================================"
 echo ""
 
 "$PYTHON3" -u run_lassi_translate_v3.py \
-    --source-collection  Miniapps \
-    --source-app         XSBench \
-    --source-lang        CUDA \
-    --target-lang        SYCL \
-    --model              "$LLM_MODEL" \
-    --model-coder        "$LLM_MODEL" \
-    --model-judge        "$LLM_MODEL" \
-    --llm-source         alcf \
-    --num-ctx            200000 \
-    --num-ctx-coder      200000 \
-    --no-test-source \
-    --no-display-response \
-    --no-verifyprompt \
-    --truncate-chars     4000
+    --model        "$LLM_MODEL" \
+    --no-verifyprompt
 
 PIPELINE_RC=$?
 
@@ -133,11 +121,11 @@ if [ -n "$LATEST" ]; then
     if [ $PIPELINE_RC -eq 0 ]; then
         echo "Status: SUCCESS ✓"
         echo ""
-        echo "--- SYCL execution output ---"
-        cat "$LATEST/sycl_stdout.txt" 2>/dev/null || true
+        echo "--- Results CSV ---"
+        cat "$LATEST/results.csv" 2>/dev/null || true
         echo ""
-        echo "--- Pipeline CSV ---"
-        cat "$LATEST/lassi-translate_pipeline_data.csv" 2>/dev/null || true
+        echo "--- SYCL execution output ---"
+        cat "$LATEST/"run_trial*_stdout.log 2>/dev/null | tail -30 || true
     else
         echo "Status: FAILED ✗"
         echo ""

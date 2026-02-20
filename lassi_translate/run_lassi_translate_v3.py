@@ -1,31 +1,19 @@
 #!/usr/bin/env python3
-
-"""Standalone translation runner.
-
-Workflow:
-1) Report available GPU devices.
-2) Build+run the selected source app (CUDA) and preserve stdout (skipped with --no-test-source).
-3) Translate to target language (SYCL) via LLM (Argo or ALCF).
-4) Compile+run generated code with a self-correction loop on errors.
-"""
-
 from __future__ import annotations
 
 import argparse
 import csv
-import difflib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
 from zoneinfo import ZoneInfo
 
+import lassi.llm_methods
 import lassi.pipeline_v3
 from lassi.gpu_detector import detect_gpu_vendors
 from lassi.llm_call_logger import LLMCallLogger
@@ -33,361 +21,116 @@ from lassi.prompt_dictionary import PromptDictionary
 from lassi.sycl_toolchain import get_sycl_toolchain
 
 
-@dataclass(frozen=True)
-class RunnerConfig:
-    repo_root: Path
-    source_apps_json: Path
-    source_collection: str
-    source_app: str
-    source_lang: str
-    target_lang: str
-    model: str
-    model_coder: str
-    model_judge: str
-    llm_source: str
-    num_ctx: int
-    num_ctx_coder: int
-    display_response: bool
-    verifyprompt: bool
-    truncate_chars: int
-    test_source: bool
-
-
 def _log(msg: str) -> None:
-    ts = time.strftime("%H:%M:%S")
-    print(f"[{ts}] [RUN] {msg}", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] [RUN] {msg}", flush=True)
 
 
-def _init_csv(dir_path: Path, fieldnames: List[str], filename: str) -> Path:
-    dir_path.mkdir(parents=True, exist_ok=True)
-    fp = dir_path / filename
-    if not fp.exists():
-        with fp.open("w", newline="") as f:
-            csv.DictWriter(f, fieldnames=fieldnames).writeheader()
-    return fp
+def _load_source() -> tuple[str, list[str]]:
+    src_dir = Path("source_codes/Miniapps/XSBench/cuda")
+    code = (src_dir / "Main.cu").read_text(encoding="utf-8")
+    headers = []
+    for pattern in ("*.cuh", "*.h"):
+        for hdr in sorted(src_dir.glob(pattern)):
+            headers.append(f"// ===== HEADER: {hdr.name} =====\n{hdr.read_text()}\n// ===== END HEADER: {hdr.name} =====\n")
+    if headers:
+        code = "\n".join(headers) + "\n" + code
+    app_params = json.loads(Path("source_apps.json").read_text())["Miniapps"]["XSBench"]["app_params"]
+    return code, app_params
 
 
-def _device_report() -> Tuple[str, int]:
-    vendors = detect_gpu_vendors()
-    if not vendors:
-        raise SystemExit("Pipeline stopped - no GPU hardware found")
-
-    vendor = vendors[0]["vendor"].upper()
-    count = vendors[0]["count"]
-    _log(f"Detected GPU vendor={vendor} count={count}")
-
-    # Best-effort extra info — compact single-line summary per device type.
-    if vendor == "NVIDIA" and shutil.which("nvidia-smi"):
-        out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True).stdout.strip()
-        _log(f"nvidia-smi: {out.splitlines()[0] if out else '(no output)'}" + (f" (+{len(out.splitlines())-1} more)" if len(out.splitlines()) > 1 else ""))
-    if vendor == "AMD" and shutil.which("rocm-smi"):
-        out = subprocess.run(["rocm-smi", "--showid"], capture_output=True, text=True).stdout.strip()
-        _log(f"rocm-smi: {out.splitlines()[0] if out else '(no output)'}" + (f" (+{len(out.splitlines())-1} more)" if len(out.splitlines()) > 1 else ""))
-    if vendor == "INTEL":
-        # sycl-ls may live next to icpx rather than on PATH (Aurora after conda activate).
-        sycl_ls = shutil.which("sycl-ls")
-        if not sycl_ls:
-            icpx = shutil.which("icpx")
-            if icpx:
-                candidate = os.path.join(os.path.dirname(icpx), "sycl-ls")
-                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                    sycl_ls = candidate
-        if sycl_ls:
-            import subprocess as _sp
-            out = _sp.run([sycl_ls], capture_output=True, text=True).stdout.strip()
-            gpu_lines = [ln for ln in out.splitlines() if ":gpu" in ln.lower()]
-            if gpu_lines:
-                _log(f"sycl-ls: {gpu_lines[0]}" + (f" (×{len(gpu_lines)} tiles)" if len(gpu_lines) > 1 else ""))
-            else:
-                _log("sycl-ls: (no GPU devices found)")
-        elif shutil.which("xpu-smi"):
-            out = subprocess.run(["xpu-smi", "discovery"], capture_output=True, text=True).stdout.strip()
-            devlines = [ln for ln in out.splitlines() if "Device Name:" in ln]
-            _log(f"xpu-smi: {devlines[0] if devlines else '(no output)'}" + (f" (+{len(devlines)-1} more)" if len(devlines) > 1 else ""))
-
-    return vendor, count
-
-
-def _load_source_app_config(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _load_source_code(source_apps: dict, source_collection: str, source_app: str) -> Tuple[str, Path, str, str, int, List[str]]:
-    source_folder = source_apps[source_collection]["source_folder"]
-    app_folder_name = source_apps[source_collection][source_app]["app_folder"]
-    lines_of_code = source_apps[source_collection][source_app]["code_lines"]
-    exe_input_parameters = source_apps[source_collection][source_app]["app_params"]
-
-    file_name = "Main"
-    input_code_extension = "cu"
-
-    source_dir = Path("source_codes") / source_folder / app_folder_name
-    source_path = (source_dir / f"{file_name}.{input_code_extension}").resolve()
-
-    main_code = source_path.read_text(encoding="utf-8")
-
-    # Prepend any header files (.cuh / .h) from the same directory so the model
-    # receives the complete type definitions and function prototypes.
-    header_parts: List[str] = []
-    for ext in ("*.cuh", "*.h"):
-        for hdr in sorted(source_dir.glob(ext)):
-            header_parts.append(
-                f"// ===== HEADER: {hdr.name} =====\n"
-                + hdr.read_text(encoding="utf-8")
-                + f"\n// ===== END HEADER: {hdr.name} =====\n"
-            )
-    input_code = ("\n".join(header_parts) + "\n" + main_code) if header_parts else main_code
-
-    return (
-        input_code,
-        source_path,
-        source_folder,
-        app_folder_name,
-        lines_of_code,
-        exe_input_parameters,
-    )
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
-def _diff_text(a: str, b: str, a_name: str, b_name: str) -> str:
-    return "".join(
-        difflib.unified_diff(
-            a.splitlines(keepends=True),
-            b.splitlines(keepends=True),
-            fromfile=a_name,
-            tofile=b_name,
-        )
-    )
+def _intel_gpu_summary() -> None:
+    sycl_ls = shutil.which("sycl-ls")
+    if not sycl_ls:
+        icpx = shutil.which("icpx")
+        if icpx:
+            candidate = os.path.join(os.path.dirname(icpx), "sycl-ls")
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                sycl_ls = candidate
+    if sycl_ls:
+        out = subprocess.run([sycl_ls], capture_output=True, text=True).stdout.strip()
+        gpu_lines = [ln for ln in out.splitlines() if ":gpu" in ln.lower()]
+        if gpu_lines:
+            suffix = f" (×{len(gpu_lines)} tiles)" if len(gpu_lines) > 1 else ""
+            _log(f"sycl-ls: {gpu_lines[0]}{suffix}")
 
 
 def main() -> int:
-    # Ensure we see logs even when stdout is buffered (e.g., when run under some terminals).
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+
     p = argparse.ArgumentParser()
-
-    p.add_argument("--repo-root", default=str(Path(__file__).resolve().parent))
-    p.add_argument("--source-apps-json", default="source_apps.json")
-    p.add_argument("--source-collection", default="Miniapps")
-    p.add_argument("--source-app", default="XSBench")
-    p.add_argument("--source-lang", default="CUDA")
-    p.add_argument("--target-lang", default="SYCL")
-
-    p.add_argument("--model", default="gpt52")
-    p.add_argument("--model-coder", default="gpt52")
-    p.add_argument("--model-judge", default="gpt52")
-    p.add_argument("--llm-source", default="argo")
-    p.add_argument("--num-ctx", type=int, default=200000)
-    p.add_argument("--num-ctx-coder", type=int, default=200000)
-
-    # Never print full generated code to console; full responses are preserved under experiment_dir/llm_calls/.
-    p.add_argument("--display-response", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--model", default="gpt-oss-120b")
     p.add_argument("--verifyprompt", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--truncate-chars", type=int, default=2000)
-    # Pass --no-test-source on Aurora (no CUDA compiler/GPU available)
-    p.add_argument("--test-source", action=argparse.BooleanOptionalAction, default=True,
-                   help="Build+run CUDA source before translating (disable on Aurora with --no-test-source)")
-
     args = p.parse_args()
 
-    cfg = RunnerConfig(
-        repo_root=Path(args.repo_root).resolve(),
-        source_apps_json=Path(args.source_apps_json),
-        source_collection=args.source_collection,
-        source_app=args.source_app,
-        source_lang=args.source_lang,
-        target_lang=args.target_lang,
-        model=args.model,
-        model_coder=args.model_coder,
-        model_judge=args.model_judge,
-        llm_source=args.llm_source,
-        num_ctx=args.num_ctx,
-        num_ctx_coder=args.num_ctx_coder,
-        display_response=args.display_response,
-        verifyprompt=args.verifyprompt,
-        truncate_chars=args.truncate_chars,
-        test_source=args.test_source,
-    )
-
-    os.chdir(cfg.repo_root)
+    os.chdir(Path(__file__).resolve().parent)
     _log(f"CWD={Path.cwd()}")
-    _log(f"LLM backend: {cfg.llm_source}")
-    _log(f"Test source first: {cfg.test_source}")
-    _log("Mode: device report → translate → compile+run with self-correction")
+    _log("LLM backend: ALCF Inference Endpoints")
+    _log("Mode: translate CUDA→SYCL with self-correction")
 
-    # Add CUDA Toolkit to PATH for Stage 0 (only needed when testing source on NVIDIA).
-    if cfg.test_source:
-        os.environ["PATH"] = "/usr/local/cuda/bin:" + os.environ.get("PATH", "")
-        _log(f"nvcc on PATH: {shutil.which('nvcc')}")
+    vendors = detect_gpu_vendors()
+    if not vendors:
+        raise SystemExit("No GPU hardware found")
+    vendor = vendors[0]["vendor"].upper()
+    _log(f"Detected GPU vendor={vendor} count={vendors[0]['count']}")
+    if vendor == "INTEL":
+        _intel_gpu_summary()
 
-    detected_vendor, _gpu_count = _device_report()
+    tc = get_sycl_toolchain()
+    _log(f"SYCL toolchain compiler={tc.compiler} cxxflags={tc.cxxflags} ldflags={tc.ldflags}")
 
-    sycl_tc = get_sycl_toolchain()
-    _log(f"SYCL toolchain compiler={sycl_tc.compiler} cxxflags={sycl_tc.cxxflags} ldflags={sycl_tc.ldflags}")
+    input_code, exe_args = _load_source()
+    _log(f"Loaded source: {Path('source_codes/Miniapps/XSBench/cuda/Main.cu').resolve()}")
 
-    source_apps = _load_source_app_config(cfg.source_apps_json)
-    input_code, source_file_path, source_folder, app_folder_name, lines_of_code, exe_input_parameters = _load_source_code(
-        source_apps, cfg.source_collection, cfg.source_app
-    )
-    _log(f"Loaded source: {source_file_path}")
+    dt_string = datetime.now(ZoneInfo("America/Chicago")).strftime("%m-%d-%Y_t%H_%M_%S")
+    experiment_name = f"exp_xsbench_translate_cuda_to_sycl_{args.model}_{vendor}__{dt_string}"
+    experiment_dir = Path("generated_codes/experiment") / experiment_name
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    _log(f"Experiment directory: {experiment_dir}")
+
+    lassi.llm_methods.LLM_CALL_LOGGER = LLMCallLogger(str(experiment_dir / "llm_calls"), truncate_chars=4000)
+
+    csv_path = experiment_dir / "results.csv"
+    csv_fields = ["timestamp", "app", "model", "gpu_vendor", "success", "runtime_min"]
+    with csv_path.open("w", newline="") as f:
+        csv.DictWriter(f, fieldnames=csv_fields).writeheader()
+    experiment_data = {
+        "timestamp": dt_string,
+        "app": "XSBench",
+        "model": args.model,
+        "gpu_vendor": vendor,
+        "success": False,
+        "runtime_min": 0.0,
+    }
 
     prompts = PromptDictionary()
-    system_prompt = prompts.get_system_prompt("CUDA_to_SYCL")
-    translate_prompt = prompts.get_codetranslate_prompt("CUDA_to_SYCL")
+    sycl_flags = f"{tc.cxxflags} {tc.ldflags}".strip()
 
-    experiment = f"exp_xsbench_translate_cuda_to_sycl_{cfg.model_coder}_{detected_vendor}"
-    dt_string = datetime.now(ZoneInfo("America/Chicago")).strftime("%m-%d-%Y_t%H_%M_%S")
-    experiment_dir = (Path("generated_codes") / "experiment" / f"{experiment}__{dt_string}").resolve()
-
-    # LLM call logging.
-    llm_calls_dir = experiment_dir / "llm_calls"
-    import lassi.llm_methods as llm_methods
-
-    llm_methods.LLM_CALL_LOGGER = LLMCallLogger(str(llm_calls_dir), truncate_chars=cfg.truncate_chars)
-
-    # Minimal CSV.
-    fields = [
-        "trial_number",
-        "timestamp",
-        "experiment",
-        "gpu_vendor",
-        "app_name",
-        "code_line_count",
-        "llm",
-        "llm_coder",
-        "llm_judge",
-        "source_stdout",
-        "sycl_compile_ok",
-        "sycl_run_ok",
-        "sycl_stdout",
-        "pipeline_runtime_min",
-    ]
-    csv_path = _init_csv(experiment_dir, fields, filename="lassi-translate_pipeline_data.csv")
-
-    experiment_data = dict.fromkeys(fields, None)
-    experiment_data["gpu_vendor"] = detected_vendor
-    experiment_data["experiment"] = experiment
-    experiment_data["app_name"] = cfg.source_app
-    experiment_data["code_line_count"] = lines_of_code
-    experiment_data["llm"] = cfg.model
-    experiment_data["llm_coder"] = cfg.model_coder
-    experiment_data["llm_judge"] = cfg.model_judge
-
-    meta = "***** EXPERIMENT CONFIGURATION SUMMARY *****\n"
-    meta += f"\nGPU Vendor: {detected_vendor}"
-    meta += f"\nDate-time: {dt_string}"
-    meta += f"\nApplication: {app_folder_name}"
-    meta += f"\n\nLLM Source: {cfg.llm_source}"
-    meta += f"\nModel: {cfg.model}"
-    meta += f"\nModel coder: {cfg.model_coder}"
-    meta += f"\nModel judge: {cfg.model_judge}"
-    meta += "\n\nPower measurement: False\n"
-
-    _log("Experiment directory: " + str(experiment_dir))
-    _write_text(experiment_dir / "metadata_summary.txt", meta)
-
-    # Toolchains.
-    cuda_make = "make"
-    cuda_make_args = "-j SM_VERSION=80 CFLAGS=-std=c++17"
-
-    sycl_compiler = sycl_tc.compiler
-    sycl_flags = f"{sycl_tc.cxxflags} {sycl_tc.ldflags}".strip()
-
-    trial_number = 1
-    start = time.time()
-
-    complete = lassi.pipeline_v3.auto_code_llmgeneration_pipeline(
-        prompts,
-        system_prompt,
-        translate_prompt,
-        cfg.llm_source,
-        cfg.model,
-        cfg.model_coder,
-        cfg.model_judge,
-        cfg.num_ctx,
-        cfg.num_ctx_coder,
-        False,
-        True,
-        False,
-        False,
-        "",
-        "",
-        input_code,
-        lines_of_code,
-        cfg.target_lang,
-        "cpp",
-        cfg.source_lang,
-        sycl_compiler,
-        sycl_flags,
-        False,
-        True,
-        "",
-        f"generated_codes/{source_folder}/{app_folder_name}/sycl",
-        "Main",
-        str(source_file_path),
-        cfg.display_response,
-        False,
-        False,
-        True,
-        exe_input_parameters,
-        meta,
-        False,
-        cfg.test_source,
-        False,
-        dt_string,
-        True,
-        False,
-        False,
-        experiment,
-        cfg.verifyprompt,
-        trial_number,
-        str(experiment_dir),
-        str(csv_path),
-        experiment_data,
-        cfg.source_app,
+    cfg = lassi.pipeline_v3.PipelineConfig(
+        model=args.model,
+        system_prompt=prompts.get_system_prompt("CUDA_to_SYCL"),
+        translate_prompt=prompts.get_codetranslate_prompt("CUDA_to_SYCL"),
+        prompts=prompts,
+        input_code=input_code,
+        sycl_compiler=tc.compiler,
+        sycl_flags=sycl_flags,
+        exe_args=exe_args,
+        app_name="XSBench",
+        experiment_dir=str(experiment_dir.resolve()),
+        csv_path=str(csv_path),
+        experiment_data=experiment_data,
+        experiment_name=experiment_name,
+        trial_number=1,
+        verifyprompt=args.verifyprompt,
     )
 
+    start = time.time()
+    success = lassi.pipeline_v3.run_pipeline(cfg)
     runtime_min = round((time.time() - start) / 60, 2)
-    _log(f"Pipeline completed={complete} runtime_min={runtime_min}")
-
-    # Extract stdout blocks from the metadata file written by the pipeline.
-    meta_files = sorted(experiment_dir.glob("metadata_*_Trial*.txt"))
-    meta_text = meta_files[-1].read_text(encoding="utf-8") if meta_files else ""
-
-    def _extract_block(tag: str) -> str:
-        if not meta_text:
-            return ""
-        start_i = meta_text.find(tag)
-        if start_i < 0:
-            return ""
-        start_i += len(tag)
-        next_delim = meta_text.find("----- ", start_i)
-        if next_delim < 0:
-            return meta_text[start_i:].strip() + "\n"
-        return meta_text[start_i:next_delim].strip() + "\n"
-
-    source_stdout = _extract_block("----- SOURCE: EXECUTION OUTPUT -----")
-    sycl_stdout = _extract_block("----- GENERATED: EXECUTION OUTPUT -----")
-
-    _write_text(experiment_dir / "source_stdout.txt", source_stdout)
-    _write_text(experiment_dir / "sycl_stdout.txt", sycl_stdout)
-    _write_text(experiment_dir / "stdout_diff.txt", _diff_text(source_stdout, sycl_stdout, "source_stdout", "sycl_stdout"))
-
-    # Note: pipeline verification is app-specific (e.g., XSBench compares only the checksum line).
-    # The diff here is informational only.
-    if (experiment_dir / "stdout_diff.txt").read_text(encoding="utf-8").strip():
-        _log("STDOUT diff: present (informational; pipeline verification may still have passed)")
-    else:
-        _log("STDOUT diff: empty")
-
-    return 0 if complete else 1
+    _log(f"Pipeline success={success} runtime_min={runtime_min}")
+    return 0 if success else 1
 
 
 if __name__ == "__main__":

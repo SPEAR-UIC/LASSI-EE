@@ -97,18 +97,16 @@ class PromptDictionary:
                 "with icpx. Focus on: memory model and USM, queue and device setup, kernel "
                 "dispatch syntax, thread indexing equivalents, local/shared memory, "
                 "synchronization primitives, and common pitfalls to avoid. "
-                "Be concise and actionable. Output only the summary."
+                "Be extremely concise — 10 bullet points maximum, 150 words total maximum. "
+                "Output only the bullet-point summary, nothing else."
             ),
             "describe_source": (
                 "You are an expert in parallel programming. Analyze the following CUDA C++ "
-                "source code and produce a structured description of it. Identify: "
-                "(1) the overall purpose and algorithm, "
-                "(2) all CUDA-specific constructs used (cudaMalloc, cudaMemcpy, kernel "
-                "launches, __global__, __device__, __shared__, threadIdx/blockIdx/blockDim, "
-                "atomics, synchronization), "
-                "(3) every function and whether it will need a sycl::queue& q parameter "
-                "when translated to SYCL, "
-                "(4) any potential translation challenges or pitfalls. "
+                "source code and produce a brief structured description. Identify: "
+                "(1) overall purpose in one sentence, "
+                "(2) CUDA constructs used (cudaMalloc/cudaMemcpy/kernels/__shared__/atomics), "
+                "(3) which functions will need a sycl::queue& q parameter in SYCL. "
+                "Be extremely concise — 200 words maximum. "
                 "Output only the structured description, no code."
             ),
         }

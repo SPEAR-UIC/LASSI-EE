@@ -67,8 +67,17 @@ def main() -> int:
         "--no-self-prompting", dest="self_prompting", action="store_false",
         help="Disable Stage 0 self-prompting context builder (faster but less context-aware).",
     )
+    p.add_argument(
+        "--debug", action="store_true", default=False,
+        help="Enable debug mode: print prompt sizes before each LLM call and full error details.",
+    )
     p.set_defaults(self_prompting=True)
     args = p.parse_args()
+
+    # Apply debug mode globally
+    if args.debug:
+        import lassi.llm_methods as _lm
+        _lm.DEBUG_MODE = True
 
     os.chdir(Path(__file__).resolve().parent)
     _log(f"CWD={Path.cwd()}")
@@ -114,6 +123,8 @@ def main() -> int:
     sycl_flags = f"{tc.cxxflags} {tc.ldflags}".strip()
 
     _log(f"Self-prompting: {'enabled' if args.self_prompting else 'disabled (--no-self-prompting)'}")
+    if args.debug:
+        _log("Debug mode: ON (prompt sizes logged before each LLM call)")
 
     cfg = lassi.pipeline_v3.PipelineConfig(
         model=args.model,

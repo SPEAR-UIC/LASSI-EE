@@ -11,6 +11,7 @@ import lassi.llm_config_alcf as _alcf
 
 LLM_CALL_LOGGER: Optional[LLMCallLogger] = None
 _CALL_ID = 0
+DEBUG_MODE: bool = False  # Set True via --debug flag to enable prompt size diagnostics
 
 _CODE_BLOCK_RE = re.compile(r"```(?:c\+\+|cpp|c|\w+)?\s*\n(.*?)\n```", re.DOTALL)
 
@@ -90,6 +91,11 @@ def show_code_preview(code: str, title: str = "Generated code", max_lines: int =
 def generate_code(model: str, system_prompt: str, user_prompt: str, verifyprompt: bool = False) -> str:
     global _CALL_ID
     _CALL_ID += 1
+    if DEBUG_MODE:
+        sys_chars = len(system_prompt)
+        usr_chars = len(user_prompt)
+        est_tokens = (sys_chars + usr_chars) // 4
+        print(f"[DEBUG] LLM call #{_CALL_ID:04d} | system={sys_chars:,} chars | user={usr_chars:,} chars | ~{est_tokens:,} input tokens | max_tokens=32768")
     response_text = _alcf.call_llm(model, system_prompt, user_prompt, verifyprompt=verifyprompt)
     if LLM_CALL_LOGGER is not None:
         LLM_CALL_LOGGER.log_call(
@@ -106,15 +112,21 @@ def generate_code(model: str, system_prompt: str, user_prompt: str, verifyprompt
     return _extract_code(response_text)
 
 
-def generate_text(model: str, system_prompt: str, user_prompt: str, intent: str = "self-prompting", verifyprompt: bool = False) -> str:
+def generate_text(model: str, system_prompt: str, user_prompt: str, intent: str = "self-prompting", verifyprompt: bool = False, max_tokens: int = 4096) -> str:
     """Call the LLM and return the raw text response (no code-block extraction).
 
     Used for self-prompting calls (context summarization, source code description)
     where the response is plain prose, not a fenced code block.
+    max_tokens defaults to 4096 since self-prompting outputs are short prose.
     """
     global _CALL_ID
     _CALL_ID += 1
-    response_text = _alcf.call_llm(model, system_prompt, user_prompt, verifyprompt=verifyprompt)
+    if DEBUG_MODE:
+        sys_chars = len(system_prompt)
+        usr_chars = len(user_prompt)
+        est_tokens = (sys_chars + usr_chars) // 4
+        print(f"[DEBUG] LLM call #{_CALL_ID:04d} | system={sys_chars:,} chars | user={usr_chars:,} chars | ~{est_tokens:,} input tokens | max_tokens={max_tokens}")
+    response_text = _alcf.call_llm(model, system_prompt, user_prompt, verifyprompt=verifyprompt, max_tokens=max_tokens)
     if LLM_CALL_LOGGER is not None:
         LLM_CALL_LOGGER.log_call(
             call_id=_CALL_ID,

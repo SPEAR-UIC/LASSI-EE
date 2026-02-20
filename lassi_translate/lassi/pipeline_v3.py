@@ -144,11 +144,9 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
                 + source_code_description
                 + "\n[/YOUR ANALYSIS OF THE SOURCE CODE TO TRANSLATE]\n\n"
             )
-        think_prefix = (
-            f"Think carefully before developing the following code that you describe as: "
-            + source_code_description
-            + "\n\nNow, "
-        ) if source_code_description else ""
+        # "Think carefully" prefix references the description already in the preamble
+        # (do NOT repeat the full description text here — it's already above).
+        think_prefix = "Think carefully, using your analysis above. Now, " if source_code_description else ""
         translate_user_prompt = (
             context_preamble
             + think_prefix

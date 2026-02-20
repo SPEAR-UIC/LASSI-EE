@@ -14,6 +14,7 @@ def call_llm(
     user_prompt: str,
     temp: float = 0.2,
     verifyprompt: bool = False,
+    max_tokens: int = 32768,
 ) -> str:
     cluster = os.environ.get("ALCF_CLUSTER", "metis")
     endpoints = {
@@ -38,7 +39,7 @@ def call_llm(
             {"role": "user",   "content": user_prompt},
         ],
         "temperature": round(temp, 1),
-        "max_tokens": 32768,
+        "max_tokens": max_tokens,
     }
     payload = json.dumps(data)
 
@@ -100,7 +101,7 @@ def call_llm(
             raise last_error
 
         if proc.returncode != 0:
-            last_error = RuntimeError(f"ALCF API call failed (rc={proc.returncode}): {proc.stderr.strip()}")
+            last_error = RuntimeError(f"ALCF API call failed (rc={proc.returncode}):\n  stderr: {proc.stderr.strip()[:500]}\n  stdout: {proc.stdout.strip()[:200]}")
             if attempt < _MAX_RETRIES - 1:
                 delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
                 print(f"[RETRY] Non-zero exit on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")

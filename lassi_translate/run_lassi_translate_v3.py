@@ -143,6 +143,7 @@ def main() -> int:
         trial_number=1,
         verifyprompt=args.verifyprompt,
         use_self_prompting=args.self_prompting,
+        verbose=args.debug,
     )
 
     start = time.time()

@@ -31,6 +31,7 @@ class PipelineConfig:
     trial_number: int
     verifyprompt: bool = False
     use_self_prompting: bool = True
+    verbose: bool = False
 
 
 def _write_sycl_makefile(experiment_dir: str, sycl_compiler: str, sycl_flags: str, src: str, out: str) -> None:
@@ -65,14 +66,16 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
     start_time = time.time()
 
     print("\n----- PIPELINE v3 (CUDA→SYCL) -----\n")
-    print(f"[INFO] Artifacts: {cfg.experiment_dir}")
-    print(f"[INFO] App: {cfg.app_name}")
+    if cfg.verbose:
+        print(f"[INFO] Artifacts: {cfg.experiment_dir}")
+        print(f"[INFO] App: {cfg.app_name}")
 
     vendors = detect_gpu_vendors()
     if not vendors:
         print("❌ No GPUs detected.")
         return False
-    print(f"🔍 Detected GPU vendor: {vendors[0]['vendor'].upper()}")
+    if cfg.verbose:
+        print(f"🔍 Detected GPU vendor: {vendors[0]['vendor'].upper()}")
 
     compile_err = ""
     run_err = ""
@@ -105,11 +108,11 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
                 + "\n[END SYCL REFERENCE GUIDE]"
             )
             print("  Step 1/2: Summarizing SYCL reference context...")
-            with lassi.llm_methods.Spinner("[LLM] Summarizing SYCL context knowledge"):
-                sycl_context_summary = lassi.llm_methods.generate_text(
-                    cfg.model, cfg.system_prompt, summarize_prompt,
-                    intent="context summarization", verifyprompt=cfg.verifyprompt
-                )
+            sycl_context_summary = lassi.llm_methods.generate_text(
+                cfg.model, cfg.system_prompt, summarize_prompt,
+                intent="context summarization", verifyprompt=cfg.verifyprompt,
+                label="[LLM] Summarizing SYCL context knowledge",
+            )
 
         describe_prompt = (
             cfg.prompts.get_selfprompt("describe_source")
@@ -118,11 +121,11 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
             + "\n[END CUDA SOURCE CODE]"
         )
         print("  Step 2/2: Generating source code description...")
-        with lassi.llm_methods.Spinner("[LLM] Describing source code"):
-            source_code_description = lassi.llm_methods.generate_text(
-                cfg.model, cfg.system_prompt, describe_prompt,
-                intent="source code description", verifyprompt=cfg.verifyprompt
-            )
+        source_code_description = lassi.llm_methods.generate_text(
+            cfg.model, cfg.system_prompt, describe_prompt,
+            intent="source code description", verifyprompt=cfg.verifyprompt,
+            label="[LLM] Describing source code",
+        )
 
         print("\n  ✓ Self-prompting complete. Context incorporated into Stage 1 prompt.\n")
 
@@ -166,20 +169,22 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
     for attempt in range(max_attempts + 1):
         if attempt == 0:
             print("\n----- STAGE 1: CUDA→SYCL TRANSLATION -----\n")
-            print("  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL]")
+            if cfg.verbose:
+                print("  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL]")
             ctx_parts = ["source code"]
             if sycl_context_summary:
                 ctx_parts.append("SYCL context summary")
             if source_code_description:
                 ctx_parts.append("source code description")
             print(f"  Context : {' + '.join(ctx_parts)}")
-            with lassi.llm_methods.Spinner("[LLM] Generating initial SYCL translation"):
-                code_block = lassi.llm_methods.generate_code(
-                    cfg.model, cfg.system_prompt, translate_user_prompt, cfg.verifyprompt
-                )
+            code_block = lassi.llm_methods.generate_code(
+                cfg.model, cfg.system_prompt, translate_user_prompt, cfg.verifyprompt,
+                label="[LLM] Generating initial SYCL translation",
+            )
         else:
             print(f"\n----- STAGE 2: SELF-CORRECTION (attempt {attempt}/{max_attempts}) -----\n")
-            print("  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL_error]")
+            if cfg.verbose:
+                print("  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL_error]")
 
             if compile_err == "execute_error":
                 error_msg = run_err
@@ -207,25 +212,28 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
                 + error_msg
             )
 
-            with lassi.llm_methods.Spinner(f"[LLM] Generating corrected code (attempt {attempt}/{max_attempts})"):
-                code_block = lassi.llm_methods.generate_code(
-                    cfg.model, cfg.system_prompt, error_prompt, cfg.verifyprompt
-                )
+            code_block = lassi.llm_methods.generate_code(
+                cfg.model, cfg.system_prompt, error_prompt, cfg.verifyprompt,
+                label=f"[LLM] Generating corrected code (attempt {attempt}/{max_attempts})",
+            )
 
-        lassi.llm_methods.show_code_preview(
-            code_block,
-            title=f"Stage {'1' if attempt == 0 else '2'} generated code — attempt {attempt + 1}",
-        )
+        if cfg.verbose:
+            lassi.llm_methods.show_code_preview(
+                code_block,
+                title=f"Stage {'1' if attempt == 0 else '2'} generated code — attempt {attempt + 1}",
+            )
 
         # Write generated code.
         os.makedirs(os.path.dirname(out_src), exist_ok=True)
         with open(out_src, "w", encoding="utf-8") as f:
             f.write(code_block)
-        print(f"[GEN] Wrote generated SYCL code to: {out_src}")
+        if cfg.verbose:
+            print(f"[GEN] Wrote generated SYCL code to: {out_src}")
 
         # Compile via Makefile.
         _write_sycl_makefile(cfg.experiment_dir, cfg.sycl_compiler, cfg.sycl_flags, out_src, "Main")
-        print(f"[BUILD] Wrote a Makefile to: {os.path.join(cfg.experiment_dir, 'Makefile')}")
+        if cfg.verbose:
+            print(f"[BUILD] Wrote a Makefile to: {os.path.join(cfg.experiment_dir, 'Makefile')}")
         compile_err = lassi.code_manager.make_script_code(
             ".",
             f"-C {cfg.experiment_dir}",
@@ -234,7 +242,9 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
             log_prefix=f"build_attempt{attempt}_",
         )
         if compile_err:
+            print(f"  [COMPILE] FAILED (attempt {attempt + 1}/{max_attempts})")
             continue
+        print(f"  [COMPILE] OK (attempt {attempt + 1}/{max_attempts})")
 
         # Run.
         run_result, run_stdout, *_ = lassi.code_manager.execute_code(
@@ -256,7 +266,9 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
         if run_result != "0":
             compile_err = "execute_error"
             run_err = run_result
+            print(f"  [RUN] FAILED (attempt {attempt + 1}/{max_attempts})")
             continue
+        print(f"  [RUN] OK (attempt {attempt + 1}/{max_attempts})")
 
         # Verify XSBench checksum.
         checksum_line = _extract_xsbench_checksum(run_stdout)

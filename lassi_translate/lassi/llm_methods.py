@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 import threading
 import time
@@ -31,6 +32,127 @@ def _extract_code(text: str) -> str:
     return text.strip() + "\n"
 
 
+class StreamingWindow:
+    """5-line in-place terminal window that shows tokens as they arrive.
+
+    In TTY mode, uses ANSI escape sequences to maintain a scrolling window:
+      ◎  Label... (Ns, N tokens)
+      │  last line of generated content
+      │  ...
+      │  (5 content lines total)
+
+    On completion, collapses to a single summary line:
+      ✓  Label (Ns, N tokens)
+
+    In non-TTY mode (piped output / SLURM logs), falls back to periodic
+    single-line progress messages.
+    """
+    CONTENT_LINES = 5
+    _REDRAW_INTERVAL = 0.12  # seconds between redraws (~8 Hz)
+
+    def __init__(self, label: str) -> None:
+        self._label = label
+        self._is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+        self._completed: list[str] = []   # fully terminated lines
+        self._pending = ""                 # current incomplete line
+        self._token_count = 0
+        self._start = time.time()
+        self._last_redraw = 0.0
+        self._last_nontty_bucket = -1
+        # Total lines drawn: 1 header + CONTENT_LINES content
+        self._window_h = 1 + self.CONTENT_LINES
+
+    def _elapsed(self) -> int:
+        return int(time.time() - self._start)
+
+    def _col_width(self) -> int:
+        try:
+            return max(40, shutil.get_terminal_size().columns - 6)
+        except Exception:
+            return 100
+
+    def start(self) -> "StreamingWindow":
+        if self._is_tty:
+            sys.stdout.write(f"  ◎  {self._label}...\n")
+            for _ in range(self.CONTENT_LINES):
+                sys.stdout.write("  │\n")
+            sys.stdout.flush()
+        else:
+            sys.stdout.write(f"  [{self._label}]\n")
+            sys.stdout.flush()
+        return self
+
+    def push(self, token: str) -> None:
+        """Receive one streaming token delta and update the display."""
+        self._token_count += 1
+        self._pending += token
+        # Split completed lines out of pending
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._completed.append(line)
+        if self._is_tty:
+            now = time.time()
+            if now - self._last_redraw >= self._REDRAW_INTERVAL:
+                self._redraw()
+                self._last_redraw = now
+        else:
+            bucket = self._elapsed() // 30
+            if bucket > self._last_nontty_bucket and self._elapsed() > 0:
+                self._last_nontty_bucket = bucket
+                sys.stdout.write(f"  [{self._label}] {self._elapsed()}s elapsed\n")
+                sys.stdout.flush()
+
+    def _content_lines(self) -> list[str]:
+        """Return the CONTENT_LINES most recent lines (padded with empty strings)."""
+        all_lines = self._completed + ([self._pending] if self._pending else [])
+        content = all_lines[-self.CONTENT_LINES:]
+        while len(content) < self.CONTENT_LINES:
+            content.append("")
+        return content
+
+    def _redraw(self) -> None:
+        w = self._col_width()
+        # Move cursor to top of window
+        sys.stdout.write(f"\033[{self._window_h}A")
+        # Overwrite header
+        sys.stdout.write(
+            f"\033[2K\r  ◎  {self._label}... ({self._elapsed()}s, {self._token_count} tokens)\n"
+        )
+        # Overwrite content lines
+        for line in self._content_lines():
+            sys.stdout.write(f"\033[2K\r  │  {line[:w]}\n")
+        sys.stdout.flush()
+
+    def stop(self) -> None:
+        if self._is_tty:
+            # Final content update
+            self._redraw()
+            elapsed = self._elapsed()
+            # Move back to top and replace header with completion marker
+            sys.stdout.write(f"\033[{self._window_h}A")
+            sys.stdout.write(
+                f"\033[2K\r  ✓  {self._label} ({elapsed}s, {self._token_count} tokens)\n"
+            )
+            # Clear content lines, then reposition cursor right after the ✓ line
+            for _ in range(self.CONTENT_LINES):
+                sys.stdout.write("\033[2K\r\n")
+            sys.stdout.write(f"\033[{self.CONTENT_LINES}A")
+            sys.stdout.flush()
+        else:
+            elapsed = self._elapsed()
+            sys.stdout.write(
+                f"  [{self._label}] done ({elapsed}s, {self._token_count} tokens)\n"
+            )
+            sys.stdout.flush()
+
+    def __enter__(self) -> "StreamingWindow":
+        return self.start()
+
+    def __exit__(self, *_: object) -> None:
+        self.stop()
+
+
+# Kept for backwards compatibility — no longer used internally.
 class Spinner:
     _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -88,7 +210,13 @@ def show_code_preview(code: str, title: str = "Generated code", max_lines: int =
     print(f"└{sep}\n")
 
 
-def generate_code(model: str, system_prompt: str, user_prompt: str, verifyprompt: bool = False) -> str:
+def generate_code(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    verifyprompt: bool = False,
+    label: str = "[LLM] Generating code",
+) -> str:
     global _CALL_ID
     _CALL_ID += 1
     if DEBUG_MODE:
@@ -96,7 +224,15 @@ def generate_code(model: str, system_prompt: str, user_prompt: str, verifyprompt
         usr_chars = len(user_prompt)
         est_tokens = (sys_chars + usr_chars) // 4
         print(f"[DEBUG] LLM call #{_CALL_ID:04d} | system={sys_chars:,} chars | user={usr_chars:,} chars | ~{est_tokens:,} input tokens | max_tokens=32768")
-    response_text = _alcf.call_llm(model, system_prompt, user_prompt, verifyprompt=verifyprompt)
+    win = StreamingWindow(label)
+    win.start()
+    response_text = _alcf.call_llm(
+        model, system_prompt, user_prompt,
+        verifyprompt=verifyprompt,
+        on_token=win.push,
+        debug=DEBUG_MODE,
+    )
+    win.stop()
     if LLM_CALL_LOGGER is not None:
         LLM_CALL_LOGGER.log_call(
             call_id=_CALL_ID,
@@ -108,11 +244,20 @@ def generate_code(model: str, system_prompt: str, user_prompt: str, verifyprompt
             user_prompt=user_prompt,
             response_text=response_text,
         )
-        LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent="code generation")
+        if DEBUG_MODE:
+            LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent="code generation")
     return _extract_code(response_text)
 
 
-def generate_text(model: str, system_prompt: str, user_prompt: str, intent: str = "self-prompting", verifyprompt: bool = False, max_tokens: int = 4096) -> str:
+def generate_text(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    intent: str = "self-prompting",
+    verifyprompt: bool = False,
+    max_tokens: int = 4096,
+    label: str = "[LLM]",
+) -> str:
     """Call the LLM and return the raw text response (no code-block extraction).
 
     Used for self-prompting calls (context summarization, source code description)
@@ -126,7 +271,16 @@ def generate_text(model: str, system_prompt: str, user_prompt: str, intent: str 
         usr_chars = len(user_prompt)
         est_tokens = (sys_chars + usr_chars) // 4
         print(f"[DEBUG] LLM call #{_CALL_ID:04d} | system={sys_chars:,} chars | user={usr_chars:,} chars | ~{est_tokens:,} input tokens | max_tokens={max_tokens}")
-    response_text = _alcf.call_llm(model, system_prompt, user_prompt, verifyprompt=verifyprompt, max_tokens=max_tokens)
+    win = StreamingWindow(label)
+    win.start()
+    response_text = _alcf.call_llm(
+        model, system_prompt, user_prompt,
+        verifyprompt=verifyprompt,
+        max_tokens=max_tokens,
+        on_token=win.push,
+        debug=DEBUG_MODE,
+    )
+    win.stop()
     if LLM_CALL_LOGGER is not None:
         LLM_CALL_LOGGER.log_call(
             call_id=_CALL_ID,
@@ -138,5 +292,6 @@ def generate_text(model: str, system_prompt: str, user_prompt: str, intent: str 
             user_prompt=user_prompt,
             response_text=response_text,
         )
-        LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent=intent)
+        if DEBUG_MODE:
+            LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent=intent)
     return response_text.strip()

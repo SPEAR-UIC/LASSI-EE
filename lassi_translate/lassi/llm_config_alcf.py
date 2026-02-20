@@ -1,6 +1,11 @@
 import json
 import os
 import subprocess
+import time
+
+
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [30, 60]  # seconds between retries (exponential backoff)
 
 
 def call_llm(
@@ -74,25 +79,64 @@ def call_llm(
         cmd = ["bash", "-l"]
         timeout = 340
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=shell_script,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"ALCF API call timed out after {timeout} seconds")
+    last_error: Exception = RuntimeError("No attempt made")
+    for attempt in range(_MAX_RETRIES):
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=shell_script,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            last_error = RuntimeError(f"ALCF API call timed out after {timeout} seconds")
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[RETRY] Timeout on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            raise last_error
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"ALCF API call failed (rc={proc.returncode}): {proc.stderr.strip()}")
+        if proc.returncode != 0:
+            last_error = RuntimeError(f"ALCF API call failed (rc={proc.returncode}): {proc.stderr.strip()}")
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[RETRY] Non-zero exit on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            raise last_error
 
-    try:
-        response = json.loads(proc.stdout)
-        if "choices" in response and response["choices"]:
-            return response["choices"][0]["message"]["content"]
-        raise RuntimeError(f"Unexpected response format: {proc.stdout[:200]}")
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Failed to parse JSON response: {e}\nResponse: {proc.stdout[:500]}")
+        # Check for transient HTTP errors in response (e.g., "error code: 504")
+        stdout_stripped = proc.stdout.strip()
+        if not stdout_stripped or (stdout_stripped.startswith("error code:") and not stdout_stripped.startswith("{")):
+            last_error = RuntimeError(f"ALCF endpoint returned transient error: {stdout_stripped[:200]}")
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[RETRY] Transient error on attempt {attempt + 1}/{_MAX_RETRIES}: {stdout_stripped[:80]}. Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            raise last_error
+
+        try:
+            response = json.loads(proc.stdout)
+            if "choices" in response and response["choices"]:
+                return response["choices"][0]["message"]["content"]
+            last_error = RuntimeError(f"Unexpected response format: {proc.stdout[:200]}")
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[RETRY] Unexpected format on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            raise last_error
+        except json.JSONDecodeError as e:
+            last_error = RuntimeError(f"Failed to parse JSON response: {e}\nResponse: {proc.stdout[:500]}")
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                print(f"[RETRY] JSON parse error on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            raise last_error
+
+    raise last_error

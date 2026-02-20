@@ -63,6 +63,11 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="gpt-oss-120b")
     p.add_argument("--verifyprompt", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument(
+        "--no-self-prompting", dest="self_prompting", action="store_false",
+        help="Disable Stage 0 self-prompting context builder (faster but less context-aware).",
+    )
+    p.set_defaults(self_prompting=True)
     args = p.parse_args()
 
     os.chdir(Path(__file__).resolve().parent)
@@ -108,6 +113,8 @@ def main() -> int:
     prompts = PromptDictionary()
     sycl_flags = f"{tc.cxxflags} {tc.ldflags}".strip()
 
+    _log(f"Self-prompting: {'enabled' if args.self_prompting else 'disabled (--no-self-prompting)'}")
+
     cfg = lassi.pipeline_v3.PipelineConfig(
         model=args.model,
         system_prompt=prompts.get_system_prompt("CUDA_to_SYCL"),
@@ -124,6 +131,7 @@ def main() -> int:
         experiment_name=experiment_name,
         trial_number=1,
         verifyprompt=args.verifyprompt,
+        use_self_prompting=args.self_prompting,
     )
 
     start = time.time()

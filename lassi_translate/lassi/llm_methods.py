@@ -104,3 +104,27 @@ def generate_code(model: str, system_prompt: str, user_prompt: str, verifyprompt
         )
         LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent="code generation")
     return _extract_code(response_text)
+
+
+def generate_text(model: str, system_prompt: str, user_prompt: str, intent: str = "self-prompting", verifyprompt: bool = False) -> str:
+    """Call the LLM and return the raw text response (no code-block extraction).
+
+    Used for self-prompting calls (context summarization, source code description)
+    where the response is plain prose, not a fenced code block.
+    """
+    global _CALL_ID
+    _CALL_ID += 1
+    response_text = _alcf.call_llm(model, system_prompt, user_prompt, verifyprompt=verifyprompt)
+    if LLM_CALL_LOGGER is not None:
+        LLM_CALL_LOGGER.log_call(
+            call_id=_CALL_ID,
+            intent=intent,
+            llm_source="alcf",
+            model=model,
+            num_ctx=0,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_text=response_text,
+        )
+        LLM_CALL_LOGGER.print_call_summary(call_id=_CALL_ID, intent=intent)
+    return response_text.strip()

@@ -30,6 +30,7 @@ class PipelineConfig:
     experiment_name: str
     trial_number: int
     verifyprompt: bool = False
+    use_self_prompting: bool = True
 
 
 def _write_sycl_makefile(experiment_dir: str, sycl_compiler: str, sycl_flags: str, src: str, out: str) -> None:
@@ -78,18 +79,102 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
     run_stdout = ""
     code_block = ""
 
-    translate_user_prompt = (
-        cfg.translate_prompt
-        + "\n\n[START OF CODE TO REFACTOR]\n"
-        + cfg.input_code
-        + "\n[/END OF CODE TO REFACTOR]"
-    )
+    # ----- STAGE 0: SELF-PROMPTING CONTEXT BUILDER -----
+    # Following the methodology from the original LASSI paper (IEEE CLUSTER 2024):
+    # (1) LLM summarizes target-language reference documentation
+    # (2) LLM describes the source code to translate
+    # (3) Both summaries are incorporated into the Stage 1 translation prompt
+    sycl_context_summary = ""
+    source_code_description = ""
+
+    if cfg.use_self_prompting:
+        print("\n----- STAGE 0: SELF-PROMPTING CONTEXT BUILDER -----\n")
+
+        # Load SYCL reference context
+        try:
+            sycl_context_raw = cfg.prompts.get_codeknowledge("SYCL_guide")
+        except Exception as e:
+            print(f"[WARN] Could not load SYCL context document: {e}. Skipping context.")
+            sycl_context_raw = ""
+
+        if sycl_context_raw:
+            summarize_prompt = (
+                cfg.prompts.get_selfprompt("summarize_context")
+                + "\n\n[BEGIN SYCL REFERENCE GUIDE]\n"
+                + sycl_context_raw
+                + "\n[END SYCL REFERENCE GUIDE]"
+            )
+            print("  Step 1/2: Summarizing SYCL reference context...")
+            with lassi.llm_methods.Spinner("[LLM] Summarizing SYCL context knowledge"):
+                sycl_context_summary = lassi.llm_methods.generate_text(
+                    cfg.model, cfg.system_prompt, summarize_prompt,
+                    intent="context summarization", verifyprompt=cfg.verifyprompt
+                )
+
+        describe_prompt = (
+            cfg.prompts.get_selfprompt("describe_source")
+            + "\n\n[BEGIN CUDA SOURCE CODE]\n"
+            + cfg.input_code
+            + "\n[END CUDA SOURCE CODE]"
+        )
+        print("  Step 2/2: Generating source code description...")
+        with lassi.llm_methods.Spinner("[LLM] Describing source code"):
+            source_code_description = lassi.llm_methods.generate_text(
+                cfg.model, cfg.system_prompt, describe_prompt,
+                intent="source code description", verifyprompt=cfg.verifyprompt
+            )
+
+        print("\n  ✓ Self-prompting complete. Context incorporated into Stage 1 prompt.\n")
+
+    # Build the Stage 1 translation prompt with optional self-prompting context.
+    # Prompt structure follows the original LASSI paper methodology:
+    # (1) LLM-generated SYCL context summary  (2) LLM-generated source code description
+    # (3) "Think carefully... Now, [translation task]. [source code]"
+    if cfg.use_self_prompting and (sycl_context_summary or source_code_description):
+        context_preamble = ""
+        if sycl_context_summary:
+            context_preamble += (
+                "[SYCL CONTEXT KNOWLEDGE]\n"
+                + sycl_context_summary
+                + "\n[/SYCL CONTEXT KNOWLEDGE]\n\n"
+            )
+        if source_code_description:
+            context_preamble += (
+                "[YOUR ANALYSIS OF THE SOURCE CODE TO TRANSLATE]\n"
+                + source_code_description
+                + "\n[/YOUR ANALYSIS OF THE SOURCE CODE TO TRANSLATE]\n\n"
+            )
+        think_prefix = (
+            f"Think carefully before developing the following code that you describe as: "
+            + source_code_description
+            + "\n\nNow, "
+        ) if source_code_description else ""
+        translate_user_prompt = (
+            context_preamble
+            + think_prefix
+            + cfg.translate_prompt
+            + "\n\n[START OF CODE TO REFACTOR]\n"
+            + cfg.input_code
+            + "\n[/END OF CODE TO REFACTOR]"
+        )
+    else:
+        translate_user_prompt = (
+            cfg.translate_prompt
+            + "\n\n[START OF CODE TO REFACTOR]\n"
+            + cfg.input_code
+            + "\n[/END OF CODE TO REFACTOR]"
+        )
 
     for attempt in range(max_attempts + 1):
         if attempt == 0:
             print("\n----- STAGE 1: CUDA→SYCL TRANSLATION -----\n")
             print("  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL]")
-            print("  Context : source code")
+            ctx_parts = ["source code"]
+            if sycl_context_summary:
+                ctx_parts.append("SYCL context summary")
+            if source_code_description:
+                ctx_parts.append("source code description")
+            print(f"  Context : {' + '.join(ctx_parts)}")
             with lassi.llm_methods.Spinner("[LLM] Generating initial SYCL translation"):
                 code_block = lassi.llm_methods.generate_code(
                     cfg.model, cfg.system_prompt, translate_user_prompt, cfg.verifyprompt

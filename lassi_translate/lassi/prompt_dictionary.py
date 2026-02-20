@@ -6,6 +6,18 @@ self-correction.
 
 from __future__ import annotations
 
+import os
+
+
+_CONTEXT_DIR = os.path.join(os.path.dirname(__file__), "context")
+
+
+def _load_context_file(filename: str) -> str:
+    """Load a context document from the lassi/context/ directory."""
+    path = os.path.join(_CONTEXT_DIR, filename)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
 
 class PromptDictionary:
     def __init__(self) -> None:
@@ -73,6 +85,34 @@ class PromptDictionary:
             )
         }
 
+        # Self-prompting prompts — used before Stage 1 to build enriched context,
+        # following the methodology from the original LASSI paper (IEEE CLUSTER 2024).
+        self._selfprompt_prompts = {
+            "summarize_context": (
+                "You are an expert in parallel programming and GPU computing. "
+                "You have been provided with a reference guide on SYCL 2020 programming "
+                "and migrating CUDA code to SYCL. "
+                "Summarize the key concepts from this guide that are most relevant for "
+                "translating CUDA C++ code to SYCL 2020 C++ targeting Intel GPUs compiled "
+                "with icpx. Focus on: memory model and USM, queue and device setup, kernel "
+                "dispatch syntax, thread indexing equivalents, local/shared memory, "
+                "synchronization primitives, and common pitfalls to avoid. "
+                "Be concise and actionable. Output only the summary."
+            ),
+            "describe_source": (
+                "You are an expert in parallel programming. Analyze the following CUDA C++ "
+                "source code and produce a structured description of it. Identify: "
+                "(1) the overall purpose and algorithm, "
+                "(2) all CUDA-specific constructs used (cudaMalloc, cudaMemcpy, kernel "
+                "launches, __global__, __device__, __shared__, threadIdx/blockIdx/blockDim, "
+                "atomics, synchronization), "
+                "(3) every function and whether it will need a sycl::queue& q parameter "
+                "when translated to SYCL, "
+                "(4) any potential translation challenges or pitfalls. "
+                "Output only the structured description, no code."
+            ),
+        }
+
     def get_system_prompt(self, key: str) -> str:
         return self._system_prompts[key]
 
@@ -81,3 +121,15 @@ class PromptDictionary:
 
     def get_code_error_correction_prompt(self, key: str) -> str:
         return self._error_prompts[key]
+
+    def get_selfprompt(self, key: str) -> str:
+        return self._selfprompt_prompts[key]
+
+    def get_codeknowledge(self, key: str) -> str:
+        """Load a context knowledge document from lassi/context/."""
+        filemap = {
+            "SYCL_guide": "SYCL_Programming_Guide.md",
+        }
+        if key not in filemap:
+            raise KeyError(f"Unknown codeknowledge key: {key!r}")
+        return _load_context_file(filemap[key])

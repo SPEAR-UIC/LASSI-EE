@@ -52,8 +52,6 @@ def alcf_llm(
         print(f"\nSYSTEM: {system_prompt}")
         print(f"\nPROMPT: {content_prompt}")
         print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
-    else:
-        print("\n=====< LLM Prompt Not Shown >=====\n")
 
     # Build request payload (OpenAI format)
     data = {
@@ -68,31 +66,31 @@ def alcf_llm(
 
     payload = json.dumps(data)
 
-    # Shell-escape the payload for safe passing through bash/SSH
-    payload_escaped = payload.replace("'", "'\\''")
-
-    # The curl command uses $access_token (set by the shell command below)
-    curl_part = (
-        f"curl -sS --connect-timeout 10 --max-time 300"
-        f" -X POST '{url}'"
-        f" -H \"Authorization: Bearer $access_token\""
-        f" -H 'Content-Type: application/json'"
-        f" -d '{payload_escaped}'"
-    )
-
     # Conda env to use (can be overridden via ALCF_CONDA_ENV env var)
     conda_env = os.environ.get("ALCF_CONDA_ENV", "globus_env")
 
     # Shell script to run on the login node (passed via stdin to 'bash -l').
-    # bash -l initializes the module system (via /etc/profile). We then load the
-    # frameworks module which brings conda into PATH on Aurora login nodes, and use
-    # 'conda run -n globus_env' to invoke globus_env's Python directly without
-    # needing 'conda activate'.
+    # The JSON payload is written to a temp file via a quoted heredoc so that
+    # no shell-escaping is needed and ARG_MAX limits are never hit, even for
+    # large prompts that include the full CUDA source in the error context.
+    # json.dumps never inserts real newlines (only \n escape sequences), so
+    # the payload is always a single line — safe as a heredoc body.
     shell_script = "\n".join([
         "module load frameworks 2>/dev/null",
         f'access_token=$(conda run -n {conda_env} python3 $HOME/inference_auth_token.py get_access_token)',
         'if [ -z "$access_token" ]; then echo "ERROR: empty token from inference_auth_token.py" >&2; exit 1; fi',
-        curl_part,
+        'LASSI_TMP=$(mktemp /tmp/lassi_payload_XXXXXX.json)',
+        "cat > \"$LASSI_TMP\" << 'LASSI_PAYLOAD_EOF'",
+        payload,
+        'LASSI_PAYLOAD_EOF',
+        (
+            f"curl -sS --connect-timeout 10 --max-time 300"
+            f" -X POST '{url}'"
+            f" -H \"Authorization: Bearer $access_token\""
+            f" -H 'Content-Type: application/json'"
+            f" -d @\"$LASSI_TMP\""
+        ),
+        'rm -f "$LASSI_TMP"',
     ])
 
     # Detect if on compute node (hostname starts with 'x' on Aurora)

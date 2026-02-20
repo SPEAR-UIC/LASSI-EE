@@ -86,8 +86,5 @@ class LLMCallLogger:
         intent: str,
         context_components: Optional[Dict[str, Any]] = None,
     ) -> None:
-        print(f"[LLM] call={call_id:04d} intent={intent}")
-        if context_components:
-            # Keep this succinct; full details are in meta.json.
-            keys = ", ".join(context_components.keys())
-            print(f"[LLM] context_components={keys}")
+        # Minimal one-liner; full context is in the pre-call display and in log files.
+        print(f"[LLM] call #{call_id:04d} complete")

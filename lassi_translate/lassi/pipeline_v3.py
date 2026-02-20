@@ -283,8 +283,8 @@ def auto_code_llmgeneration_pipeline(
     for attempt in range(max_attempts + 1):
         if attempt == 0:
             print(f"\n----- STAGE 1: CUDA→SYCL TRANSLATION ({llm_source.upper()}) -----\n")
-            print(f"[STAGE1] Asking {llm_source} to translate the source code into SYCL.")
-            print("[STAGE1] Context included in prompt: source code only (no extra context files).")
+            print(f"  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL]")
+            print(f"  Context : source code")
             with lassi.llm_methods.Spinner(f"[LLM] Generating initial SYCL translation"):
                 _raw, code_block = lassi.llm_methods.code_generator_llm(
                     llm_source,
@@ -298,21 +298,24 @@ def auto_code_llmgeneration_pipeline(
                 )
         else:
             print(f"\n----- STAGE 2: SELF-CORRECTION (attempt {attempt}/{max_attempts}) -----\n")
-            print(f"[STAGE2] Previous attempt failed. Re-prompting {llm_source} with the error.")
             if compile_err == "execute_error":
                 error_intro = "\n -- Runtime error: "
                 error_message = run_err
+                stdout_ctx = " + stdout" if run_stdout.strip() else ""
                 if run_stdout.strip():
                     error_message += "\n\nProgram stdout before crash:\n" + run_stdout
-                print("[STAGE2] Error type: runtime error.")
+                print(f"  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL_error]")
+                print(f"  Context : generated code + runtime error{stdout_ctx}")
             elif compile_err.startswith("VERIFICATION MISMATCH"):
                 error_intro = "\n -- Verification mismatch: "
                 error_message = compile_err
-                print("[STAGE2] Error type: verification mismatch.")
+                print(f"  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL_error]")
+                print(f"  Context : generated code + verification mismatch + CUDA source")
             else:
                 error_intro = "\n -- Compile error: "
                 error_message = compile_err
-                print("[STAGE2] Error type: compile error.")
+                print(f"  Prompts : system=[CUDA_to_SYCL]  |  user=[CUDA_to_SYCL_error]")
+                print(f"  Context : generated code + compile error")
 
             error_prompt = (
                 prompts.get_code_error_correction_prompt("CUDA_to_SYCL_error")

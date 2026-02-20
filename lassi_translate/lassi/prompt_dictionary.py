@@ -22,8 +22,14 @@ class PromptDictionary:
                 "(3) Do NOT include headers under <oneapi/...> or <dpct/...>. "
                 "(4) Do NOT use sycl::ext::oneapi::* unless part of core SYCL 2020. "
                 "(5) Use standard C++17 + core SYCL 2020 headers (<sycl/sycl.hpp>) only. "
-                "(6) Use sycl::queue q{sycl::gpu_selector_v}; (not the deprecated sycl::default_selector). "
-                "(7) Preserve ALL program behavior, logic, and stdout output exactly."
+                "(6) Use EXACTLY ONE global sycl::queue q{sycl::gpu_selector_v}; at file scope. "
+                "NEVER create a local sycl::queue inside any function — pass 'sycl::queue& q' as a "
+                "parameter to every function that allocates device memory or submits kernels. "
+                "ALL sycl::malloc_device, sycl::free, q.memcpy, and q.submit calls MUST use the same q. "
+                "(7) For CUDA memory primitives: cudaMalloc → sycl::malloc_device(count,q), "
+                "cudaMemcpy → q.memcpy(dst,src,bytes).wait(), cudaFree → sycl::free(ptr,q). "
+                "Do NOT use sycl::buffer or accessors — use USM (malloc_device) only. "
+                "(8) Preserve ALL program behavior, logic, and stdout output exactly."
             )
         }
 
@@ -37,6 +43,11 @@ class PromptDictionary:
                 "Requirements: output a single complete .cpp file only (no explanation). "
                 "Use only standard C++17 and <sycl/sycl.hpp>. "
                 "Do NOT use oneDPL, dpct, SYCLomatic, or sycl::ext::oneapi::* APIs. "
+                "MEMORY MANAGEMENT: use EXACTLY ONE global sycl::queue q{sycl::gpu_selector_v}; "
+                "at file scope. NEVER create a local sycl::queue inside a function — always pass "
+                "'sycl::queue& q' to functions that alloc/free device memory or submit kernels. "
+                "cudaMalloc → sycl::malloc_device(count,q), cudaMemcpy → q.memcpy(...).wait(), "
+                "cudaFree → sycl::free(ptr,q). Do NOT use sycl::buffer/accessors — USM only. "
                 "Preserve ALL program behavior and stdout output exactly, including every "
                 "printf() call, especially the 'Verification checksum:' output line."
             )

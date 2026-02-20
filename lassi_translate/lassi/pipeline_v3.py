@@ -75,11 +75,11 @@ def _extract_xsbench_checksum(stdout_text: str) -> str:
 
 
 def _xsbench_checksum_valid(stdout_text: str) -> bool:
-    """Return True if XSBench reports a passing checksum (no WARNING in checksum line)."""
+    """Return True if XSBench reports a passing checksum (no INVALID in checksum line)."""
     line = _extract_xsbench_checksum(stdout_text)
     if not line:
         return False
-    return "(WARNING" not in line
+    return "INVALID" not in line.upper()
 
 
 def _stdout_matches(app_name: str, source_stdout: str, generated_stdout: str) -> bool:
@@ -270,6 +270,7 @@ def auto_code_llmgeneration_pipeline(
 
     compile_err = ""
     run_err = ""
+    run_stdout = ""
     code_block = ""
 
     translate_prompt = (
@@ -301,6 +302,8 @@ def auto_code_llmgeneration_pipeline(
             if compile_err == "execute_error":
                 error_intro = "\n -- Runtime error: "
                 error_message = run_err
+                if run_stdout.strip():
+                    error_message += "\n\nProgram stdout before crash:\n" + run_stdout
                 print("[STAGE2] Error type: runtime error.")
             elif compile_err.startswith("VERIFICATION MISMATCH"):
                 error_intro = "\n -- Verification mismatch: "

@@ -22,6 +22,14 @@ def _load_context_file(filename: str) -> str:
 class PromptDictionary:
     def __init__(self) -> None:
         self._system_prompts = {
+            # Used for Stage 0 self-prompting calls (context summarization and
+            # source code description).  Must NOT instruct the model to output
+            # a fenced code block — these calls produce plain prose.
+            "selfprompt": (
+                "You are an expert in parallel programming, GPU computing, and the CUDA "
+                "and SYCL programming models. Provide clear, accurate, and detailed "
+                "technical responses in plain prose."
+            ),
             "CUDA_to_SYCL": (
                 "You are a professional coding AI assistant that specializes in translating "
                 "CUDA C++ to SYCL C++ (SYCL 2020). Provide only the complete translated code "
@@ -87,26 +95,30 @@ class PromptDictionary:
 
         # Self-prompting prompts — used before Stage 1 to build enriched context,
         # following the methodology from the original LASSI paper (IEEE CLUSTER 2024).
+        # These are USER prompts; they are paired with the "selfprompt" system prompt,
+        # NOT the code-translation system prompt.
         self._selfprompt_prompts = {
             "summarize_context": (
-                "You are an expert in parallel programming and GPU computing. "
                 "You have been provided with a reference guide on SYCL 2020 programming "
                 "and migrating CUDA code to SYCL. "
                 "Summarize the key concepts from this guide that are most relevant for "
                 "translating CUDA C++ code to SYCL 2020 C++ targeting Intel GPUs compiled "
-                "with icpx. Focus on: memory model and USM, queue and device setup, kernel "
-                "dispatch syntax, thread indexing equivalents, local/shared memory, "
-                "synchronization primitives, and common pitfalls to avoid. "
-                "Be extremely concise — 10 bullet points maximum, 150 words total maximum. "
-                "Output only the bullet-point summary, nothing else."
+                "with icpx. Cover: memory model and USM (malloc_device/shared/host), "
+                "queue and device setup, kernel dispatch (q.submit / parallel_for), "
+                "nd_range and thread indexing (get_global_id / get_local_id / get_group_id), "
+                "local/shared memory (local_accessor), synchronization (group_barrier), "
+                "atomics, and common pitfalls when migrating from CUDA. "
+                "Output only the summary."
             ),
             "describe_source": (
-                "You are an expert in parallel programming. Analyze the following CUDA C++ "
-                "source code and produce a brief structured description. Identify: "
-                "(1) overall purpose in one sentence, "
-                "(2) CUDA constructs used (cudaMalloc/cudaMemcpy/kernels/__shared__/atomics), "
-                "(3) which functions will need a sycl::queue& q parameter in SYCL. "
-                "Be extremely concise — 200 words maximum. "
+                "Analyze the following CUDA C++ source code and produce a structured "
+                "technical description covering: "
+                "(1) the overall purpose and algorithm, "
+                "(2) all CUDA-specific constructs used (cudaMalloc, cudaMemcpy, device "
+                "kernels, __shared__, atomics, etc.) and their role in the program, "
+                "(3) the structure of GPU kernels and their thread/block organization, "
+                "(4) which host functions allocate device memory or launch kernels — "
+                "these will require a sycl::queue& q parameter in the SYCL translation. "
                 "Output only the structured description, no code."
             ),
         }

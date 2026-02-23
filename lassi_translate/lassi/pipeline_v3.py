@@ -108,7 +108,7 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
             )
             print("  Step 1/2: Summarizing SYCL reference context...")
             sycl_context_summary = lassi.llm_methods.generate_text(
-                cfg.model, cfg.system_prompt, summarize_prompt,
+                cfg.model, cfg.prompts.get_system_prompt("selfprompt"), summarize_prompt,
                 intent="context summarization", verifyprompt=cfg.verifyprompt,
                 label="[LLM] Summarizing SYCL context knowledge",
             )
@@ -121,7 +121,7 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
         )
         print("  Step 2/2: Generating source code description...")
         source_code_description = lassi.llm_methods.generate_text(
-            cfg.model, cfg.system_prompt, describe_prompt,
+            cfg.model, cfg.prompts.get_system_prompt("selfprompt"), describe_prompt,
             intent="source code description", verifyprompt=cfg.verifyprompt,
             label="[LLM] Describing source code",
         )

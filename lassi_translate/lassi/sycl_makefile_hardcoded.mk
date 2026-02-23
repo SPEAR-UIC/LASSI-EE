@@ -23,7 +23,7 @@ OUT := <SYCL_OUT>
 
 all: $(OUT)
 
-$(OUT):
+$(OUT): $(SRC)
 	$(SYCL_COMPILER) $(SYCL_FLAGS) $(SRC) -o $(OUT) $(SYCL_LDFLAGS)
 
 clean:

@@ -61,7 +61,6 @@ def _xsbench_checksum_valid(stdout: str) -> bool:
 
 def run_pipeline(cfg: PipelineConfig) -> bool:
     max_attempts = 15
-    out_src = os.path.join(os.getcwd(), "Main.cpp")
     exe_path = os.path.join(cfg.experiment_dir, "Main")
     start_time = time.time()
 
@@ -223,20 +222,23 @@ def run_pipeline(cfg: PipelineConfig) -> bool:
                 title=f"Stage {'1' if attempt == 0 else '2'} generated code — attempt {attempt + 1}",
             )
 
-        # Write generated code.
-        os.makedirs(os.path.dirname(out_src), exist_ok=True)
-        with open(out_src, "w", encoding="utf-8") as f:
+        # Write generated code to a per-attempt file in the experiment directory.
+        # Using a unique filename per attempt ensures make always sees a new source
+        # file (never exists before) and unconditionally recompiles — eliminating
+        # any risk of stale-binary reuse due to mtime ties on the shared Main.cpp.
+        attempt_src = os.path.join(cfg.experiment_dir, f"Main_attempt{attempt}.cpp")
+        with open(attempt_src, "w", encoding="utf-8") as f:
             f.write(code_block)
         if cfg.verbose:
-            print(f"[GEN] Wrote generated SYCL code to: {out_src}")
+            print(f"[GEN] Wrote generated SYCL code to: {attempt_src}")
 
         # Compile via Makefile.
-        _write_sycl_makefile(cfg.experiment_dir, cfg.sycl_compiler, cfg.sycl_flags, out_src, "Main")
+        _write_sycl_makefile(cfg.experiment_dir, cfg.sycl_compiler, cfg.sycl_flags, attempt_src, "Main")
         if cfg.verbose:
             print(f"[BUILD] Wrote a Makefile to: {os.path.join(cfg.experiment_dir, 'Makefile')}")
         compile_err = lassi.code_manager.make_script_code(
-            ".",
-            f"-C {cfg.experiment_dir}",
+            cfg.experiment_dir,
+            "",
             "SYCL",
             experiment_dir=cfg.experiment_dir,
             log_prefix=f"build_attempt{attempt}_",

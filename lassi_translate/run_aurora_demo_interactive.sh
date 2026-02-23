@@ -103,7 +103,8 @@ echo ""
 
 "$PYTHON3" -u run_lassi_translate_v3.py \
     --model        "$LLM_MODEL" \
-    --no-verifyprompt
+    --no-verifyprompt \
+    "$@"
 
 PIPELINE_RC=$?
 

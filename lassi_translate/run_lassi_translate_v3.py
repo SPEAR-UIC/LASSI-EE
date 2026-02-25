@@ -109,7 +109,7 @@ def main() -> int:
     tc = get_sycl_toolchain()
     gpu_name, gpu_tiles = _gpu_info()
     icpx_ver = _icpx_version()
-    cluster = os.environ.get("ALCF_CLUSTER", "metis")
+    cluster = os.environ.get("ALCF_CLUSTER", "sophia")
 
     # ── Config header ────────────────────────────────────────────────────────
     print(_SEP)

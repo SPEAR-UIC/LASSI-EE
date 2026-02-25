@@ -56,7 +56,7 @@ def call_llm(
 ) -> str:
     global _ROUTING_LOGGED
 
-    cluster = os.environ.get("ALCF_CLUSTER", "metis")
+    cluster = os.environ.get("ALCF_CLUSTER", "sophia")
     endpoints = {
         "sophia": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1/chat/completions",
         "metis":  "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1/chat/completions",

@@ -81,7 +81,7 @@ def main() -> int:
         pass
 
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="gpt-oss-120b")
+    p.add_argument("--model", default="openai/gpt-oss-120b")
     p.add_argument("--verifyprompt", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument(
         "--no-self-prompting", dest="self_prompting", action="store_false",

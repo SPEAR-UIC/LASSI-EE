@@ -10,7 +10,7 @@ from typing import List, Optional
 from lassi.format_colors import color
 
 
-def _tail_lines(text: str, n: int = 50) -> str:
+def _tail_lines(text: str, n: int = 5) -> str:
     lines = (text or "").splitlines()
     if len(lines) <= n:
         return (text or "").strip() + ("\n" if text and not text.endswith("\n") else "")
@@ -34,7 +34,6 @@ def _run_cmd(
     log_prefix: str = "",
 ) -> subprocess.CompletedProcess:
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
-    print(f"[CMD] {cmd_str} (cwd={cwd})")
     result = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, check=False)
     if experiment_dir:
         _write_log(experiment_dir, f"{log_prefix}stdout.log", result.stdout)
@@ -51,6 +50,7 @@ def make_script_code(
     experiment_dir: Optional[str] = None,
     log_prefix: str = "build_",
 ) -> str:
+    """Compile via make. Returns "" on success, or the error output on failure."""
     target_dir = folder if os.path.isabs(folder) else os.path.join(os.getcwd(), folder)
     env = os.environ.copy()
     cmd = ["make"] + shlex.split(make_args)
@@ -62,14 +62,10 @@ def make_script_code(
     result = _run_cmd(cmd=cmd, cwd=run_cwd, env=env, experiment_dir=experiment_dir, log_prefix=log_prefix)
 
     if result.returncode == 0:
-        print(color.BOLD + "Make build OK" + color.END)
         return ""
 
     combined = (result.stderr or "") + ("\n" if result.stderr and result.stdout else "") + (result.stdout or "")
-    print(color.BOLD + color.RED + "Make build FAILED (showing last 50 lines)" + color.END)
-    print(_tail_lines(combined, 50), end="")
-    err = (result.stderr or "").strip() or (result.stdout or "").strip()
-    return (err + "\n") if err else "make failed\n"
+    return (combined.strip() + "\n") if combined.strip() else "make failed\n"
 
 
 def execute_code(
@@ -116,7 +112,6 @@ def execute_code(
         return msg, "", 0.0, 0.0, 0.0, 0.0, ""
 
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
-    print(f"[CMD] {cmd_str} (cwd={workdir})")
 
     start = time.time()
     try:
@@ -134,15 +129,12 @@ def execute_code(
     _write_log(experiment_data_directory, f"run_trial{trial_number}_v{code_version}_stderr.log", stderr)
     _write_log(experiment_data_directory, f"run_trial{trial_number}_v{code_version}_cmd.txt", cmd_str + f"\ncwd={workdir}\n")
 
+    combined = (stderr or "") + ("\n" if stderr and stdout else "") + (stdout or "")
+
     if rc == 0 or "RESULTS" in (stdout or ""):
-        print(color.BOLD + "Run OK" + color.END)
         return "0", stdout, 0.0, 0.0, 0.0, duration, ""
 
-    combined = (stderr or "") + ("\n" if stderr and stdout else "") + (stdout or "")
     err = f"Program exited with return code: {rc}"
     if (stderr or "").strip():
         err += "\nStandard Error: " + stderr
-
-    print(color.BOLD + color.RED + "Run FAILED (showing last 50 lines)" + color.END)
-    print(_tail_lines(combined, 50), end="")
-    return err, stdout, 0.0, 0.0, 0.0, duration, ""
+    return err, stdout, 0.0, 0.0, 0.0, duration, combined

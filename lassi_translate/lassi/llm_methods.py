@@ -78,7 +78,7 @@ class StreamingWindow:
                 sys.stdout.write("  │\n")
             sys.stdout.flush()
         else:
-            sys.stdout.write(f"  [{self._label}]\n")
+            sys.stdout.write(f"  ◎  {self._label}...\n")
             sys.stdout.flush()
         return self
 
@@ -99,7 +99,7 @@ class StreamingWindow:
             bucket = self._elapsed() // 30
             if bucket > self._last_nontty_bucket and self._elapsed() > 0:
                 self._last_nontty_bucket = bucket
-                sys.stdout.write(f"  [{self._label}] {self._elapsed()}s elapsed\n")
+                sys.stdout.write(f"  ◎  {self._label}... ({self._elapsed()}s)\n")
                 sys.stdout.flush()
 
     def _content_lines(self) -> list[str]:
@@ -116,7 +116,7 @@ class StreamingWindow:
         sys.stdout.write(f"\033[{self._window_h}A")
         # Overwrite header
         sys.stdout.write(
-            f"\033[2K\r  ◎  {self._label}... ({self._elapsed()}s, {self._token_count} tokens)\n"
+            f"\033[2K\r  ◎  {self._label}... ({self._elapsed()}s)\n"
         )
         # Overwrite content lines
         for line in self._content_lines():
@@ -131,7 +131,7 @@ class StreamingWindow:
             # Move back to top and replace header with completion marker
             sys.stdout.write(f"\033[{self._window_h}A")
             sys.stdout.write(
-                f"\033[2K\r  ✓  {self._label} ({elapsed}s, {self._token_count} tokens)\n"
+                f"\033[2K\r  ✓  {self._label} ({elapsed}s)\n"
             )
             # Clear content lines, then reposition cursor right after the ✓ line
             for _ in range(self.CONTENT_LINES):
@@ -141,7 +141,7 @@ class StreamingWindow:
         else:
             elapsed = self._elapsed()
             sys.stdout.write(
-                f"  [{self._label}] done ({elapsed}s, {self._token_count} tokens)\n"
+                f"  ✓  {self._label} ({elapsed}s)\n"
             )
             sys.stdout.flush()
 

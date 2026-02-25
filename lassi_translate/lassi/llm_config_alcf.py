@@ -233,10 +233,14 @@ def call_llm(
             response = json.loads(stdout_stripped)
             if "choices" in response and response["choices"]:
                 return response["choices"][0]["message"]["content"]
-            last_error = RuntimeError(f"Unexpected response format: {stdout_stripped[:200]}")
+            # Server returned a JSON error (e.g. {"error": {"message": "..."}}) or
+            # empty choices list — treat as a retryable API error.
+            api_err = response.get("error", {})
+            api_msg = api_err.get("message", stdout_stripped[:200]) if isinstance(api_err, dict) else stdout_stripped[:200]
+            last_error = RuntimeError(f"API error: {api_msg}")
             if attempt < _MAX_RETRIES - 1:
                 delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                print(f"[RETRY] Unexpected format on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")
+                print(f"[RETRY] API error on attempt {attempt + 1}/{_MAX_RETRIES}: {api_msg[:120]}. Retrying in {delay}s...")
                 time.sleep(delay)
                 continue
             raise last_error
@@ -244,7 +248,7 @@ def call_llm(
             last_error = RuntimeError(f"Failed to parse JSON response: {e}\nResponse: {stdout_stripped[:500]}")
             if attempt < _MAX_RETRIES - 1:
                 delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                print(f"[RETRY] JSON parse error on attempt {attempt + 1}/{_MAX_RETRIES}. Retrying in {delay}s...")
+                print(f"[RETRY] JSON parse error on attempt {attempt + 1}/{_MAX_RETRIES}: {stdout_stripped[:120]}. Retrying in {delay}s...")
                 time.sleep(delay)
                 continue
             raise last_error

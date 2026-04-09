@@ -12,6 +12,7 @@ Set RESOURCE_NAME to "Aurora" or "Polaris" to switch targets. The SYCL toolchain
 (compiler, flags, module loads, and wrapper script) is selected automatically.
 """
 
+import datetime
 import pathlib
 import time
 
@@ -27,8 +28,12 @@ RESOURCE_NAME = "Polaris"              # "Aurora" or "Polaris"
 
 # Remote base directory on the ALCF Eagle filesystem
 REMOTE_BASE = f"/eagle/{ACCOUNT}/LASSI-EE/lassi_translate"
-STDOUT_PATH = f"{REMOTE_BASE}/job.stdout"
-STDERR_PATH = f"{REMOTE_BASE}/job.stderr"
+
+# Unique per-run paths prevent stale output from a previous run being displayed
+# when a job is rejected before writing anything (e.g. script not executable).
+_RUN_ID    = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+STDOUT_PATH = f"{REMOTE_BASE}/job_{_RUN_ID}.stdout"
+STDERR_PATH = f"{REMOTE_BASE}/job_{_RUN_ID}.stderr"
 
 
 # ── Per-resource configuration ────────────────────────────────────────────────

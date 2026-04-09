@@ -19,7 +19,9 @@ def get_sycl_toolchain() -> SYCLToolchain:
             cxxflags=os.environ.get("SYCL_CXXFLAGS", "-O2 -std=c++17 -fsycl"),
             ldflags=os.environ.get("SYCL_LDFLAGS", ""),
         )
-    # Default for non-Aurora environments (AdaptiveCpp).
+    # Fallback for local development (AdaptiveCpp).
+    # On ALCF resources (Aurora, Polaris) SYCL_COMPILER is always set by the
+    # corresponding run_*_demo.sh wrapper before the pipeline is invoked.
     return SYCLToolchain(
         compiler="/home/vchirio/adaptivecpp/bin/acpp",
         cxxflags="-O3 -std=c++17",

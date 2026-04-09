@@ -47,6 +47,13 @@ module use /soft/modulefiles 2>/dev/null || true
 module load cuda 2>/dev/null || true
 module load oneapi/release 2>/dev/null || true
 
+# In PBS job environments the module load may silently fail to export icpx to PATH.
+# Fall back to adding the oneapi bin directory directly.
+if ! command -v icpx &>/dev/null; then
+    ONEAPI_BIN=$(ls -d /soft/compilers/oneapi/release/*/compiler/latest/bin 2>/dev/null | sort | tail -1)
+    [ -n "$ONEAPI_BIN" ] && export PATH="$ONEAPI_BIN:$PATH"
+fi
+
 # Source conda directly rather than via `module load conda` so that conda
 # activation is independent of lmod being fully initialized. The venv is then
 # activated by absolute path — conda activate inside a bash subshell would

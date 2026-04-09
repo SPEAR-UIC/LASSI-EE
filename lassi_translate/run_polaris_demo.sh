@@ -43,6 +43,7 @@ if ! command -v module &>/dev/null; then
     source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
 fi
 
+module use /soft/modulefiles 2>/dev/null || true
 module load cuda 2>/dev/null || true
 module load oneapi/release 2>/dev/null || true
 

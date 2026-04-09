@@ -36,17 +36,27 @@ export ALCF_CLUSTER
 export ALCF_MODEL="$LLM_MODEL"
 
 # ── Load Python environment ──────────────────────────────────────────────────
+# PBS job environments do not initialize the module system automatically.
+# Source lmod's init script so that `module` commands work in non-interactive
+# shells (compute nodes, qsub-submitted jobs).
+if ! command -v module &>/dev/null; then
+    source /etc/profile.d/z00_lmod.sh 2>/dev/null || true
+fi
+
 module load cuda 2>/dev/null || true
 module load oneapi 2>/dev/null || true
 
-# Load the Polaris base conda environment, then activate the inference venv on
-# top of it. The venv is resolved by absolute path so that conda activate never
-# touches PATH — conda activate inside a bash subshell deactivates whatever the
-# oneapi module set up, stripping the oneAPI bin dir (sycl-ls, icpx, …)
-# from the environment that Python inherits.
-module use /soft/modulefiles
-module load conda 2>/dev/null || true
-conda activate base 2>/dev/null || true
+# Source conda directly rather than via `module load conda` so that conda
+# activation is independent of lmod being fully initialized. The venv is then
+# activated by absolute path — conda activate inside a bash subshell would
+# deactivate whatever the oneapi module set up, stripping the oneAPI bin dir
+# (sycl-ls, icpx, …) from the environment that Python inherits.
+CONDA_INIT=$(ls -d /soft/applications/conda/*/mconda3/etc/profile.d/conda.sh 2>/dev/null | sort | tail -1)
+if [ -n "$CONDA_INIT" ]; then
+    # shellcheck source=/dev/null
+    source "$CONDA_INIT"
+    conda activate base 2>/dev/null || true
+fi
 
 PYTHON3="$ALCF_VENV/bin/python3"
 if [ ! -x "$PYTHON3" ]; then

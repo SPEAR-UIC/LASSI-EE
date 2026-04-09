@@ -16,8 +16,8 @@ cd "$SCRIPT_DIR"
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 if [ ! -f ~/inference_auth_token.py ]; then
     echo "ERROR: ALCF token helper not found at ~/inference_auth_token.py"
-    echo "  Download : wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py"
-    echo "  Auth     : conda run -n globus_env python3 ~/inference_auth_token.py authenticate"
+    echo "  Download : wget https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py -O ~/inference_auth_token.py"
+    echo "  Auth     : source $ALCF_VENV/bin/activate && python ~/inference_auth_token.py authenticate"
     exit 1
 fi
 
@@ -30,24 +30,31 @@ fi
 # ── LLM / cluster configuration ──────────────────────────────────────────────
 LLM_MODEL=${LLM_MODEL:-"openai/gpt-oss-120b"}
 ALCF_CLUSTER=${ALCF_CLUSTER:-"sophia"}
-ALCF_CONDA_ENV=${ALCF_CONDA_ENV:-"globus_env"}
+ALCF_VENV=${ALCF_VENV:-"/eagle/EE-ECP/LASSI-EE/venvs/inference"}
 
 export ALCF_CLUSTER
-export ALCF_CONDA_ENV
 export ALCF_MODEL="$LLM_MODEL"
 
 # ── Load Python environment ──────────────────────────────────────────────────
 module load cuda 2>/dev/null || true
 module load oneapi 2>/dev/null || true
 
-# Resolve the globus_env Python by absolute path so that conda activate never
+# Load the Polaris base conda environment, then activate the inference venv on
+# top of it. The venv is resolved by absolute path so that conda activate never
 # touches PATH — conda activate inside a bash subshell deactivates whatever the
 # oneapi module set up, stripping the oneAPI bin dir (sycl-ls, icpx, …)
 # from the environment that Python inherits.
-PYTHON3=$(conda run -n globus_env which python3 2>/dev/null || true)
+module use /soft/modulefiles
+module load conda 2>/dev/null || true
+conda activate base 2>/dev/null || true
+
+PYTHON3="$ALCF_VENV/bin/python3"
 if [ ! -x "$PYTHON3" ]; then
-    echo "ERROR: could not locate Python in globus_env conda environment."
-    echo "  Check: conda env list | grep globus_env"
+    echo "ERROR: could not locate Python in inference venv: $ALCF_VENV"
+    echo "  Create it with:"
+    echo "    module use /soft/modulefiles; module load conda; conda activate base"
+    echo "    python -m venv $ALCF_VENV --system-site-packages"
+    echo "    source $ALCF_VENV/bin/activate && pip install globus_sdk openai"
     exit 1
 fi
 

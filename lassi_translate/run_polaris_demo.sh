@@ -44,7 +44,7 @@ if ! command -v module &>/dev/null; then
 fi
 
 module load cuda 2>/dev/null || true
-module load oneapi 2>/dev/null || true
+module load oneapi/release 2>/dev/null || true
 
 # Source conda directly rather than via `module load conda` so that conda
 # activation is independent of lmod being fully initialized. The venv is then
@@ -70,11 +70,11 @@ fi
 
 # ── SYCL toolchain ────────────────────────────────────────────────────────────
 export SYCL_COMPILER="icpx"
-export SYCL_CXXFLAGS="-O2 -std=c++17 -fsycl -fsycl-targets=nvptx64-nvidia-cuda"
+export SYCL_CXXFLAGS="-O2 -std=c++17 -fsycl -fsycl-targets=nvptx64-nvidia-cuda -Xsycl-target-backend --cuda-gpu-arch=sm_80"
 export SYCL_LDFLAGS=""
 
 if ! which icpx &>/dev/null; then
-    echo "ERROR: icpx not found. The oneAPI module should provide it by default on Polaris."
+    echo "ERROR: icpx not found. Load the oneAPI module with: module load oneapi/release"
     exit 1
 fi
 

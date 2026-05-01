@@ -1,0 +1,2 @@
+make
+cwd=/home/vchirio/LASSI-EE/lassi_translate/generated_codes/experiment/exp_xsbench_translate_cuda_to_sycl_google/gemma-4-31B-it_INTEL__04-30-2026_t23_06_03

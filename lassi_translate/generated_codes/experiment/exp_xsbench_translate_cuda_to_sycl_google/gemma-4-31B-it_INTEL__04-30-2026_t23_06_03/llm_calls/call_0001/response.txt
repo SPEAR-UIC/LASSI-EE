@@ -1,0 +1,39 @@
+### Summary of CUDA to SYCL 2020 Migration
+
+#### Memory Model and USM
+SYCL uses a weakly-ordered memory model similar to CUDA. For direct memory management (Unified Shared Memory - USM), SYCL provides:
+*   **`malloc_device`**: Allocates memory on the device (equivalent to `cudaMalloc`).
+*   **`malloc_host`**: Allocates pinned host memory (equivalent to `cudaMallocHost`).
+*   **`malloc_shared`**: Allocates memory accessible from both host and device.
+
+#### Queue and Device Setup
+*   **Queue**: A SYCL `queue` is the equivalent of a CUDA `stream`. 
+*   **Ordering**: Unlike CUDA streams, which are always in-order, SYCL queues are **out-of-order by default**. To mimic CUDA's behavior, you must explicitly pass the `property::queue::in_order()` property during queue creation.
+*   **Device Selection**: SYCL can target multiple vendors. While a default device is often used, programmers can enumerate and select specific devices based on properties.
+
+#### Kernel Dispatch
+*   **Submission**: Instead of the `<<< >>>` syntax, SYCL uses `q.submit` or the more concise `q.parallel_for`.
+*   **Kernel Definition**: SYCL uses standard C++ lambda expressions for kernels rather than the `__global__` function qualifier.
+
+#### ND-Range and Thread Indexing
+*   **Terminology**: A CUDA **Grid** is a SYCL **ND-Range**; a **Block** is a **Work-Group**; and a **Thread** is a **Work-Item**.
+*   **Contiguous Dimension**: A critical difference exists in memory layout. In CUDA, the first dimension (x) is contiguous. In SYCL, the **last dimension** is the contiguous (fastest-moving) dimension. Consequently, multidimensional ranges often appear transposed when migrating.
+*   **Indexing**: Instead of built-in variables like `blockIdx` and `threadIdx`, SYCL passes an item object (e.g., `nd_item`) to the kernel.
+    *   `get_global_id(dim)` $\approx$ `blockIdx.x * blockDim.x + threadIdx.x`
+    *   `get_local_id(dim)` $\approx$ `threadIdx.x`
+    *   `get_group_id(dim)` $\approx$ `blockIdx.x`
+
+#### Local/Shared Memory and Synchronization
+*   **Local Memory**: CUDA's `__shared__` memory is equivalent to SYCL **Local Memory**. In migrated code, this is often handled via `local_accessor`.
+*   **Barriers**: `group_barrier(item.get_group())` is the equivalent of `__syncthreads()`. 
+*   **Sub-Groups**: SYCL **Sub-Groups** are equivalent to CUDA **Warps**. `group_barrier(item.get_sub_group())` is equivalent to `__syncwarp()`.
+
+#### Atomics
+SYCL uses `atomic_ref` (based on C++20) rather than C-style atomic functions (e.g., `atomicAdd`). 
+*   **Requirements**: Unlike CUDA, SYCL `atomic_ref` **must** explicitly specify both the **memory order** (e.g., `memory_order::relaxed`) and the **memory scope** (e.g., `memory_scope::device`).
+
+#### Common Migration Pitfalls
+*   **Barrier Deadlocks**: In CUDA, `__syncthreads()` allows some threads to exit early. In SYCL, `group_barrier` requires **all** work-items in the group to reach the barrier; early `return` statements before a barrier can cause deadlocks.
+*   **Forward Progress**: Some newer CUDA devices support independent thread scheduling. SYCL may not provide the same forward progress guarantees, meaning some lock-free CUDA patterns may require restructuring.
+*   **Dimension Mapping**: Forgetting that the last dimension is the fastest-moving in SYCL can lead to incorrect indexing and memory access patterns.
+*   **Error Handling**: CUDA uses return codes; SYCL uses **exceptions** for both synchronous and asynchronous errors.

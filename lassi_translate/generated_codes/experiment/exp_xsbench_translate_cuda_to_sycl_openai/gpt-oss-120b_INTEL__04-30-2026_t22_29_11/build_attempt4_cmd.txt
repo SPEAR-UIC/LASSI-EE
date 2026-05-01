@@ -1,0 +1,2 @@
+make
+cwd=/home/vchirio/LASSI-EE/lassi_translate/generated_codes/experiment/exp_xsbench_translate_cuda_to_sycl_openai/gpt-oss-120b_INTEL__04-30-2026_t22_29_11

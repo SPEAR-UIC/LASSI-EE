@@ -1,0 +1,77 @@
+**1. Overall Purpose & Algorithm**  
+- **Goal:** Simulate a continuous‑energy Monte‑Carlo neutron transport benchmark (the H‑M benchmark) by performing a massive number of macroscopic cross‑section (XS) look‑ups.  
+- **Workflow:**  
+  1. **Input parsing** → fill an `Inputs` struct (simulation parameters, grid type, benchmark size, etc.).  
+  2. **Data generation** → build nuclide energy grids, unionized or hash acceleration structures, material‑nuclide composition, and concentration arrays.  
+  3. **Device transfer** → copy all the above host arrays to GPU global memory (`SimulationData GSD`).  
+  4. **Event‑based simulation** → for each lookup:  
+     - Generate a deterministic pseudo‑random seed, fast‑forward it to the lookup index.  
+     - Sample a neutron energy (`p_energy`) and a material index (`mat`).  
+     - Perform a macroscopic XS lookup:  
+       * Locate the appropriate energy interval (binary search on unionized, nuclide, or hash grid).  
+       * For each nuclide in the selected material, call `calculate_micro_xs` → interpolate five microscopic XS values.  
+       * Multiply each microscopic XS by the nuclide concentration and accumulate into a 5‑element macroscopic XS vector.  
+     - Reduce the macroscopic vector to a single verification index (the position of the maximum value) and store it in a per‑lookup verification array.  
+  5. **Verification & timing** → after the kernel finishes, a Thrust reduction sums the verification array; the sum is reduced modulo a prime and compared against known reference values.  
+
+- **Variants:** Six kernel‑level optimizations (IDs 0‑6) are provided, each altering how sampling and lookup work are split, sorted, or partitioned to improve warp‑level efficiency.
+
+---
+
+**2. CUDA‑Specific Constructs & Their Roles**  
+
+| Construct | Where Used | Purpose |
+|-----------|------------|---------|
+| `cudaMalloc` / `cudaFree` | `move_simulation_data_to_device`, `release_device_memory`, each optimization’s extra buffers (`p_energy_samples`, `mat_samples`) | Allocate / deallocate device global memory for all simulation arrays (nuclide grids, material data, verification array, temporary sample buffers). |
+| `cudaMemcpy` | `move_simulation_data_to_device` | Copy host‑side data structures into the device allocations (deep copy of all arrays). |
+| `__global__` kernels | `xs_lookup_kernel_baseline`, `sampling_kernel`, `xs_lookup_kernel_optimization_*` | Entry points executed on the GPU; each thread processes one lookup (or one sample). |
+| `__device__` functions | `calculate_micro_xs`, `calculate_macro_xs`, `grid_search`, `grid_search_nuclide`, `pick_mat`, `LCG_random_double`, `fast_forward_LCG` | Helper routines that run on the device; perform binary searches, interpolation, random‑number generation, and material selection. |
+| `__host__ __device__` qualifiers | `grid_search_nuclide`, `LCG_random_double` | Functions callable from both host (e.g., for CPU validation) and device (kernel code). |
+| `__restrict__` pointer qualifier | All device functions that receive large arrays | Informs the compiler that pointers do not alias, enabling better load/store optimization. |
+| `thrust::reduce` | After each simulation run (baseline & all optimizations) | Reduces the per‑lookup verification array on the device to a single scalar checksum. |
+| `thrust::count` | Optimizations 2‑6 | Counts how many lookups belong to a given material (used to size per‑material kernel launches). |
+| `thrust::sort_by_key` | Optimizations 4‑6 | Sorts lookups by material (and optionally by energy) to improve warp homogeneity. |
+| `thrust::partition` | Optimization 5 | Partitions the lookup list into “fuel” vs. “non‑fuel” groups. |
+| `thrust::device` execution policy | All Thrust calls | Directs Thrust algorithms to operate on device memory. |
+| `gpuErrchk` macro (wrapping `cudaGetErrorString`, `cudaPeekAtLastError`, `cudaDeviceSynchronize`) | After every launch / memory operation | Simple error‑checking wrapper to abort on CUDA errors. |
+| `cudaPeekAtLastError` / `cudaDeviceSynchronize` | After kernel launches and memory copies | Force error detection and ensure completion before timing or further work. |
+| `ceil`, integer arithmetic for grid sizing | Host code that computes `nblocks` | Determines the number of thread blocks needed to cover all lookups. |
+| No explicit `__shared__` memory, atomics, or streams are used in the provided code. |
+
+---
+
+**3. GPU Kernel Structure & Thread/Block Organization**  
+
+| Kernel | Thread‑level work | Block configuration (default) | Remarks |
+|--------|-------------------|------------------------------|---------|
+| `xs_lookup_kernel_baseline` | Each thread handles **one** lookup: generate seed, sample energy & material, call `calculate_macro_xs`, compute verification index. | `nthreads = 256`; `nblocks = ceil(lookups / 256)`. | Simple baseline; high divergence because fuel material has many nuclides. |
+| `sampling_kernel` (optimizations 1‑6) | Each thread generates **only** the random energy and material, writes them to `p_energy_samples[i]` and `mat_samples[i]`. | Same as baseline (often `nthreads = 32` for later kernels). | Decouples RNG from heavy lookup work. |
+| `xs_lookup_kernel_optimization_1` | Same as baseline but reads pre‑sampled energy/material from the buffers. | `nthreads = 32`; `nblocks = ceil(lookups / 32)`. | Slightly smaller warp size to reduce register pressure. |
+| `xs_lookup_kernel_optimization_2` | Same as 1, but **early‑exit** if the thread’s material does not match the kernel’s `m` argument. One kernel launch per material (12 launches). | `nthreads = 32`; `nblocks = ceil(lookups / 32)` for each launch (many threads idle). | Attempts to reduce warp divergence by material. |
+| `xs_lookup_kernel_optimization_3` | Two kernels: one for fuel (`is_fuel==1`) and one for all other materials (`is_fuel==0`). Early‑exit based on material. | Same launch parameters as #2. | Groups the dominant “fuel” material separately. |
+| `xs_lookup_kernel_optimization_4` | Per‑material kernel with **offset** and **n_lookups** arguments; only the subset belonging to that material is processed. | `nthreads = 32`; `nblocks = ceil(n_lookups_per_material[m] / 32)`. | After a full sort by material, each kernel works on a contiguous range, eliminating the early‑exit test. |
+| `xs_lookup_kernel_optimization_5` | Two kernels: one for fuel (first `n_fuel_lookups` entries) and one for non‑fuel (remaining entries). Uses `partition` to group. | Same as #4 but only two launches. | Simpler than #4, still benefits from material grouping. |
+| `xs_lookup_kernel_optimization_6` | Identical to kernel #4 (material‑specific) but the data are **double‑sorted**: first by material, then each material’s sub‑range is sorted by energy. | Same as #4. | Maximizes cache reuse and minimizes divergence because threads in a warp now query the same energy interval. |
+
+All kernels allocate a small stack array `double macro_xs_vector[5]` (or `xs_vector[5]` inside `calculate_micro_xs`) per thread; no dynamic shared memory is used.
+
+---
+
+**4. Host Functions that Allocate Device Memory or Launch Kernels**  
+These functions will need to receive a `sycl::queue &q` (or equivalent SYCL command‑group) when ported to SYCL, because they perform device memory management or kernel dispatch.
+
+| Function | Device‑memory actions | Kernel launches | Comments for SYCL translation |
+|----------|----------------------|----------------|------------------------------|
+| `move_simulation_data_to_device(Inputs, int, SimulationData)` | `cudaMalloc` for each array (`num_nucs`, `concs`, `mats`, `unionized_energy_array`, `index_grid`, `nuclide_grid`, `verification`). <br> `cudaMemcpy` to copy host data → device. | – | In SYCL: allocate buffers/accessors, copy host data via `queue.memcpy` or `host_accessor`. |
+| `release_device_memory(SimulationData)` | Calls `cudaFree` on all device pointers. | – | In SYCL: buffers go out of scope or explicit `queue.wait_and_throw()`; explicit deallocation not required. |
+| `run_event_based_simulation_baseline(Inputs, SimulationData, int)` | – (uses already‑allocated `GSD`). | Launches `xs_lookup_kernel_baseline<<<nblocks, nthreads>>>`. | In SYCL: submit a parallel_for with `range<1>(nblocks * nthreads)`; inside compute the global id. |
+| `run_event_based_simulation_optimization_1` | Allocates `p_energy_samples` and `mat_samples` via `cudaMalloc`. | Launches `sampling_kernel` then `xs_lookup_kernel_optimization_1`. | Allocate SYCL buffers for the two extra arrays; submit two kernels sequentially. |
+| `run_event_based_simulation_optimization_2` | Same extra allocations as #1. | Launches `sampling_kernel` then a loop over 12 calls to `xs_lookup_kernel_optimization_2`. | Same buffers; loop over material IDs, each kernel receives the material ID as an argument. |
+| `run_event_based_simulation_optimization_3` | Same extra allocations as #1. | Launches `sampling_kernel` then two kernels (`xs_lookup_kernel_optimization_3` with `is_fuel=1` and `0`). | Same buffers; two kernel submissions. |
+| `run_event_based_simulation_optimization_4` | Same extra allocations as #1. | Launches `sampling_kernel`, then for each material computes `n_lookups_per_material[m]` (via Thrust `count`), sorts by material (`thrust::sort_by_key`), and launches `xs_lookup_kernel_optimization_4` with per‑material offsets. | Need SYCL equivalents for `thrust::count` (`oneapi::dpl::count`), `sort_by_key` (`oneapi::dpl::sort_by_key`), and per‑material kernel launches. |
+| `run_event_based_simulation_optimization_5` | Same extra allocations as #1. | Launches `sampling_kernel`, counts fuel lookups, partitions (`thrust::partition`), then launches two kernels (`xs_lookup_kernel_optimization_5`). | Use SYCL/DPL `partition` and two kernel submissions. |
+| `run_event_based_simulation_optimization_6` | Same extra allocations as #1. | Launches `sampling_kernel`, counts per‑material lookups, sorts by material, then **for each material** sorts the sub‑range by energy, finally launches `xs_lookup_kernel_optimization_4` (material‑specific) for each material. | Requires nested DPL sorts and multiple kernel submissions. |
+| Any host‑side Thrust reductions (`thrust::reduce`) | – (operates on device memory) | – | Replace with `oneapi::dpl::reduce` or a SYCL reduction kernel. |
+| `binary_write` / `binary_read` | Host‑only I/O, no device calls. | – | No SYCL changes needed. |
+
+All other functions (`grid_init_do_not_profile`, material loaders, RNG utilities, etc.) are pure host code and do not directly interact with the GPU; they remain unchanged in a SYCL port.

@@ -28,7 +28,7 @@ if [ ! -f source_codes/Miniapps/XSBench/cuda/Main.cu ]; then
 fi
 
 # ── LLM / cluster configuration ──────────────────────────────────────────────
-LLM_MODEL=${LLM_MODEL:-"openai/gpt-oss-120b"}
+LLM_MODEL=${LLM_MODEL:-"mistralai/Devstral-2-123B-Instruct-2512"}
 ALCF_CLUSTER=${ALCF_CLUSTER:-"sophia"}
 ALCF_CONDA_ENV=${ALCF_CONDA_ENV:-"globus_env"}
 

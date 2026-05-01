@@ -1,0 +1,217 @@
+**SYCL‑2020 migration cheat‑sheet for CUDA → Intel‑GPU (icpx)**  
+
+---
+
+### 1. Memory model & Unified Shared Memory (USM)  
+| CUDA | SYCL equivalent | Notes for Intel GPUs |
+|------|----------------|----------------------|
+| `cudaMalloc`, `cudaMallocHost`, `cudaMallocManaged` | `malloc_device<T>(n,q)`, `malloc_shared<T>(n,q)`, `malloc_host<T>(n,q)` | USM pointers can be passed directly to kernels. Use the **same queue** that performed the allocation (or a queue that targets the same device). |
+| `cudaMemcpy` / `cudaMemcpyAsync` | `q.memcpy(dst,src,bytes)` (blocking) or `q.memcpy(...).wait()` (async) | `memcpy` is a command in the queue; it respects the queue’s ordering (in‑order vs out‑of‑order). |
+| `__constant__` memory | `malloc_device` + `const` qualifier or `read_only` accessor | No separate constant address space; treat as read‑only device memory. |
+| `__device__` global variables | **Not supported** in core SYCL (future extensions only) | Replace with USM buffers or pass as kernel arguments. |
+| `__shared__` memory | `local_accessor<T, dims>` (or `malloc_shared` with `access::address_space::local_space`) | Declared inside the kernel lambda or passed as a kernel argument. Size must be known at compile time or supplied via a runtime `local_range`. |
+
+---
+
+### 2. Queue & device selection  
+```cpp
+// simplest – default selector (first device that supports SYCL)
+sycl::queue q{sycl::default_selector{}, sycl::property::queue::in_order()};
+
+// explicit Intel GPU selector
+sycl::queue q{sycl::gpu_selector{}, sycl::property::queue::in_order()};
+
+// or use environment variable ONEAPI_DEVICE_SELECTOR=... to pick device
+```
+* **In‑order vs out‑of‑order** – CUDA streams are always in‑order.  
+  SYCL queues are out‑of‑order by default; add `property::queue::in_order()` to mimic CUDA semantics or manage dependencies with `handler.depends_on(event)`.  
+
+* Query device info (name, max work‑group size, sub‑group size, USM support) with:
+```cpp
+auto dev = q.get_device();
+std::cout << dev.get_info<sycl::info::device::name>() << '\n';
+size_t wg = dev.get_info<sycl::info::device::max_work_group_size>();
+size_t sg = dev.get_info<sycl::info::device::sub_group_sizes>();
+```
+
+---
+
+### 3. Kernel dispatch  
+
+#### 3.1 Simple 1‑D launch (CUDA `<<<N, B>>>`)  
+```cpp
+q.submit([&](sycl::handler& h){
+    h.parallel_for(sycl::range<1>{N},
+        [=](sycl::id<1> idx){ /* body */ });
+});
+q.wait();          // equivalent to cudaDeviceSynchronize()
+```
+
+#### 3.2 ND‑range with explicit work‑group size (CUDA `<<<grid, block>>>`)  
+```cpp
+sycl::range<dim> global   = {G0, G1, G2};   // total threads
+sycl::range<dim> local    = {L0, L1, L2};   // work‑group size
+sycl::nd_range<dim> exec   = sycl::nd_range<dim>{global, local};
+
+q.submit([&](sycl::handler& h){
+    h.parallel_for(exec,
+        [=](sycl::nd_item<dim> it){
+            // thread indices (see §4)
+        });
+});
+```
+
+* **Contiguous dimension** – SYCL’s *last* index is the fastest‑moving (unit‑stride).  
+  CUDA’s *first* index is fastest. When converting 2‑D/3‑D launches, swap the order of the range arguments (e.g., CUDA `{16,2}` → SYCL `{2,16}`).
+
+---
+
+### 4. Thread / group indexing  
+
+| CUDA | SYCL (`nd_item`) | Meaning |
+|------|------------------|---------|
+| `blockIdx.x` | `it.get_group(0)` | work‑group (block) index |
+| `threadIdx.x` | `it.get_local_id(0)` | intra‑group (thread) index |
+| `gridDim.x` | `it.get_group_range(0)` | number of groups |
+| `blockDim.x` | `it.get_local_range(0)` | size of a group |
+| `blockIdx.x * blockDim.x + threadIdx.x` | `it.get_global_id(0)` | global linear index |
+| `it.get_global_linear_id()` | same as above (flattened) | convenient for 1‑D kernels |
+| Sub‑group (warp) ID | `it.get_sub_group()` → `sg.get_local_id()` | use `sycl::ext::oneapi::sub_group` or `it.get_sub_group()` |
+
+* For 2‑D/3‑D kernels, use `get_global_id(d)`, `get_local_id(d)`, `get_group_id(d)` where `d = 0,1,2` (last dimension is fastest).  
+
+---
+
+### 5. Local (shared) memory  
+
+```cpp
+// compile‑time size
+sycl::local_accessor<float, 1> tile(sycl::range<1>{256}, h);
+
+// or pass a pointer allocated with malloc_shared and annotate address space
+float* tile = sycl::malloc_shared<float>(256, q);
+```
+
+* Inside the kernel:
+```cpp
+auto lid = it.get_local_id(0);
+tile[lid] = ...;
+it.barrier(sycl::access::fence_space::local_space);   // __syncthreads()
+```
+
+* **Note** – `local_accessor` must be declared **inside** the `handler` lambda; its lifetime is the kernel execution only.
+
+---
+
+### 6. Synchronization  
+
+| CUDA | SYCL |
+|------|------|
+| `__syncthreads()` | `it.barrier(sycl::access::fence_space::local_space)` |
+| `__syncwarp()` | `it.get_sub_group().barrier()` (or `group_barrier(sg)`) |
+| `__threadfence()` | `sycl::atomic_fence(...)` or `group_barrier(..., memory_scope::device)` |
+
+* **Fence scope** (optional): `memory_scope::work_group` (default), `memory_scope::sub_group`, `memory_scope::device`.  
+* **Pitfall** – Early‑exit before a barrier can deadlock in SYCL because `group_barrier` expects *all* work‑items in the group to arrive. Move the guard **after** the barrier or eliminate the barrier.
+
+---
+
+### 7. Atomics  
+
+```cpp
+// CUDA: atomicAdd(&ptr[idx], val);
+sycl::atomic_ref<int,
+                sycl::memory_order::relaxed,
+                sycl::memory_scope::device,
+                sycl::access::address_space::global_space> a(ptr[idx]);
+
+a.fetch_add(val);          // equivalent to atomicAdd
+```
+
+* **Defaults** – SYCL `atomic_ref` requires you to specify `memory_order` and `memory_scope`.  
+  *To mimic CUDA’s relaxed device‑wide atomics*: `memory_order::relaxed`, `memory_scope::device`.  
+
+* For sub‑group atomics, use `memory_scope::sub_group`.  
+
+* Not all atomic operations are guaranteed on every SYCL device (e.g., `fetch_min` on some GPUs). Query support with:
+```cpp
+bool has_min = dev.has(aspect::atomic64);
+```
+
+---
+
+### 8. Common migration pitfalls  
+
+| Issue | CUDA habit | SYCL gotcha | Remedy |
+|-------|------------|--------------|--------|
+| **Dimension order** | `dim3 block(16,2)` → fastest = `x` | SYCL’s last index fastest | Swap range arguments (`{2,16}`) or use `sycl::range` constructors with reversed order. |
+| **Barrier with early exit** | `if (cond) return; __syncthreads();` | SYCL deadlock | Move `if` after the barrier, or use separate kernels for divergent work. |
+| **Implicit stream ordering** | Single CUDA stream → sequential | Out‑of‑order SYCL queue may reorder | Use `in_order` queue or explicit `depends_on` events. |
+| **Global device variables** | `__device__ int flag;` | Not supported | Replace with USM pointer or pass as kernel argument. |
+| **Default atomic order** | CUDA atomics are relaxed | SYCL defaults to `seq_cst` | Explicitly set `memory_order::relaxed` in `atomic_ref`. |
+| **Warp‑size assumptions** | Hard‑coded 32 (`__shfl_xor_sync`) | Sub‑group size may differ | Use `sycl::ext::oneapi::sub_group` functions (`permute_group_by_xor`) which adapt to actual sub‑group size. |
+| **Host‑device error handling** | Return codes (`cudaError_t`) | SYCL throws exceptions | Wrap SYCL calls in `try/catch` or use `sycl::exception_list`. |
+| **Memory copy direction** | `cudaMemcpyDefault` auto‑detects | SYCL `memcpy` needs explicit src/dst | Use `q.memcpy(dst, src, bytes)`; the runtime decides based on pointer address spaces. |
+| **Launch bounds / occupancy** | `<<<grid, block, shared, stream>>>` | No launch‑bounds attribute in SYCL | Use `queue.submit` with `handler` and let the runtime schedule; optionally query `max_work_group_size`. |
+| **Device selection at runtime** | `cudaSetDevice(0)` | SYCL selector + `ONEAPI_DEVICE_SELECTOR` | Prefer selectors in code or environment variable; avoid hard‑coding device IDs. |
+
+---
+
+### 9. Minimal translation pattern (CUDA → SYCL)
+
+```cpp
+// ---------- CUDA ----------
+__global__ void kernel(float* A, int N){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ float tile[256];
+    tile[threadIdx.x] = A[i];
+    __syncthreads();
+    A[i] = tile[255-threadIdx.x];
+}
+
+// launch
+kernel<<<N/256,256>>>(d_A,N);
+cudaDeviceSynchronize();
+
+// ---------- SYCL ----------
+void run(sycl::queue& q, float* d_A, int N){
+    const sycl::range<1> global(N);
+    const sycl::range<1> local(256);
+
+    q.submit([&](sycl::handler& h){
+        sycl::local_accessor<float,1> tile(sycl::range<1>{256}, h);
+        h.parallel_for(sycl::nd_range<1>{global, local},
+            [=](sycl::nd_item<1> it){
+                int i = it.get_global_id(0);
+                int lid = it.get_local_id(0);
+                tile[lid] = d_A[i];
+                it.barrier(sycl::access::fence_space::local_space);
+                d_A[i] = tile[255 - lid];
+            });
+    });
+    q.wait();   // same as cudaDeviceSynchronize()
+}
+```
+
+---
+
+### 10. Quick checklist for a successful migration  
+
+1. **Select device** with a selector that matches the Intel GPU (or let the user choose via `ONEAPI_DEVICE_SELECTOR`).  
+2. **Replace all CUDA allocations** with USM (`malloc_device`, `malloc_shared`, `malloc_host`).  
+3. **Convert kernel launches** to `queue.submit → parallel_for` (use `nd_range` when you need explicit work‑group size).  
+4. **Swap dimension order** for any multi‑dimensional launch.  
+5. **Replace `__shared__`** with `local_accessor` (or `malloc_shared` + `local_space` fence).  
+6. **Replace `__syncthreads()`** with `it.barrier(sycl::access::fence_space::local_space)`.  
+7. **Replace atomics** with `sycl::atomic_ref` and set `memory_order::relaxed` / `memory_scope::device` to match CUDA semantics.  
+8. **Audit all barriers** for early‑exit paths; restructure if necessary.  
+9. **Wrap SYCL calls** in `try/catch` to handle exceptions.  
+10. **Compile** with Intel’s DPC++ compiler:  
+   ```bash
+   icpx -fsycl -fsycl-targets=spir64 -O2 my_code.cpp -o my_app
+   ```
+   (add `-fsycl-targets=nvptx64-nvidia-cuda` if you also want to run on NVIDIA GPUs).
+
+--- 
+
+**Result:** By following the points above you can systematically translate CUDA kernels and host code into portable SYCL‑2020 that runs efficiently on Intel GPUs (and, with the same binary, on other SYCL‑compatible devices).

@@ -1,0 +1,80 @@
+**Technical Description of the CUDA XSBench Implementation**
+
+---
+
+### 1. Overall Purpose & Algorithm  
+
+| Aspect | Description |
+|--------|-------------|
+| **Goal** | Perform a synthetic Monte‑Carlo “event‑based” neutron transport benchmark (XSBench). The benchmark measures the throughput of continuous‑energy macroscopic cross‑section look‑ups for a large set of isotopes and materials. |
+| **High‑level flow** | 1. Parse command‑line arguments → fill an `Inputs` struct.<br>2. Initialise all physics data on the host (nuclide grids, unionised grid, hash grid, material composition, concentrations).<br>3. **Transfer** the data to GPU memory (`move_simulation_data_to_device`).<br>4. Launch one of several GPU kernels (baseline or optimisation variants) that **sample** a particle energy & material, then **lookup** microscopic cross‑sections, interpolate them, and accumulate a macroscopic cross‑section vector (5 reaction channels).<br>5. Store a lightweight verification value per lookup (index of the largest macro‑XS entry).<br>6. Reduce the verification array on the device with Thrust (`thrust::reduce`).<br>7. Copy the final checksum back to the host, print timing/throughput statistics and free GPU memory. |
+| **Core physics routine** | `calculate_macro_xs` → loops over all nuclides in the sampled material, calls `calculate_micro_xs` for each nuclide, interpolates the five XS values from the nuclide’s energy grid, multiplies by the nuclide concentration and accumulates into `macro_xs_vector`. |
+| **Grid types** | *NUCLIDE* – binary search inside each nuclide’s own grid.<br>*UNIONIZED* – a single sorted energy array is searched once, then an index table (`index_grid`) gives the lower‑bound index for each nuclide.<br>*HASH* – the energy is mapped to a hash bin; a pre‑computed index table provides a bounded search range inside each nuclide. |
+| **Verification** | After each lookup the kernel finds the index of the maximum entry in `macro_xs_vector` (0‑based) and writes `max_idx+1` into `GSD.verification[i]`. The host reduces this array to a single checksum (`unsigned long long`). |
+
+---
+
+### 2. CUDA‑Specific Constructs & Their Roles  
+
+| Construct | Where Used | Role in the Program |
+|-----------|------------|---------------------|
+| **`cudaMalloc` / `cudaFree`** | `move_simulation_data_to_device`, `release_device_memory`, each optimisation that allocates extra buffers (`p_energy_samples`, `mat_samples`). | Allocate and de‑allocate device memory for all simulation data structures (arrays of ints, doubles, `NuclideGridPoint`, verification buffer, temporary sample buffers). |
+| **`cudaMemcpy`** | `move_simulation_data_to_device`. | Copy host‑side initialised data (nuclide grid, unionised energy array, index grid, material tables, concentrations) into the device allocations. |
+| **`__global__` kernels** | `xs_lookup_kernel_baseline`, `sampling_kernel`, `xs_lookup_kernel_optimization_1…5`, `xs_lookup_kernel_optimization_2`, `xs_lookup_kernel_optimization_3`, `xs_lookup_kernel_optimization_4`. | Entry points executed on the GPU. Each kernel processes a *single* lookup (or a sample) per thread. |
+| **`__device__` functions** | `calculate_micro_xs`, `calculate_macro_xs`, `grid_search`, `grid_search_nuclide`, `pick_mat`, `LCG_random_double`, `fast_forward_LCG`. | Helper routines callable from device code only. They perform the physics (interpolation, binary search) and RNG. |
+| **`__host__ __device__`** | `grid_search_nuclide`, `LCG_random_double`. | Functions that can be called from both host and device (used only on device in this code, but the qualifier permits host testing). |
+| **`__restrict__` qualifier** | All pointer arguments of the device functions (`egrid`, `index_data`, `nuclide_grids`, …). | Informs the compiler that the pointed‑to memory does not alias, enabling better optimisation (vectorisation, register usage). |
+| **Thrust algorithms** | `thrust::reduce` (checksum), `thrust::count` (lookup‑per‑material statistics), `thrust::sort_by_key`, `thrust::partition`. | High‑level parallel primitives executed on the device. Used for reduction of verification values and for the various optimisation strategies that require sorting/partitioning of the sampled lookup data. |
+| **Error‑checking macro** | `gpuErrchk( cuda... )` throughout the host code. | Wraps CUDA API calls, prints file/line on failure and aborts. |
+| **`cudaPeekAtLastError` / `cudaDeviceSynchronize`** | After every kernel launch and after Thrust calls. | Detect asynchronous launch errors and enforce completion before timing or further host work. |
+| **Device‑side RNG** | `LCG_random_double`, `fast_forward_LCG`. | Linear‑Congruential Generator used to produce deterministic pseudo‑random energy and material samples per lookup. |
+| **`cudaGetDeviceProperties` / `cudaGetDevice`** | `print_inputs`. | Query the GPU name for the input‑summary output (not required for computation). |
+| **`__shared__`** | **Not used** in this source. |
+| **Atomic operations** | **Not used** (the algorithm writes to distinct indices of the verification array, so no atomics are needed). |
+
+---
+
+### 3. GPU Kernel Structure & Thread/Block Organisation  
+
+| Kernel | Grid/Block Configuration | Thread Indexing & Bounds | Main Work Per Thread |
+|--------|--------------------------|--------------------------|----------------------|
+| `xs_lookup_kernel_baseline` | `<<< nblocks, nthreads >>>` where `nthreads = 256`, `nblocks = ceil(lookups / nthreads)`. | `int i = blockIdx.x * blockDim.x + threadIdx.x;` <br> `if (i >= in.lookups) return;` | 1. Initialise per‑lookup RNG seed (fast‑forwarded). <br> 2. Sample energy & material. <br> 3. Call `calculate_macro_xs`. <br> 4. Reduce macro vector to a single index and write to `GSD.verification[i]`. |
+| `sampling_kernel` (opt 1‑6) | Same launch pattern as baseline (usually 32‑thread blocks). | Same global‑index computation and bounds check. | Only RNG sampling: generate `p_energy` and `mat` and store them into `GSD.p_energy_samples[i]` and `GSD.mat_samples[i]`. |
+| `xs_lookup_kernel_optimization_1` | Same launch pattern as `sampling_kernel`. | Same indexing. | Reads pre‑sampled `p_energy_samples[i]` / `mat_samples[i]` and performs the full macro‑XS lookup exactly as baseline, then writes verification. |
+| `xs_lookup_kernel_optimization_2` | Same launch pattern; receives an extra `int m` (material id). | Same indexing; early‑exit if `GSD.mat_samples[i] != m`. | Performs lookup only for threads whose sampled material matches the kernel’s material. |
+| `xs_lookup_kernel_optimization_3` | Same launch pattern; receives `int is_fuel` (0 = non‑fuel, 1 = fuel). | Same indexing; conditional execution based on `(mat==0)` vs `is_fuel`. | Same lookup as baseline but split into two kernels (fuel vs non‑fuel). |
+| `xs_lookup_kernel_optimization_4` | Launched per material after a **full sort** of `(mat, energy)`. Block size = 32, `nblocks = ceil(lookups_per_material / 32)`. | Global index `i = blockIdx.x * blockDim.x + threadIdx.x + offset` where `offset` is the start of the material’s sub‑range. | Same lookup as baseline; the sort guarantees that consecutive threads work on the same material (and later on the same energy range). |
+| `xs_lookup_kernel_optimization_5` | Two launches: one for fuel (`offset = 0`) and one for non‑fuel (`offset = n_fuel`). Same 32‑thread blocks. | Same indexing with per‑launch `offset`. | Same lookup as baseline; the data have been **partitioned** into fuel / non‑fuel using `thrust::partition`. |
+| `xs_lookup_kernel_optimization_6` | Uses the same per‑material kernel as optimisation 4 (calls `xs_lookup_kernel_optimization_4`). After a **material sort** it performs a **second sort by energy** inside each material’s sub‑range. | Same as optimisation 4 (offset + per‑material sub‑range). | Same lookup; the double‑sort maximises cache reuse because threads in a warp now read contiguous energy‑grid entries. |
+
+*All kernels are 1‑dimensional (grid‑dim.x, block‑dim.x) and use a simple “one lookup per thread” mapping.*  
+
+---
+
+### 4. Host Functions that Allocate Device Memory or Launch Kernels  
+
+| Host Function | Device‑Memory Allocation (needs `sycl::queue &q` in SYCL) | Kernel Launches (needs `q.submit` in SYCL) |
+|---------------|----------------------------------------------------------|-------------------------------------------|
+| `move_simulation_data_to_device(Inputs, int, SimulationData)` | Calls `cudaMalloc` for each array (`num_nucs`, `concs`, `mats`, `unionized_energy_array`, `index_grid`, `nuclide_grid`, `verification`). Also performs `cudaMemcpy` for each. | **None** (pure memory management). |
+| `release_device_memory(SimulationData)` | Calls `cudaFree` for all device pointers. | **None**. |
+| `run_event_based_simulation_baseline(Inputs, SimulationData, int)` | **No allocation** (uses already‑allocated buffers). | Launches `xs_lookup_kernel_baseline<<<nblocks,nthreads>>>`. |
+| `run_event_based_simulation_optimization_1(Inputs, SimulationData, int)` | Allocates `p_energy_samples` and `mat_samples` via `cudaMalloc`. | Launches `sampling_kernel<<<...>>>` then `xs_lookup_kernel_optimization_1<<<...>>>`. |
+| `run_event_based_simulation_optimization_2(Inputs, SimulationData, int)` | Same extra allocations as opt 1. | Launches `sampling_kernel<<<...>>>` followed by **12** calls to `xs_lookup_kernel_optimization_2<<<...>>>` (one per material). |
+| `run_event_based_simulation_optimization_3(Inputs, SimulationData, int)` | Same extra allocations as opt 1. | Launches `sampling_kernel<<<...>>>` then two kernel calls: fuel (`xs_lookup_kernel_optimization_3` with `is_fuel=1`) and non‑fuel (`is_fuel=0`). |
+| `run_event_based_simulation_optimization_4(Inputs, SimulationData, int)` | Same extra allocations as opt 1. | Launches `sampling_kernel<<<...>>>`, then **material‑wise** launches of `xs_lookup_kernel_optimization_4` after a Thrust `sort_by_key` on `(mat, energy)`. |
+| `run_event_based_simulation_optimization_5(Inputs, SimulationData, int)` | Same extra allocations as opt 1. | Launches `sampling_kernel<<<...>>>`, then a Thrust `partition` (fuel vs non‑fuel) and two kernel launches of `xs_lookup_kernel_optimization_5`. |
+| `run_event_based_simulation_optimization_6(Inputs, SimulationData, int)` | Same extra allocations as opt 1. | Launches `sampling_kernel<<<...>>>`, then a material sort (`sort_by_key`), then **per‑material energy sorts** (`sort_by_key` on the energy sub‑range), and finally per‑material launches of `xs_lookup_kernel_optimization_4` (re‑used as the material‑specific kernel). |
+| `print_inputs`, `logo`, `center_print`, … | **No device interaction**. | **None**. |
+| `binary_write`, `binary_read` | Host‑only file I/O. | **None**. |
+
+*All of the above host functions that perform `cudaMalloc`, `cudaMemcpy`, `cudaFree`, or kernel launches will need to be rewritten to use a SYCL queue (`sycl::queue &q`). The memory‑management calls become `q.memcpy`, `q.mem_alloc`, etc., and kernel launches become `q.submit([&](sycl::handler &cgh){ cgh.parallel_for(...); })`.*
+
+---
+
+### Summary  
+
+The CUDA program implements a synthetic Monte‑Carlo neutron transport benchmark. It builds large data structures (nuclide grids, unionised or hash acceleration structures, material composition) on the host, copies them to the GPU, and then repeatedly performs **event‑based** cross‑section look‑ups. The baseline kernel assigns one lookup per thread; a series of optimisation variants restructure the work by pre‑sampling, splitting by material, and sorting/partitioning to improve warp‑level coherence.  
+
+Key CUDA features used are explicit device memory management (`cudaMalloc`/`cudaFree`/`cudaMemcpy`), device‑side functions (`__device__`, `__global__`), the Thrust library for reductions and sorts, and a simple LCG RNG. No shared memory or atomics are required because each thread works on independent data.  
+
+When porting to SYCL, every host routine that currently calls `cudaMalloc`, `cudaMemcpy`, or launches a kernel must receive a `sycl::queue &q` argument, and the corresponding SYCL APIs (`malloc_device`, `memcpy`, `parallel_for`, `reduce`, `sort_by_key`, `partition`, etc.) will replace the CUDA calls. The overall algorithm and data‑flow remain unchanged.

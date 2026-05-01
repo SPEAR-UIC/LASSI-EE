@@ -69,7 +69,15 @@ class PromptDictionary:
                 "(10) NEVER call (void)in; (void)GSD; or similar no-op casts to suppress "
                 "unused-parameter warnings inside simulation kernel functions — this is a "
                 "strong signal that the function body is a stub. Every parameter passed to a "
-                "simulation function MUST be used in the actual kernel computation."
+                "simulation function MUST be used in the actual kernel computation. "
+                "(11) NEVER modify loop bounds, comparison operators, or index arithmetic, "
+                "even if they appear to be off-by-one errors. A loop written as `j > 0` MUST "
+                "remain `j > 0` — do NOT change it to `j >= 0` or any other form. These "
+                "boundary conditions are frequently intentional algorithmic choices (e.g., "
+                "probability distribution sampling, binary search bounds, cumulative sum "
+                "construction) whose correctness depends on the exact operator used. "
+                "Translate every comparison, loop termination condition, and index offset "
+                "character-for-character from the source."
             )
         }
 
@@ -102,7 +110,11 @@ class PromptDictionary:
                 "casts to silence unused-parameter warnings. "
                 "(C) load_num_nucs(), load_mats(), and load_concs() MUST be faithful translations "
                 "of the source — do NOT replace physics-accurate material data with trivial loops "
-                "like 'arr[i] = i % 12' or 'arr[i] = 1.0'."
+                "like 'arr[i] = i % 12' or 'arr[i] = 1.0'. "
+                "(D) Do NOT alter loop bounds, comparison operators, or index arithmetic. "
+                "A loop written as `j > 0` in the source MUST remain `j > 0` in the translation — "
+                "never change `>` to `>=`, `<` to `<=`, or any similar operator. These boundary "
+                "conditions directly affect numerical results and are intentional."
             )
         }
 
@@ -129,7 +141,11 @@ class PromptDictionary:
                 "the physics-accurate material data from the original CUDA source — do NOT "
                 "replace them with trivial loops or placeholder values. "
                 "(D) read_CLI() MUST parse argc/argv and apply all command-line options — "
-                "do NOT ignore argc/argv with (void)argc; (void)argv;."
+                "do NOT ignore argc/argv with (void)argc; (void)argv;. "
+                "(E) Do NOT alter loop bounds, comparison operators, or index arithmetic — "
+                "even if they appear to be off-by-one errors. A `j > 0` loop condition in "
+                "the original MUST stay `j > 0`, not become `j >= 0`. These are numerically "
+                "significant algorithmic decisions, not typos."
             )
         }
 
@@ -158,7 +174,11 @@ class PromptDictionary:
                 "kernels, __shared__, atomics, etc.) and their role in the program, "
                 "(3) the structure of GPU kernels and their thread/block organization, "
                 "(4) which host functions allocate device memory or launch kernels — "
-                "these will require a sycl::queue& q parameter in the SYCL translation. "
+                "these will require a sycl::queue& q parameter in the SYCL translation, "
+                "(5) any loop bounds, comparison operators, or index offsets that appear "
+                "asymmetric or potentially incorrect (e.g., `j > 0` instead of `j >= 0` "
+                "in a loop starting at j=i) — explicitly flag these as intentional and "
+                "note that they MUST be preserved verbatim in the translation. "
                 "Output only the structured description, no code."
             ),
         }

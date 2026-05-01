@@ -61,7 +61,7 @@ def _extract_xsbench_checksum(stdout: str) -> str:
 
 def _xsbench_checksum_valid(stdout: str) -> bool:
     line = _extract_xsbench_checksum(stdout)
-    return bool(line) and "INVALID" not in line.upper()
+    return bool(line) and "(Valid)" in line
 
 
 def _tail5(text: str) -> str:

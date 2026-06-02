@@ -1,0 +1,102 @@
+### Summary: Migrating CUDA Code to SYCL 2020 Targeting Intel GPUs
+
+Migrating CUDA code to SYCL 2020 involves understanding key differences in execution models, memory management, terminology, and syntax between the two frameworks. Below is a summary of the most relevant concepts for translating CUDA C++ code to SYCL 2020 targeting Intel GPUs compiled with `icpx`.
+
+---
+
+#### **Memory Model and Unified Shared Memory (USM)**
+- **CUDA Memory Management**: CUDA uses `cudaMalloc` for device memory, `cudaMallocHost` for pinned host memory, and `cudaMemcpy` for explicit memory transfers.
+- **SYCL USM**: SYCL provides Unified Shared Memory (USM) for direct memory allocation and access:
+  - `malloc_device`: Allocates memory on the device.
+  - `malloc_shared`: Allocates memory accessible by both host and device.
+  - `malloc_host`: Allocates memory on the host, similar to CUDA's pinned memory.
+- **Key Difference**: SYCL eliminates explicit memory transfers (`cudaMemcpy`) when using USM, as shared memory can be directly accessed by both host and device.
+
+---
+
+#### **Queue and Device Setup**
+- **CUDA Streams**: CUDA uses streams for kernel execution, which are always in-order.
+- **SYCL Queues**: SYCL queues can be either in-order or out-of-order. For CUDA-like behavior, use `queue q{property::queue::in_order()}`.
+- **Device Selection**: SYCL allows querying and selecting devices explicitly using `device_selector`. CUDA defaults to device 0.
+- **Example**:
+  ```cpp
+  queue q{property::queue::in_order()};
+  std::cout << "Running on device: " << q.get_device().get_info<info::device::name>() << "\n";
+  ```
+
+---
+
+#### **Kernel Dispatch**
+- **CUDA Syntax**: Kernels are launched using the `<<< >>>` syntax, with thread and block dimensions specified.
+- **SYCL Syntax**: Kernels are submitted to a queue using `q.submit` and executed via `parallel_for`. SYCL uses standard C++ lambda functions for kernel code.
+- **Example**:
+  ```cpp
+  q.parallel_for(count, [=](auto id) { buffer[id] = id; }).wait();
+  ```
+
+---
+
+#### **ND-Range and Thread Indexing**
+- **CUDA Grid and Thread Indexing**: CUDA uses built-in variables like `blockIdx`, `threadIdx`, `blockDim`, and `gridDim` for indexing.
+- **SYCL ND-Range**: SYCL uses `nd_range` for specifying global and local ranges. Indexing is done via `nd_item` methods:
+  - `get_global_id(dim)`: Equivalent to `blockIdx.x * blockDim.x + threadIdx.x`.
+  - `get_local_id(dim)`: Equivalent to `threadIdx.x`.
+  - `get_group(dim)`: Equivalent to `blockIdx.x`.
+- **Dimension Ordering**: SYCL uses C++ conventions where the last dimension is the fastest-moving, unlike CUDA where the first dimension is fastest-moving.
+
+---
+
+#### **Local/Shared Memory**
+- **CUDA Shared Memory**: Declared with `__shared__` and scoped to a thread block.
+- **SYCL Local Memory**: Managed using `local_accessor`, which is passed explicitly into kernels.
+- **Example**:
+  ```cpp
+  accessor<int, 1, access::mode::read_write, access::target::local> scratch(256, cgh);
+  ```
+
+---
+
+#### **Synchronization**
+- **CUDA Synchronization**: `__syncthreads()` synchronizes threads within a block.
+- **SYCL Synchronization**: `group_barrier()` synchronizes work-items within a work-group. Early exits before barriers can cause deadlocks in SYCL, unlike CUDA.
+- **Example**:
+  ```cpp
+  item_ct1.barrier(sycl::access::fence_space::local_space);
+  ```
+
+---
+
+#### **Atomics**
+- **CUDA Atomics**: Functions like `atomicAdd` operate with relaxed memory order and device scope.
+- **SYCL Atomics**: Use `atomic_ref` from C++20, specifying memory order and scope explicitly.
+- **Example**:
+  ```cpp
+  atomic_ref<int, memory_order::relaxed, memory_scope::device> aref(*buffer);
+  aref.fetch_add(1);
+  ```
+
+---
+
+#### **Common Pitfalls**
+1. **Dimension Ordering**: SYCL’s fastest-moving dimension is the last, which may require transposing ND-ranges during migration.
+2. **Barriers**: SYCL `group_barrier` requires all work-items to reach the barrier, unlike CUDA’s `__syncthreads`.
+3. **Forward Progress Guarantees**: CUDA’s independent thread scheduling may allow patterns that are unsafe in SYCL.
+4. **Global Variables**: CUDA supports `__device__` and `__shared__` global variables, but SYCL does not yet support global variables in device code.
+5. **Error Handling**: CUDA uses error codes, while SYCL uses exceptions for synchronous and asynchronous errors.
+
+---
+
+#### **Porting Tools**
+- **SYCLomatic/dpct**: Tools like dpct automate much of the migration process, converting CUDA code to SYCL. They handle device queries, kernel dispatch, memory management, and synchronization but may require manual adjustments for error handling and advanced features.
+
+---
+
+#### **Features Not Yet in SYCL**
+- **Global Variables**: CUDA supports global variables in device code, but SYCL does not.
+- **Cooperative Groups**: CUDA’s flexible cooperative groups are more advanced than SYCL’s work-group and sub-group constructs.
+- **Matrix Multiplication Hardware**: CUDA provides APIs for tensor cores (e.g., WMMA), while SYCL support is evolving.
+
+---
+
+### Conclusion
+Migrating CUDA code to SYCL 2020 is feasible due to their similar execution and memory models. SYCL’s alignment with standard C++ makes it portable across diverse devices, including Intel GPUs. Tools like SYCLomatic simplify migration, but understanding key differences in terminology, synchronization, and memory management is essential for successful translation.

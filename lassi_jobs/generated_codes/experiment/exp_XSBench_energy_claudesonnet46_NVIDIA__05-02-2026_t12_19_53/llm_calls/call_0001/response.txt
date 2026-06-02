@@ -1,0 +1,46 @@
+## Summary of Key CUDA Energy Efficiency Techniques for the NVIDIA A100
+
+---
+
+### 1. Memory Access Coalescing
+Ensure that consecutive threads in a warp access consecutive memory addresses (stride-1 access). When threads access strided or scattered addresses, the hardware issues multiple DRAM transactions instead of one, multiplying both traffic and energy. The fix often involves restructuring data layouts from Array-of-Structs (AoS) to Struct-of-Arrays (SoA). **Most impactful** in any kernel with global memory reads or writes, especially memory-bound kernels where DRAM traffic dominates energy consumption. Perfect coalescing can reduce DRAM transactions by up to 32× versus fully uncoalesced access.
+
+---
+
+### 2. Shared Memory Use (Tiling)
+When multiple threads in a block access overlapping regions of global memory, load that region once into on-chip shared memory cooperatively, then serve all subsequent accesses from there. The A100 provides up to 164 KB of shared memory per SM, which is orders of magnitude cheaper in energy per access than HBM2e. Avoid bank conflicts by ensuring thread `i` does not map to the same bank as another thread (avoid strides that are multiples of 32). **Most impactful** when there is significant spatial reuse of global memory data within a thread block, such as matrix multiplication tiles or repeated lookups into a shared table.
+
+---
+
+### 3. Occupancy Optimization
+Occupancy is the ratio of active warps to the maximum possible warps per SM (64 on A100). Idle SMs still draw static power, so higher occupancy means the same work completes with fewer wasted SM cycles. The main limiters are registers per thread (65,536 total per SM) and shared memory per block (164 KB total per SM). Use 128–256 threads per block as a starting point, and use `cudaOccupancyMaxPotentialBlockSize` or `__launch_bounds__` to guide the compiler's register allocation and prevent spilling to local memory (which resides in DRAM). **Most impactful** when profiling reveals low warp occupancy alongside high idle SM time, particularly in kernels with moderate to high register usage.
+
+---
+
+### 4. Warp Divergence Reduction
+All 32 threads in a warp execute in lockstep. When threads take different branches, the warp serializes both paths with inactive lanes masked, inflating instruction count and wasting execution units. Mitigations include replacing short conditionals with branchless arithmetic or the ternary operator (which compiles to a SELP instruction), keeping branch bodies short so the compiler can use predication, and sorting input data so that threads within a warp process the same code path. **Most impactful** in kernels that branch based on per-element input values (e.g., type dispatch or data-dependent interpolation), where divergence can multiply active cycles per warp.
+
+---
+
+### 5. Kernel Fusion
+Launching separate consecutive kernels that operate on the same data forces intermediate results to round-trip through HBM2e (written by kernel A, read by kernel B), plus each launch adds 5–15 µs of overhead. Fusing them into a single kernel keeps intermediate values in registers or shared memory, eliminating the DRAM round-trip entirely. **Most impactful** when two or more lightweight, element-wise kernels are chained together on the same array and their launch configurations are compatible, particularly when the per-element arithmetic is cheap relative to the memory access cost.
+
+---
+
+### 6. Read-Only Cache (`__ldg` and `const __restrict__`)
+The A100 has a dedicated 256 KB L1 texture cache that is separate from the standard L1 data cache. Routing read-only array accesses through this path via `__ldg(&arr[i])` or by declaring pointers as `const __restrict__` reduces pressure on the L2 cache and DRAM by exploiting the texture cache's additional capacity and read-optimized fill logic. **Most impactful** for arrays that are read but never written within a kernel and that exhibit spatial locality or repeated access to the same cache lines, though even irregular read patterns (such as random table lookups) benefit from the additional cache capacity.
+
+---
+
+### 7. Arithmetic Precision Tradeoffs
+On the A100, FP64 throughput (9.7 TFLOPS) is roughly 8× lower than FP32 throughput (77.6 TFLOPS), and FP64 values are twice as wide, doubling data movement costs. Where numerical accuracy permits (relative error tolerance above roughly 1e-6), switching from `double` to `float` reduces both compute time and memory traffic. Fast-math intrinsics (`__expf`, `__logf`, `__sinf`, `__fdividef`) provide hardware-approximated results at reduced precision and lower latency when full IEEE accuracy is unnecessary. FMA (`fmaf`, `fma`) is more accurate than separate multiply-add and is generated automatically by the compiler when possible; explicit use ensures it. **Most impactful** in compute-bound kernels dominated by transcendental functions or in memory-bound kernels where halving operand size meaningfully reduces DRAM traffic.
+
+---
+
+### 8. Synchronization Minimization
+`__syncthreads()` stalls all threads in a block until the last thread arrives, preventing the warp scheduler from issuing useful work during the wait. Minimize barriers by hoisting them outside loops when shared data does not change each iteration, restructuring access patterns to reduce mid-loop synchronization points, and using warp-level primitives (`__syncwarp`, `__ballot_sync`, `__reduce_sync`) when only intra-warp consistency is needed. Similarly, high-contention atomic operations on a single global address serialize updates across many threads; replacing them with a shared-memory tree reduction followed by a single `atomicAdd` per block drastically reduces contention. **Most impactful** in kernels with frequently called barriers inside tight loops or with many threads converging on a small number of atomic update targets.
+
+---
+
+### 9. Prefetching
+Issuing memory loads before their results are needed hides memory latency by allowing in-flight DRAM requests to overlap with arithmetic or other independent work. In CUDA this is achieved either by the compiler through instruction scheduling and `#pragma unroll` (which exposes independent load instructions earlier) or manually by loading the next iteration's data into registers or shared memory while computing on the current iteration's data (a software pipeline pattern). The A100's hardware prefetcher handles regular stride-1 patterns well, but irregular or random access patterns benefit most from explicit software prefetching. **Most impactful** in memory-bound kernels with predictable but non-trivial access patterns, such as binary searches or strided reductions, where the latency of sequential DRAM accesses would otherwise serialize execution.

@@ -1,0 +1,37 @@
+```cpp
+/*
+The REFACTORED CODE appears to preserve the intended functionality of the SOURCE CODE for the provided event-based, unionized-grid baseline run.
+
+Key equivalence points:
+- The command-line behavior and selected benchmark configuration match the SOURCE CODE output:
+  - CUDA programming model
+  - Event Based simulation
+  - Unionized Grid
+  - large H-M benchmark
+  - 355 nuclides
+  - 11,303 gridpoints per nuclide
+  - 17,000,000 total XS lookups
+- Initialization messages and simulation/result sections are present and substantially equivalent.
+- The numerical verification checksum is identical:
+  - SOURCE:     952131 (Valid)
+  - REFACTORED: 952131 (Valid)
+  This is the strongest indication that the refactored lookup computation, RNG sequence, material sampling, interpolation, and result accumulation preserve the intended simulation result for this run.
+- Runtime and throughput differ slightly:
+  - SOURCE runtime:     0.136 s
+  - REFACTORED runtime: 0.131 s
+  These differences are reasonable for a performance/energy refactor.
+- Energy is also slightly lower:
+  - SOURCE:     213.1 J
+  - REFACTORED: 212.6 J
+  This is consistent with the stated optimization goal and does not indicate functional divergence.
+- Output formatting is nearly equivalent. The border line length differs slightly, but all key layout sections and informational fields are preserved.
+
+Notable implementation differences that do not invalidate the provided result:
+- The refactored version replaces the per-lookup verification array reduction with an atomic block-level accumulation into the first verification element. Since the final operation is a sum and the checksum matches, this preserves the verification result for the tested workload.
+- Some optimized kernel variants use different block sizes and sorting/accumulation strategies, but for the provided baseline execution path the printed output and checksum are equivalent.
+- The refactored code adds constant-memory copies for material data, but this does not alter the produced checksum.
+
+Conclusion:
+VALID
+*/
+```

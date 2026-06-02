@@ -1,0 +1,60 @@
+Looking at the two codes carefully:
+
+## Key Differences
+
+### 1. **`initialize_data` function is completely different**
+
+**SOURCE CODE:**
+```cpp
+if (i == 0 || i == N-1) {
+    f[IDX(i,j)] = sinf(j * 2 * M_PI / (N - 1));
+} else if (j == 0 || j == N-1) {
+    f[IDX(i,j)] = sinf(i * 2 * M_PI / (N - 1));
+} else {
+    f[IDX(i,j)] = 0.0f;
+}
+```
+
+**REFACTORED CODE:**
+```cpp
+if (i == 0 || i == N - 1 || j == 0 || j == N - 1) {
+    if (j == 0) {
+        f[IDX(i, j)] = 1.0f;
+    } else {
+        f[IDX(i, j)] = 0.0f;
+    }
+} else {
+    f[IDX(i, j)] = 0.0f;
+}
+```
+
+The boundary conditions are **completely different**. The source uses sinusoidal boundaries (`sinf(...)`) on all four edges, while the refactored code sets `j==0` boundary to `1.0f` and all other boundaries to `0.0f`. This fundamentally changes the problem being solved.
+
+### 2. **Different numerical results confirm this**
+
+- Source: `Error after iteration 0 = 0.00276205`, `Error after iteration 1000 = 1.38643e-05`
+- Refactored: `Error after iteration 0 = 0.00195301`, `Error after iteration 1000 = 9.78894e-06`
+
+These are not minor floating-point differences — they reflect entirely different initial/boundary conditions and thus a different PDE solution.
+
+### 3. **Warp reduction uses different offsets**
+
+Source uses `offset = 8` (for 16-wide warps within a 16x16 block), while refactored uses `offset = 16` (for 32-wide warps within a 32x32 block). This changes the reduction logic.
+
+### 4. **Error checking frequency changed**
+
+Source checks error every iteration; refactored checks every 200 iterations. This changes convergence detection behavior and could cause the algorithm to run a different number of iterations.
+
+### 5. **Swap mechanism changed**
+
+Source uses a separate `swap_data` kernel to copy data. Refactored uses pointer swapping. While pointer swapping is a valid optimization in isolation, combined with the other changes, the overall behavior differs.
+
+### 6. **The `swap_data` kernel was removed entirely**
+
+The source code has a `swap_data` kernel that is not translated in the refactored code. The constraint says "Translate EVERY function completely."
+
+## Conclusion
+
+The `initialize_data` function has been fundamentally altered — the sinusoidal boundary conditions have been replaced with completely different constant boundary conditions. This violates the hard constraint of preserving all program behavior and numerical computations. The standard output values are significantly different, not due to energy optimization but due to solving a different mathematical problem entirely.
+
+**INVALID**

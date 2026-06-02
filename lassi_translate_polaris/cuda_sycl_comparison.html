@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XSBench: CUDA → SYCL Translation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 48px 32px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #f8fafc;
+    }
+
+    header p {
+      margin-top: 10px;
+      font-size: 0.95rem;
+      color: #94a3b8;
+    }
+
+    header .badge {
+      display: inline-block;
+      margin-top: 14px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #7dd3fc;
+    }
+
+    /* ── two-column layout ── */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      max-width: 1400px;
+      margin: 0 auto 48px;
+    }
+
+    .panel {
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1e293b;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .panel-header .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .cuda .panel-header  { background: #1a1f2e; color: #76b3ff; border-bottom: 1px solid #1e3a5f; }
+    .cuda .dot           { background: #3b82f6; }
+    .sycl .panel-header  { background: #1a2218; color: #86efac; border-bottom: 1px solid #1a3a1a; }
+    .sycl .dot           { background: #22c55e; }
+
+    .panel-meta {
+      padding: 8px 20px 12px;
+      font-size: 0.75rem;
+      color: #64748b;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+
+    .cuda .panel-meta { background: #1a1f2e; border-bottom: 1px solid #1e293b; }
+    .sycl .panel-meta { background: #1a2218; border-bottom: 1px solid #1e293b; }
+
+    /* ── code blocks ── */
+    .code-section {
+      padding: 20px;
+      background: #0d1117;
+      flex: 1;
+    }
+
+    .section-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #1e293b;
+    }
+
+    .cuda .section-label { color: #3b82f6; }
+    .sycl .section-label { color: #22c55e; }
+
+    pre {
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+      font-size: 0.825rem;
+      line-height: 1.7;
+      white-space: pre;
+      overflow-x: auto;
+      tab-size: 4;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px dashed #1e293b;
+      margin: 16px 0;
+    }
+
+    /* ── syntax highlight tokens ── */
+    .kw   { color: #c792ea; }   /* keywords: __global__, inline, void, int, if, return */
+    .fn   { color: #82aaff; }   /* function names */
+    .op   { color: #89ddff; }   /* operators, angle brackets, <<< >>> */
+    .num  { color: #f78c6c; }   /* numbers */
+    .cm   { color: #546e7a; font-style: italic; } /* comments */
+    .ty   { color: #ffcb6b; }   /* types: sycl::handler, sycl::nd_range, etc. */
+    .str  { color: #c3e88d; }   /* strings */
+    .hi   { background: rgba(251,191,36,0.12); border-radius: 3px; padding: 0 2px; } /* highlight */
+
+    /* ── annotation callouts ── */
+    .annotations {
+      max-width: 1400px;
+      margin: 0 auto 48px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .callout {
+      background: #0d1117;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+
+    .callout-num {
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      color: #fbbf24;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+
+    .callout h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      margin-bottom: 6px;
+    }
+
+    .callout p {
+      font-size: 0.8rem;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+
+    .callout code {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      background: #1e293b;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #e2e8f0;
+    }
+
+    /* ── footer note ── */
+    .note {
+      max-width: 1400px;
+      margin: 0 auto;
+      text-align: center;
+      font-size: 0.78rem;
+      color: #475569;
+    }
+
+    @media (max-width: 900px) {
+      .grid, .annotations { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>CUDA → SYCL Translation</h1>
+  <p>XSBench cross-section lookup kernel &mdash; baseline event-based simulation</p>
+  <span class="badge">✓ Verified: checksum 952131 (Valid) on Polaris A100</span>
+</header>
+
+<!-- ── KERNEL DISPATCH ── -->
+<div class="grid">
+
+  <!-- CUDA panel -->
+  <div class="panel cuda">
+    <div class="panel-header"><span class="dot"></span>CUDA &mdash; Main.cu</div>
+    <div class="panel-meta">Lines 1029–1034 &nbsp;·&nbsp; 1051–1057</div>
+
+    <div class="code-section">
+      <div class="section-label">Kernel dispatch</div>
+      <pre><span class="kw">int</span> nthreads = <span class="num">256</span>;
+<span class="kw">int</span> nblocks = <span class="fn">ceil</span>( (<span class="kw">double</span>) in.lookups
+             / (<span class="kw">double</span>) nthreads);
+
+<span class="hi"><span class="fn">xs_lookup_kernel_baseline</span><span class="op">&lt;&lt;&lt;</span>nblocks, nthreads<span class="op">&gt;&gt;&gt;</span>( in, GSD );</span>
+<span class="fn">gpuErrchk</span>( <span class="fn">cudaPeekAtLastError</span>() );
+<span class="fn">gpuErrchk</span>( <span class="fn">cudaDeviceSynchronize</span>() );</pre>
+
+      <hr class="divider" />
+
+      <div class="section-label">Kernel definition</div>
+      <pre><span class="hi"><span class="kw">__global__ void</span> <span class="fn">xs_lookup_kernel_baseline</span>(
+    <span class="ty">Inputs</span> in, <span class="ty">SimulationData</span> GSD )</span>
+{
+  <span class="cm">// thread index from implicit GPU registers</span>
+  <span class="hi"><span class="kw">const int</span> i = blockIdx.x * blockDim.x
+                      + threadIdx.x;</span>
+
+  <span class="kw">if</span>( i >= in.lookups )
+      <span class="kw">return</span>;
+
+  <span class="cm">// ... identical physics ...</span>
+}</pre>
+    </div>
+  </div>
+
+  <!-- SYCL panel -->
+  <div class="panel sycl">
+    <div class="panel-header"><span class="dot"></span>SYCL &mdash; Main_v1_Trial1.cpp</div>
+    <div class="panel-meta">Lines 1008–1020 &nbsp;·&nbsp; 1030–1036</div>
+
+    <div class="code-section">
+      <div class="section-label">Kernel dispatch</div>
+      <pre><span class="kw">int</span> nthreads = <span class="num">256</span>;
+<span class="kw">int</span> nblocks = std::<span class="fn">ceil</span>( (<span class="kw">double</span>) in.lookups
+              / (<span class="kw">double</span>) nthreads);
+
+<span class="kw">if</span>(nblocks > <span class="num">0</span>) {
+  <span class="hi">q.<span class="fn">submit</span>([&amp;](<span class="ty">sycl::handler</span>&amp; h) {
+    h.<span class="fn">parallel_for</span>(
+      <span class="ty">sycl::nd_range</span>&lt;<span class="num">1</span>&gt;(nblocks * nthreads, nthreads),
+      [=](<span class="ty">sycl::nd_item</span>&lt;<span class="num">1</span>&gt; item) {
+        <span class="kw">int</span> i = item.<span class="fn">get_group</span>(<span class="num">0</span>)
+              * item.<span class="fn">get_local_range</span>(<span class="num">0</span>)
+              + item.<span class="fn">get_local_id</span>(<span class="num">0</span>);
+        <span class="fn">xs_lookup_kernel_baseline</span>(in, GSD, i);
+      });
+  }).<span class="fn">wait</span>();</span>
+}</pre>
+
+      <hr class="divider" />
+
+      <div class="section-label">Function definition</div>
+      <pre><span class="hi"><span class="kw">inline void</span> <span class="fn">xs_lookup_kernel_baseline</span>(
+    <span class="ty">Inputs</span> in, <span class="ty">SimulationData</span> GSD, <span class="kw">int</span> i )</span>
+{
+  <span class="cm">// i passed explicitly as a parameter</span>
+  <span class="kw">if</span>( i >= in.lookups )
+      <span class="kw">return</span>;
+
+  <span class="cm">// ... identical physics ...</span>
+}</pre>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── ANNOTATIONS ── -->
+<div class="annotations">
+
+  <div class="callout">
+    <div class="callout-num">① Launch syntax</div>
+    <h3>Magic brackets → explicit queue</h3>
+    <p>
+      CUDA's <code>&lt;&lt;&lt;nblocks, nthreads&gt;&gt;&gt;</code> is compiler-level syntax
+      understood only by <code>nvcc</code>. SYCL replaces it with standard C++:
+      a queue, a handler, and an <code>nd_range</code> object that spells out
+      the same grid geometry explicitly.
+    </p>
+  </div>
+
+  <div class="callout">
+    <div class="callout-num">② Thread index</div>
+    <h3>Implicit registers → method calls</h3>
+    <p>
+      CUDA exposes <code>blockIdx</code>, <code>blockDim</code>, and
+      <code>threadIdx</code> as implicit hardware registers available inside
+      any <code>__global__</code> function. SYCL passes an <code>nd_item</code>
+      context object and requires explicit method calls —
+      <code>get_group</code>, <code>get_local_range</code>,
+      <code>get_local_id</code> — to retrieve the same values.
+    </p>
+  </div>
+
+  <div class="callout">
+    <div class="callout-num">③ Function qualifier</div>
+    <h3><code>__global__</code> → <code>inline</code></h3>
+    <p>
+      <code>__global__</code> marks a CUDA entry point callable from host code.
+      In SYCL there is no such qualifier — device code is standard C++.
+      The kernel becomes a plain <code>inline</code> function called from
+      within the lambda, with <code>i</code> passed as an ordinary argument
+      rather than read from a GPU register.
+    </p>
+  </div>
+
+</div>
+
+<p class="note">
+  Physics kernel body (random energy sampling, binary search, macroscopic XS calculation) is identical in both versions &mdash; only the parallel dispatch infrastructure changed.
+</p>
+
+</body>
+</html>

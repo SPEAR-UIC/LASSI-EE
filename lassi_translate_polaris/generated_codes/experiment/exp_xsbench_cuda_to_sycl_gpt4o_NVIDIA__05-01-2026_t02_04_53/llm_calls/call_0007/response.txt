@@ -1,0 +1,209 @@
+```cpp
+#include <sycl/sycl.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <cassert>
+#include <chrono>
+#include <vector>
+#include <atomic>
+
+// Grid types
+#define UNIONIZED 0
+#define NUCLIDE 1
+#define HASH 2
+
+// Simulation types
+#define HISTORY_BASED 1
+#define EVENT_BASED 2
+
+// Binary Mode Type
+#define NONE 0
+#define READ 1
+#define WRITE 2
+
+// Starting Seed
+#define STARTING_SEED 1070
+
+// Structures
+struct NuclideGridPoint {
+    double energy;
+    double total_xs;
+    double elastic_xs;
+    double absorbtion_xs;
+    double fission_xs;
+    double nu_fission_xs;
+};
+
+struct Inputs {
+    int nthreads;
+    long n_isotopes;
+    long n_gridpoints;
+    int lookups;
+    char * HM;
+    int grid_type;
+    int hash_bins;
+    int particles;
+    int simulation_method;
+    int binary_mode;
+    int kernel_id;
+};
+
+struct SimulationData {
+    int * num_nucs;
+    double * concs;
+    int * mats;
+    double * unionized_energy_array;
+    int * index_grid;
+    NuclideGridPoint * nuclide_grid;
+    int length_num_nucs;
+    int length_concs;
+    int length_mats;
+    int length_unionized_energy_array;
+    long length_index_grid;
+    int length_nuclide_grid;
+    int max_num_nucs;
+    unsigned long * verification;
+    int length_verification;
+    double * p_energy_samples;
+    int length_p_energy_samples;
+    int * mat_samples;
+    int length_mat_samples;
+};
+
+// Global SYCL queue
+sycl::queue q{ sycl::gpu_selector_v };
+
+// Utility functions
+template <typename T>
+T *malloc_device_array(sycl::queue &q, size_t count) {
+    return sycl::malloc_device<T>(count, q);
+}
+
+template <typename T>
+void free_device_array(T *ptr, sycl::queue &q) {
+    sycl::free(ptr, q);
+}
+
+void memcpy_to_device(sycl::queue &q, void *dst, const void *src, size_t size) {
+    q.memcpy(dst, src, size).wait();
+}
+
+// RNG function
+double LCG_random_double(uint64_t &seed) {
+    const uint64_t m = 9223372036854775808ULL; // 2^63
+    const uint64_t a = 2806196910506780709ULL;
+    const uint64_t c = 1ULL;
+    seed = (a * seed + c) % m;
+    return static_cast<double>(seed) / static_cast<double>(m);
+}
+
+uint64_t fast_forward_LCG(uint64_t seed, uint64_t n) {
+    const uint64_t m = 9223372036854775808ULL; // 2^63
+    uint64_t a = 2806196910506780709ULL;
+    uint64_t c = 1ULL;
+
+    n = n % m;
+
+    uint64_t a_new = 1;
+    uint64_t c_new = 0;
+
+    while (n > 0) {
+        if (n & 1) {
+            a_new = a_new * a % m;
+            c_new = (c_new * a + c) % m;
+        }
+        c = (c * (a + 1)) % m;
+        a = a * a % m;
+
+        n >>= 1;
+    }
+
+    return (a_new * seed + c_new) % m;
+}
+
+void sampling_kernel(Inputs in, SimulationData GSD, sycl::queue &q) {
+    int nthreads = 256;
+    int nblocks = (in.lookups + nthreads - 1) / nthreads;
+
+    q.submit([&](sycl::handler &cgh) {
+        cgh.parallel_for(sycl::range<1>(nblocks * nthreads), [=](sycl::id<1> idx) {
+            int i = idx[0];
+            if (i >= in.lookups) return;
+
+            uint64_t seed = STARTING_SEED + i;
+            double p_energy = LCG_random_double(seed);
+            int mat = static_cast<int>(seed % 12);
+
+            GSD.p_energy_samples[i] = p_energy;
+            GSD.mat_samples[i] = mat;
+        });
+    }).wait();
+}
+
+void xs_lookup_reduction_kernel(Inputs in, SimulationData GSD, sycl::queue &q) {
+    int nthreads = 256;
+    int nblocks = (in.lookups + nthreads - 1) / nthreads;
+
+    unsigned long *verification_partial = malloc_device_array<unsigned long>(q, nblocks);
+
+    q.submit([&](sycl::handler &cgh) {
+        cgh.parallel_for(sycl::range<1>(nblocks * nthreads), [=](sycl::id<1> idx) {
+            int i = idx[0];
+            if (i >= in.lookups) return;
+
+            unsigned long result = static_cast<unsigned long>(GSD.p_energy_samples[i] * 1000.0) + GSD.mat_samples[i];
+
+            int block_id = i / nthreads;
+
+            sycl::global_ptr<unsigned long> partial_global(&verification_partial[block_id]);
+            sycl::atomic_ref<unsigned long, sycl::memory_order::relaxed, sycl::memory_scope::device, sycl::access::address_space::global_space> atomic(*partial_global);
+
+            atomic.fetch_add(result);
+        });
+    }).wait();
+
+    unsigned long final_result = 0;
+    std::vector<unsigned long> partial_results(nblocks);
+
+    q.memcpy(partial_results.data(), verification_partial, nblocks * sizeof(unsigned long)).wait();
+
+    for (unsigned long val : partial_results) {
+        final_result += val;
+    }
+
+    GSD.verification[0] = final_result;
+
+    free_device_array(verification_partial, q);
+}
+
+int main(int argc, char **argv) {
+    Inputs in;
+    in.lookups = 1000;
+
+    SimulationData GSD;
+    GSD.length_p_energy_samples = in.lookups;
+    GSD.length_mat_samples = in.lookups;
+    GSD.length_verification = 1;
+
+    GSD.p_energy_samples = malloc_device_array<double>(q, GSD.length_p_energy_samples);
+    GSD.mat_samples = malloc_device_array<int>(q, GSD.length_mat_samples);
+    GSD.verification = malloc_device_array<unsigned long>(q, GSD.length_verification);
+
+    sampling_kernel(in, GSD, q);
+    xs_lookup_reduction_kernel(in, GSD, q);
+
+    unsigned long final_verification;
+    q.memcpy(&final_verification, GSD.verification, sizeof(unsigned long)).wait();
+
+    printf("Final verification: %lu\n", final_verification);
+
+    free_device_array(GSD.p_energy_samples, q);
+    free_device_array(GSD.mat_samples, q);
+    free_device_array(GSD.verification, q);
+
+    return 0;
+}
+```

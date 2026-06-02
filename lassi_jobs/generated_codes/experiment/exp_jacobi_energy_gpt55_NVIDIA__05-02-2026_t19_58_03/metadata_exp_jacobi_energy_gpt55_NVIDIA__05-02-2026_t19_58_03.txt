@@ -1,0 +1,25 @@
+
+
+----- METRICS -----
+Experiment date-time: 2026-05-02 20:33:22
+Time (sec): 2063.09
+Self-correction iteration count: 15
+Energy efficiency improvement count: 0
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Error after iteration 0 = 0.00276205
+Error after iteration 1000 = 1.38643e-05
+Average execution time per iteration: 0.00420289 (s)
+PASS
+Total elapsed time: 7.847 seconds
+
+=== Energy results ===
+{"energy_joules": 1570.853, "avg_power_w": 185.111, "duration_s": 8.486, "num_samples": 9}=== Execution OK ===
+
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Total Energy (J):  Source code: 1570.85
+Average Power (W):  Source code: 185.11
+Runtime (s):  Source code: 8.49

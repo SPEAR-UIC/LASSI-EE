@@ -1,0 +1,47 @@
+```cpp
+/*
+Evaluation:
+
+The REFACTORED CODE is not fully functionally equivalent to the SOURCE CODE, even though the shown event-based run produces the same final verification checksum.
+
+Key observations:
+
+1. For the provided event-based configuration:
+   - The printed input summary is largely equivalent.
+   - The simulation section is similar.
+   - The final verification checksum matches: 952131 (Valid).
+   - The output layout is mostly comparable, aside from minor border-width differences and the reported GPU allocation size.
+   - The refactored code reports 5648 MB allocated on GPU instead of 5778 MB because it changed verification storage from a full per-lookup array to a single accumulated scalar. This is a meaningful implementation change but not necessarily an output-equivalence failure for the displayed run.
+
+2. However, the refactored code changes program behavior for history-based simulation:
+   - In the SOURCE CODE, history-based simulation is explicitly not implemented in CUDA. If selected, the program prints:
+     "History-based simulation not implemented in CUDA code. Instead,
+      use the event-based method with \"-m event\" argument."
+     and exits.
+   - In the REFACTORED CODE, history-based simulation is implemented and executed.
+   - This changes the command-line behavior and stdout for the default mode and for any `-m history` invocation.
+   - Therefore, the refactored program does not preserve all intended source behavior.
+
+3. Binary file compatibility is also changed:
+   - The REFACTORED CODE modifies the SimulationData structure layout by adding new SoA pointers.
+   - `binary_write` and `binary_read` still write/read the full SimulationData object directly.
+   - This makes the binary file format incompatible with the SOURCE CODE and changes behavior for `-b read` / `-b write`.
+
+4. The refactored code also changes the reduction mechanism:
+   - The SOURCE CODE writes one verification value per lookup and uses thrust::reduce.
+   - The REFACTORED CODE atomically accumulates into a single scalar.
+   - For the shown event-based run this happens to preserve the checksum, but it is still a significant implementation change that relies on integer accumulation semantics rather than preserving the original verification array behavior.
+
+5. Energy/performance:
+   - The refactored code is slower and consumes more energy in the provided metrics:
+     Source:     213.1 J, 0.136 s simulation runtime
+     Refactored: 245.2 J, 0.399 s simulation runtime
+   - This does not by itself prove functional invalidity, but it does not support the premise that numerical/output differences are justified by improved energy efficiency.
+
+Conclusion:
+
+Although the shown event-based output is close and the checksum matches, the refactored program does not preserve all source behavior, especially for history-based mode and binary file compatibility.
+
+INVALID
+*/
+```

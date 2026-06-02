@@ -1,0 +1,699 @@
+[CONTEXT KNOWLEDGE]
+- **Memory access coalescing**: Arrange global memory accesses so consecutive threads in a warp read/write consecutive elements. Prefer struct-of-arrays over array-of-structs when threads access one field across many objects. Avoid strided patterns such as `arr[threadIdx.x * N + j]`; transpose layouts or loop order so accesses look like `arr[j * blockDim.x + threadIdx.x]`.  
+  **Most impactful when** the kernel is memory-bound and DRAM traffic dominates energy, which is common on A100 for large HBM-resident datasets.
+
+- **Shared memory use**: Use shared memory to stage data that is reused by multiple threads in a block, replacing repeated HBM accesses with low-energy on-chip SRAM accesses. Tile global memory loads cooperatively, then reuse the tile from shared memory. Avoid shared-memory bank conflicts by ensuring warp threads do not map heavily to the same bank.  
+  **Most impactful when** there is spatial or temporal reuse within a thread block, such as stencil, matrix/tile, reduction, or repeated lookup patterns.
+
+- **Occupancy optimization**: Choose block sizes that keep enough active warps per SM to hide latency without causing excessive register pressure or shared-memory limits. For A100, 128–256 threads per block is often a good starting point. Use the CUDA occupancy calculator or `cudaOccupancyMaxPotentialBlockSize`. Avoid register spilling, because spilled “local” memory resides in DRAM. Use `__launch_bounds__` carefully to guide register allocation.  
+  **Most impactful when** kernels have long memory latency or insufficient active warps, but not when higher occupancy causes spilling or reduces cache/shared-memory effectiveness.
+
+- **Warp divergence reduction**: Minimize control-flow paths where threads in the same warp take different branches. Replace short branches with predication or branchless arithmetic where appropriate. Group or sort inputs so threads in the same warp tend to follow the same path. Keep branch bodies small so the compiler can predicate them.  
+  **Most impactful when** branch-heavy code causes warps to execute multiple paths serially, increasing instruction count and active cycles.
+
+- **Kernel fusion**: Merge consecutive kernels that operate on the same data so intermediate values remain in registers or shared memory instead of being written to and reread from HBM. This also reduces kernel-launch overhead.  
+  **Most impactful when** kernels are bandwidth-bound, use temporary global-memory arrays, or perform simple producer-consumer stages with compatible launch configurations.
+
+- **Read-only cache / `__ldg` / `const __restrict__`**: Mark read-only input arrays as `const __restrict__` and use `__ldg()` where appropriate to help route read-only data through the read-only/texture cache path. This can reduce L2 and DRAM traffic for repeated or spatially local reads.  
+  **Most impactful when** large arrays are read-only within a kernel and have cache-line reuse or locality; it can still help random-read workloads by avoiding unnecessary pressure on normal load paths.
+
+- **Arithmetic precision tradeoffs**: Use the lowest precision that preserves correctness. Prefer `float` over `double` when acceptable, because FP32 uses less bandwidth, fewer registers, and much higher throughput than FP64 on A100. Use FMA where possible, and consider fast-math intrinsics such as `__expf`, `__logf`, or `__fdividef` only when the accuracy loss is acceptable.  
+  **Most impactful when** kernels are compute-bound, register-limited, or moving large numeric arrays through memory. Always verify numerical correctness/checksums after changing precision.
+
+- **Synchronization minimization**: Remove unnecessary `__syncthreads()` barriers, move barriers out of loops when possible, and use warp-level primitives such as `__syncwarp`, `__ballot_sync`, or warp reductions when only intra-warp coordination is needed. Reduce high-contention atomics by doing block-level reductions in shared memory and issuing one atomic per block.  
+  **Most impactful when** barriers or atomics serialize execution, especially in reductions, shared-memory algorithms, or loops with frequent synchronization.
+
+- **Prefetching and transfer overlap**: Keep data resident on the GPU across kernels. When host-device transfers are necessary, use pinned memory and `cudaMemcpyAsync` in streams to overlap transfers with computation. For Unified Memory, avoid unexpected page migrations; either prefer explicit `cudaMalloc`/`cudaMemcpy` or prefetch managed data to the GPU before kernel launch. On A100, tiled kernels can also benefit from prefetching global data into shared memory ahead of use, potentially using asynchronous copy patterns.  
+  **Most impactful when** host-device transfers, Unified Memory migrations, or global-memory latency contribute significantly to total runtime and energy.
+[/CONTEXT KNOWLEDGE]
+
+[YOUR ANALYSIS OF THE SOURCE CODE]
+## 1. Overall Algorithm and GPU Resource Utilization Profile
+
+### Algorithm
+- The program solves a 2D relaxation problem using Jacobi iteration on an `N x N` grid, where `N = 16384`.
+- Two device arrays are used:
+  - `d_f`: current/new solution field.
+  - `d_f_old`: previous iteration field.
+- Each iteration performs:
+  1. Reset global scalar error to zero with `cudaMemset`.
+  2. Run `jacobi_step`:
+     - Load a 16x16 tile plus halo into shared memory.
+     - Update interior points using a 4-point stencil.
+     - Accumulate squared update difference into a global error using reductions plus `atomicAdd`.
+  3. Run `swap_data`:
+     - Copy updated interior values from `d_f` back into `d_f_old`.
+  4. Copy error back to host.
+  5. Normalize error and check convergence.
+
+### Resource Utilization Profile
+- The computation is primarily **memory-bandwidth-bound**, not compute-bound.
+- The stencil update performs only a small number of floating-point operations per grid point:
+  - Four neighbor reads from shared memory.
+  - Several additions.
+  - One multiplication by `0.25f`.
+  - One subtraction.
+  - One square operation for the error.
+- The arithmetic intensity is low, especially because each iteration also performs a full-grid copy in `swap_data`.
+
+### Major Energy-Efficiency Bottlenecks
+- The explicit `swap_data` kernel performs an additional full read/write pass over nearly the entire grid every iteration.
+  - This is a major memory-traffic and energy cost.
+  - Since the comments indicate pointer swapping would be valid for this application, replacing the explicit copy with pointer swapping would significantly reduce memory traffic and kernel-launch overhead.
+- The global error accumulation uses one `atomicAdd` per thread block into a single scalar.
+  - With grid size `1024 x 1024`, that is **1,048,576 global atomics per iteration** to the same memory location.
+  - This creates severe serialization, high memory-system pressure, and poor energy efficiency.
+  - A hierarchical reduction would be much more energy efficient.
+- The device-to-host `cudaMemcpy` of the error every iteration causes a synchronization point.
+  - This prevents overlap and forces the GPU/CPU to synchronize once per iteration.
+  - Checking convergence less frequently, if algorithmically acceptable, would reduce synchronization overhead and improve energy efficiency.
+- The problem size is very large:
+  - Each full grid contains `16384 x 16384 = 268,435,456` floats.
+  - Each array is approximately 1 GiB.
+  - Two arrays require approximately 2 GiB of device memory, not counting overhead.
+
+---
+
+## 2. CUDA Kernel Launch Configurations and A100 Occupancy
+
+### Common Launch Configuration
+Both kernels use:
+
+- Grid dimensions: `1024 x 1024 x 1`
+- Block dimensions: `16 x 16 x 1`
+- Threads per block: `256`
+- Total blocks per launch: `1,048,576`
+- Total threads per launch: `268,435,456`
+
+This exactly covers the full `N x N` domain because `N / 16 = 1024`.
+
+### `jacobi_step`
+- Block size: 256 threads = 8 warps per block.
+- Shared memory per block:
+  - `f_old_tile[18][18]`: 324 floats = 1296 bytes.
+  - `reduction_array[16]`: 16 floats = 64 bytes.
+  - Total explicit shared memory: approximately 1360 bytes per block.
+- On an NVIDIA A100:
+  - The shared-memory footprint is very small.
+  - Occupancy is likely limited by threads, warps, and registers, not by shared memory.
+  - With 256-thread blocks, an A100 can theoretically host up to 8 such blocks per SM if register usage allows.
+  - That corresponds to 64 resident warps per SM, which is full warp occupancy on A100.
+- Likely occupancy: **high**, probably near maximum, assuming moderate register usage.
+
+### `swap_data`
+- Block size: 256 threads = 8 warps per block.
+- No shared memory.
+- Very low register pressure.
+- On an A100, this kernel should also achieve **high theoretical occupancy**.
+- However, it is a pure memory-copy-style kernel and is limited by memory bandwidth, not occupancy.
+
+### Occupancy vs Efficiency
+- Although both kernels are likely to achieve high occupancy, high occupancy does not imply high energy efficiency here.
+- The dominant energy costs are:
+  - Global memory traffic.
+  - Global atomic contention.
+  - Extra full-grid copy in `swap_data`.
+  - Per-iteration host synchronization.
+
+---
+
+## 3. Global Memory Access Patterns
+
+## `jacobi_step`
+
+### Main Tile Load
+Each thread loads one element:
+
+- Access pattern: `f_old[IDX(i,j)]`
+- `IDX(i,j)` maps to `i + j * N`, so `i` is the unit-stride dimension.
+- `threadIdx.x` maps to consecutive `i` values.
+- Therefore, consecutive threads along `x` access consecutive memory addresses.
+
+However, because the block shape is `16 x 16`, a CUDA warp contains two rows of 16 threads each:
+- Lanes 0–15 access one contiguous 16-float segment.
+- Lanes 16–31 access another contiguous 16-float segment in the next row, separated by a stride of `N`.
+
+This is still mostly coalesced, but not as ideal as a block layout where each warp covers 32 consecutive `i` values.
+
+### Left and Right Halo Loads
+Branches:
+- Threads with `threadIdx.x == 0` load the left halo.
+- Threads with `threadIdx.x == 15` load the right halo.
+
+Access pattern:
+- One thread per row performs the halo load.
+- Addresses are separated by the row stride `N`.
+- These accesses are **scattered/strided** across the warp and are not well coalesced.
+
+Energy impact:
+- Low total volume compared with the main tile load.
+- Still inefficient at the memory-transaction level.
+
+### Bottom and Top Halo Loads
+Branches:
+- Threads with `threadIdx.y == 0` load one halo row.
+- Threads with `threadIdx.y == 15` load one halo row.
+
+Access pattern:
+- Threads along `x` access consecutive `i` values.
+- These accesses are mostly **coalesced** within each 16-thread row segment.
+
+### Stencil Store
+Interior threads write:
+
+- `f[IDX(i,j)]`
+
+Access pattern:
+- Consecutive `threadIdx.x` values write consecutive addresses.
+- Mostly coalesced, again in 16-thread row segments because each warp covers two rows.
+
+### Error Accumulation
+- Each block eventually performs one `atomicAdd` to a single global scalar.
+- Access pattern:
+  - All blocks target the same address.
+  - This is a highly contended global atomic access pattern.
+- This is one of the most important energy-efficiency problems in the code.
+
+### Potential Redundant Global Access
+- The code writes the new value to `f[IDX(i,j)]` and then uses `f[IDX(i,j)]` immediately to compute the difference.
+- A compiler may keep the computed value in a register, but source-level structure exposes a possible redundant global read.
+- Energy-efficient form would compute the new value in a local variable, use it for the error, then store it once.
+
+## `swap_data`
+
+### Interior Copy
+Each interior thread copies:
+
+- From `f[IDX(i,j)]`
+- To `f_old[IDX(i,j)]`
+
+Access pattern:
+- Mostly coalesced because `threadIdx.x` maps to consecutive `i` values.
+- Boundary blocks have some inactive threads due to the interior-only condition.
+- Interior blocks have all threads active and coalesced.
+
+### Energy Impact
+- The access pattern is good, but the kernel itself is expensive because it performs a full-grid memory copy every iteration.
+- This is a prime energy-efficiency opportunity:
+  - Avoiding this copy via pointer swapping would remove a full read/write pass over the grid per iteration.
+
+---
+
+## 4. Shared Memory Usage
+
+## Current Shared Memory Usage in `jacobi_step`
+
+### Tile Storage
+- `f_old_tile[18][18]` stores:
+  - A 16x16 interior tile.
+  - One-cell halo on each side.
+  - Corners are not filled because the 4-point stencil does not use them.
+
+This reduces repeated global memory reads of neighboring values.
+
+### Reduction Storage
+- `reduction_array[16]` stores partial row/half-warp reductions before a final block-level reduction.
+
+### Shared Memory Footprint
+- Total explicit shared memory is approximately 1360 bytes per block.
+- This is very small relative to A100 shared-memory capacity.
+- Shared memory does not limit occupancy.
+
+## Shared Memory Efficiency
+- The shared-memory tile is appropriate for a 4-point stencil.
+- Accesses to the tile are mostly regular and should have low bank-conflict risk.
+- The tile width is 18, which is not a power of two. This may actually help avoid some systematic bank-aliasing patterns.
+
+## Potential Opportunities
+- Larger tiles could improve halo-to-interior ratio:
+  - Current 16x16 tile loads up to 256 interior values plus up to 64 halo values.
+  - Larger blocks, such as 32x8 or 32x16, could improve coalescing and reduce halo overhead.
+- A block shape with `threadIdx.x` dimension of 32 would allow each warp to cover a full contiguous row segment, improving coalescing relative to the current 16-wide rows.
+- The current shared-memory approach may not always outperform relying on A100 L1/L2 caching for such a simple stencil.
+  - Shared memory saves global loads but introduces synchronization and explicit halo-load overhead.
+  - Whether it is energy-optimal should be validated with profiling.
+
+---
+
+## 5. Warp Divergence
+
+## `jacobi_step`
+
+### Halo Loading Branches
+The following conditions cause divergence because only some threads in each block execute them:
+
+- `threadIdx.x == 0 && i >= 1`
+- `threadIdx.x == 15 && i <= N-2`
+- `threadIdx.y == 0 && j >= 1`
+- `threadIdx.y == 15 && j <= N-2`
+
+Divergence characteristics:
+- These branches are executed by boundary rows or columns of each block.
+- They are predictable and limited in scope.
+- Divergence cost is modest, but the resulting memory accesses are partly non-coalesced.
+
+### Interior Update Branches
+The stencil update is guarded by:
+
+- `j >= 1 && j <= N-2`
+- `i >= 1 && i <= N-2`
+
+Divergence characteristics:
+- For blocks fully inside the domain, all threads take the same path.
+- Divergence occurs only for blocks touching the global domain boundary.
+- Since the grid is very large, the fraction of boundary blocks is small.
+- Energy impact is minor.
+
+### Reduction Branches
+The reduction contains branches based on thread index:
+
+- `threadIdx.x == 0`
+- `threadIdx.y == 0`
+- Nested `threadIdx.x == 0` inside the `threadIdx.y == 0` branch.
+
+Divergence characteristics:
+- These are intentionally selective branches.
+- They cause warp divergence because only a subset of lanes participate.
+- The cost is small relative to global memory and atomic overhead, but the reduction implementation is tightly coupled to the `16 x 16` block shape.
+
+### Important Correctness/Efficiency Concern
+- The final reduction executes a warp shuffle inside a branch where only `threadIdx.y == 0` participates.
+- The shuffle uses a full warp mask while only a subset of lanes in the warp are active.
+- On modern CUDA architectures, using a mask that names lanes not participating in the intrinsic can be unsafe.
+- This should be reviewed carefully for correctness and portability.
+
+## `swap_data`
+
+### Interior Copy Branches
+The copy is guarded by:
+
+- `j >= 1 && j <= N-2`
+- `i >= 1 && i <= N-2`
+
+Divergence characteristics:
+- Interior blocks have no divergence because all threads satisfy the condition.
+- Boundary blocks have inactive boundary threads.
+- Overall divergence cost is small because boundary blocks are a tiny fraction of all blocks.
+
+---
+
+## 6. Data Types and Double-Precision Operations Replaceable with Float
+
+### Device Kernels
+- The CUDA kernels use `float` data and `float` arithmetic.
+- There are no obvious device-side double-precision arithmetic operations in the kernels.
+- Constants such as `0.25f` are already single precision.
+
+### Host Initialization
+- The initialization uses `M_PI`, which is typically a double-precision constant.
+- Expressions such as the sinusoidal boundary setup may be evaluated in double precision before being passed to `sinf`.
+- Since the final stored data type is `float`, these host-side expressions could be converted to explicitly single-precision constants if desired.
+- Energy impact is small because initialization occurs once on the CPU and is outside the main iterative GPU loop.
+
+### Host Timing
+- The final wall-clock duration uses `double`.
+- This could be represented as `float`, but the energy impact is negligible.
+- Keeping `double` for timing precision is reasonable.
+
+### Main Opportunity
+- There is no significant GPU double-precision replacement opportunity because the main kernels are already single precision.
+
+---
+
+## 7. Synchronization Overhead
+
+## Device-Side Synchronization
+
+### `jacobi_step`
+Number of `__syncthreads()` calls per block:
+
+- 2 total.
+
+They occur:
+1. After loading the shared-memory tile and halos.
+2. After writing partial reductions into shared memory.
+
+Cost:
+- The first synchronization is necessary for correctness because stencil reads depend on all tile and halo values being available.
+- The second synchronization is necessary before the first row reads `reduction_array`.
+- The synchronization overhead is moderate, but not the dominant cost compared with global memory traffic and atomics.
+
+### `swap_data`
+Number of `__syncthreads()` calls:
+
+- 0.
+
+## Host-Side Synchronization
+
+### Per Iteration
+Each iteration contains:
+- `cudaMemset` on `d_error`.
+- `jacobi_step` launch.
+- `swap_data` launch.
+- `cudaMemcpy` from device to host for the error.
+
+The device-to-host `cudaMemcpy` forces synchronization with preceding work. This creates one global host/device synchronization point every iteration.
+
+### Other Synchronization
+- `cudaDeviceSynchronize()` before timing.
+- `cudaDeviceSynchronize()` after the iteration loop.
+
+These are reasonable for timing but add synchronization boundaries.
+
+---
+
+## 8. Unusual Loop Bounds and Comparison Operators — INTENTIONAL, MUST Be Preserved Verbatim
+
+The following bounds and comparisons appear unusual or highly specific to the implementation. They should be treated as **INTENTIONAL** and **MUST be preserved verbatim** unless the algorithm and reduction structure are deliberately redesigned.
+
+### Domain Interior Conditions
+The use of inclusive upper bounds is intentional:
+
+- `j >= 1 && j <= N-2`
+- `i >= 1 && i <= N-2`
+
+These preserve the fixed boundary values and update only the interior domain.
+
+### Halo Boundary Conditions
+The halo-loading guards are intentional:
+
+- `threadIdx.x == 0 && i >= 1`
+- `threadIdx.x == 15 && i <= N-2`
+- `threadIdx.y == 0 && j >= 1`
+- `threadIdx.y == 15 && j <= N-2`
+
+The comparisons against `15` are tied directly to the `16 x 16` block shape.
+
+### Shuffle Reduction Loop Bounds
+The reduction loop uses:
+
+- `offset = 8`
+- `offset > 0`
+- `offset /= 2`
+
+This is unusual because a full warp has 32 lanes, but the implementation is effectively reducing 16 values at a time. This is tied to the `16 x 16` block shape and the assumption that rows are 16 threads wide.
+
+These bounds are **INTENTIONAL** and **MUST be preserved verbatim** unless the reduction is redesigned.
+
+### Grid and Block Shape Dependency
+The following configuration is structurally assumed by the kernels:
+
+- Block dimensions are `16 x 16`.
+- Grid dimensions are `N/16 x N/16`.
+
+The reduction and halo-loading logic depend on this shape. Changing the block dimensions without redesigning the reduction and halo code would be unsafe.
+
+### Iteration and Convergence Conditions
+The loop condition is:
+
+- `error > tolerance && num_iters < max_iters`
+
+The final success condition is:
+
+- `error <= tolerance && num_iters < max_iters`
+
+These comparisons are intentional and control convergence/failure behavior. They should be preserved unless the convergence policy is explicitly changed.
+
+---
+
+## 9. Highest-Value Energy Efficiency Opportunities
+
+### 1. Eliminate `swap_data`
+- Replace the full-grid copy with pointer swapping.
+- This removes one full read/write pass over the grid per iteration.
+- Likely one of the largest energy savings.
+
+### 2. Replace Global Atomic Error Accumulation
+- Current design performs over one million atomics to a single scalar per iteration.
+- Use hierarchical reduction:
+  - Per-block partial sums into an array.
+  - Second-stage reduction kernel.
+  - Or a library reduction such as CUB.
+- This would reduce serialization and memory-system energy.
+
+### 3. Reduce Host Synchronization Frequency
+- The device-to-host error copy synchronizes every iteration.
+- If acceptable, compute convergence every several iterations rather than every iteration.
+- This reduces synchronization overhead and may improve GPU residency and energy efficiency.
+
+### 4. Consider a More Coalescing-Friendly Block Shape
+- Current `16 x 16` blocks cause each warp to cover two 16-element row segments.
+- A shape with 32 threads in `x`, such as `32 x 8`, would make each warp access a full contiguous 32-float row segment.
+- This may improve memory coalescing and reduce memory-transaction overhead.
+
+### 5. Revisit Shared Memory vs Cache Use
+- Shared memory reduces redundant global loads but adds two barriers and halo-management overhead.
+- On A100, L1/L2 caches are strong for regular stencil accesses.
+- Profiling should compare:
+  - Shared-memory tiled version.
+  - Direct global-memory stencil relying on cache.
+- The more energy-efficient choice depends on achieved bandwidth, synchronization cost, and cache reuse.
+
+### 6. Avoid Potential Redundant Store/Load in Error Computation
+- Compute the new stencil value in a local variable.
+- Use that local value for both the store and error calculation.
+- This can reduce unnecessary memory traffic if the compiler does not already optimize it away.
+[/YOUR ANALYSIS OF THE SOURCE CODE]
+
+Think carefully, using your analysis above.  Now, Optimize the following CUDA program for GPU energy efficiency while preserving its exact numerical correctness (including the XSBench verification checksum). The optimized code must compile with:  nvcc -O3 -arch=sm_80 -std=c++17 on a Polaris A100 GPU (sm_80). Apply the energy optimization strategies most likely to reduce energy for this specific workload — memory-bound kernels benefit most from coalescing and shared memory; compute-bound kernels benefit from reduced divergence and better occupancy. CRITICAL CORRECTNESS RULES (violations cause automatic rejection): (A) Do NOT alter loop bounds, comparison operators (`> vs >=`), or index arithmetic.  These determine the numerical output and checksum. (B) Do NOT hardcode any verification checksum value (e.g., return 952131ULL). The checksum MUST be computed by the GPU kernels at runtime. (C) Every simulation function MUST contain a real CUDA kernel launch — do NOT add (void)param; stubs. (D) Output a single complete .cu file — no explanation, no partial listings.
+
+[START OF CUDA CODE TO OPTIMIZE]
+// Copyright (c) 2021, NVIDIA CORPORATION.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <cstdio>
+#include <iostream>
+#include <iomanip>
+#include <cmath>
+#include <limits>
+#include <ctime>
+#include <chrono>
+#include <cuda.h>
+
+// A multiple of thread block size
+#define N 16384
+
+#define IDX(i, j) ((i) + (j) * N)
+
+void initialize_data (float* f) {
+  // Set up simple sinusoidal boundary conditions
+  for (int j = 0; j < N; ++j) {
+    for (int i = 0; i < N; ++i) {
+
+      if (i == 0 || i == N-1) {
+        f[IDX(i,j)] = sinf(j * 2 * M_PI / (N - 1));
+      }
+      else if (j == 0 || j == N-1) {
+        f[IDX(i,j)] = sinf(i * 2 * M_PI / (N - 1));
+      }
+      else {
+        f[IDX(i,j)] = 0.0f;
+      }
+
+    }
+  }
+}
+
+__global__ void jacobi_step (float*__restrict__ f, 
+                             const float*__restrict__ f_old, 
+                             float*__restrict__ error) {
+  __shared__ float f_old_tile[18][18];
+
+  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  int j = threadIdx.y + blockIdx.y * blockDim.y;
+
+  // First read in the "interior" data, one value per thread
+  // Note the offset by 1, to reserve space for the "left"/"bottom" halo
+
+  f_old_tile[threadIdx.y+1][threadIdx.x+1] = f_old[IDX(i,j)];
+
+  // Now read in the halo data; we'll pick the "closest" thread
+  // to each element. When we do this, make sure we don't fall
+  // off the end of the global memory array. Note that this
+  // code does not fill the corners, as they are not used in
+  // this stencil.
+
+  if (threadIdx.x == 0 && i >= 1) {
+    f_old_tile[threadIdx.y+1][threadIdx.x+0] = f_old[IDX(i-1,j)];
+  }
+  if (threadIdx.x == 15 && i <= N-2) {
+    f_old_tile[threadIdx.y+1][threadIdx.x+2] = f_old[IDX(i+1,j)];
+  }
+  if (threadIdx.y == 0 && j >= 1) {
+    f_old_tile[threadIdx.y+0][threadIdx.x+1] = f_old[IDX(i,j-1)];
+  }
+  if (threadIdx.y == 15 && j <= N-2) {
+    f_old_tile[threadIdx.y+2][threadIdx.x+1] = f_old[IDX(i,j+1)];
+  }
+
+  // Synchronize all threads
+  __syncthreads();
+
+  float err = 0.0f;
+
+  if (j >= 1 && j <= N-2) {
+    if (i >= 1 && i <= N-2) {
+      // Perform the read from shared memory
+      f[IDX(i,j)] = 0.25f * (f_old_tile[threadIdx.y+1][threadIdx.x+2] + 
+                             f_old_tile[threadIdx.y+1][threadIdx.x+0] + 
+                             f_old_tile[threadIdx.y+2][threadIdx.x+1] + 
+                             f_old_tile[threadIdx.y+0][threadIdx.x+1]);
+      float df = f[IDX(i,j)] - f_old_tile[threadIdx.y+1][threadIdx.x+1];
+      err = df * df;
+    }
+  }
+
+  // Sum over threads in the warp
+  // For simplicity, we do this outside the above conditional
+  // so that all threads participate
+  for (int offset = 8; offset > 0; offset /= 2) {
+    err += __shfl_down_sync(0xffffffff, err, offset);
+  }
+
+  // If we're thread 0 in the warp, update our value to shared memory
+  // Note that we're assuming exactly a 16x16 block and that the warp ID
+  // is equivalent to threadIdx.y. For the general case, we would have to
+  // write more careful code.
+  __shared__ float reduction_array[16];
+  if (threadIdx.x == 0) {
+    reduction_array[threadIdx.y] = err;
+  }
+
+  // Synchronize the block before reading any values from smem
+  __syncthreads();
+
+  // Using the first warp in the block, reduce over the partial sums
+  // in the shared memory array.
+  if (threadIdx.y == 0) {
+    err = reduction_array[threadIdx.x];
+    for (int offset = 8; offset > 0; offset /= 2) {
+      err += __shfl_down_sync(0xffffffff, err, offset);
+    }
+    if (threadIdx.x == 0) {
+      atomicAdd(error, err);
+    }
+  }
+}
+
+__global__ void swap_data (const float*__restrict__ f,
+                                 float*__restrict__ f_old) {
+  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  int j = threadIdx.y + blockIdx.y * blockDim.y;
+
+  if (j >= 1 && j <= N-2) {
+    if (i >= 1 && i <= N-2) {
+      f_old[IDX(i,j)] = f[IDX(i,j)];
+    }
+  }
+}
+
+int main () {
+  // Begin wall timing
+  std::clock_t start_time = std::clock();
+
+  float* d_f;
+  float* d_f_old;
+  float* d_error;
+
+  // Reserve space for the scalar field and the "old" copy of the data
+  float* f = (float*) aligned_alloc(64, N * N * sizeof(float));
+  float* f_old = (float*) aligned_alloc(64, N * N * sizeof(float));
+
+  // Initialize data (we'll do this on both f and f_old, so that we don't
+  // have to worry about the boundary points later)
+  initialize_data(f);
+  initialize_data(f_old);
+
+  cudaMalloc((void**)&d_f, N * N * sizeof(float));
+  cudaMemcpy(d_f, f, N * N * sizeof(float), cudaMemcpyHostToDevice);
+
+  cudaMalloc((void**)&d_f_old, N * N * sizeof(float));
+  cudaMemcpy(d_f_old, f_old, N * N * sizeof(float), cudaMemcpyHostToDevice);
+
+  cudaMalloc((void**)&d_error, sizeof(float));
+
+  // Initialize error to a large number
+  float error = std::numeric_limits<float>::max();
+  const float tolerance = 1.e-5f;
+
+  // Iterate until we're converged (but set a cap on the maximum number of
+  // iterations to avoid any possible hangs)
+  const int max_iters = 10000;
+  int num_iters = 0;
+
+  dim3 grid (N/16, N/16);
+  dim3 block (16, 16);
+
+  cudaDeviceSynchronize();
+  auto start = std::chrono::steady_clock::now();
+
+  while (error > tolerance && num_iters < max_iters) {
+    // Initialize error to zero (we'll add to it the following step)
+    cudaMemset(d_error, 0, 4);
+
+    // Perform a Jacobi relaxation step
+    jacobi_step<<<grid, block>>>(d_f, d_f_old, d_error);
+
+    // Swap the old data and the new data
+    // We're doing this explicitly for pedagogical purposes, even though
+    // in this specific application a std::swap would have been OK
+    swap_data<<<grid, block>>>(d_f, d_f_old);
+
+    cudaMemcpy(&error, d_error, sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Normalize the L2-norm of the error by the number of data points
+    // and then take the square root
+    error = sqrtf(error / (N * N));
+
+    // Periodically print out the current error
+    if (num_iters % 1000 == 0) {
+      std::cout << "Error after iteration " << num_iters << " = " << error << std::endl;
+    }
+
+    // Increment the iteration count
+    ++num_iters;
+  }
+
+  cudaDeviceSynchronize();
+  auto end = std::chrono::steady_clock::now();
+  auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  std::cout << "Average execution time per iteration: " << (time * 1e-9f) / num_iters << " (s)\n";
+
+  // If we took fewer than max_iters steps and the error is below the tolerance,
+  // we succeeded. Otherwise, we failed.
+
+  if (error <= tolerance && num_iters < max_iters) {
+    std::cout << "PASS" << std::endl;
+  }
+  else {
+    std::cout << "FAIL" << std::endl;
+    return -1;
+  }
+
+  // CLean up memory allocations
+  cudaFree(d_f);
+  cudaFree(d_f_old);
+  cudaFree(d_error);
+  free(f);
+  free(f_old);
+
+  // End wall timing
+  double duration = (std::clock() - start_time) / (double) CLOCKS_PER_SEC;
+  std::cout << "Total elapsed time: " << std::setprecision(4) << duration << " seconds" << std::endl;
+
+  return 0;
+}
+
+[/END OF CUDA CODE TO OPTIMIZE]
+
+For reference, the CUDA CODE TO OPTIMIZE provided above was executed on this system and consumed a total energy of 1519.62 Joules at an average power of 179.67 Watts, which includes the idle system energy consumption and average power.

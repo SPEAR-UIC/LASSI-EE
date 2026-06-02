@@ -1,0 +1,12 @@
+***** EXPERIMENT CONFIGURATION SUMMARY *****
+
+GPU Vendor: NVIDIA
+Date-time: 01-28-2026_t20_43_48
+Application: XSBench/cuda
+
+LLM Source: argo
+Model: gpt52
+Model coder: gpt52
+Model judge: gpt52
+
+Power measurement: False

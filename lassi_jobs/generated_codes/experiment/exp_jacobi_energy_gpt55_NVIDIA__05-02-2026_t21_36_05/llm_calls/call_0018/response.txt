@@ -1,0 +1,49 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Reasoning:
+
+1. The numerical error reported by the refactored version is incorrect.
+   - SOURCE output:
+     Error after iteration 0 = 0.00276205
+   - REFACTORED output:
+     Error after iteration 0 = 0.00138103
+
+   The refactored value is almost exactly half of the source value, which is too large and systematic to be considered a minor floating-point ordering difference.
+
+2. The hierarchical reduction kernels in the refactored code appear to omit part of the data.
+   In both reduce_partials_256 and reduce_final_256, the reduction performs:
+     - combine 256 -> 128
+     - combine 128 -> 64
+     - then immediately warp-reduce only threads 0..31
+
+   However, the values in smem[32..63] are never included before the warp-level reduction. A correct 256-thread reduction would need to also combine smem[tid] with smem[tid + 32] for tid < 32 before the warp shuffle reduction.
+
+   Because this missing reduction step happens in both reduction stages, the final accumulated squared error is significantly underestimated. This explains why the printed L2 error is about half the source value.
+
+3. The convergence behavior is changed.
+   The SOURCE CODE prints:
+     Error after iteration 0 = ...
+     Error after iteration 1000 = ...
+     PASS
+
+   The REFACTORED CODE prints only:
+     Error after iteration 0 = ...
+     PASS
+
+   This strongly indicates that it terminates earlier because the error is underestimated, not because the Jacobi computation actually converged equivalently.
+
+4. The output is not nearly equivalent.
+   The missing "Error after iteration 1000" line and the substantially different iteration-0 error indicate that the refactored output does not preserve the source code's displayed numerical behavior.
+
+5. Some refactoring choices are acceptable by themselves:
+   - Initializing d_f_old with cudaMemcpyDeviceToDevice from d_f is equivalent to separately initializing f_old on the host.
+   - Using CUDA graphs and replacing atomicAdd with block partial reductions could be valid if the reduction were numerically correct.
+   - Moving the host copy before swap_data in the captured stream is not inherently incorrect for the error value.
+
+   However, the reduction bug changes the program's convergence criterion and therefore its functional behavior.
+
+Conclusion: INVALID
+*/
+```

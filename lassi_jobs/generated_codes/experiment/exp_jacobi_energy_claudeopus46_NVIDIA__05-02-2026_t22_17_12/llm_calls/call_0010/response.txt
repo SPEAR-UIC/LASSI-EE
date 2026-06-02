@@ -1,0 +1,50 @@
+Looking at the two codes, I need to evaluate functional equivalence and output similarity.
+
+## Key Differences Analysis
+
+### 1. **Tile dimensions changed**: Source uses 16×16 blocks; refactored uses 32×16 blocks. This is a valid optimization that doesn't change correctness of the Jacobi computation itself.
+
+### 2. **Swap mechanism changed**: Source uses a separate `swap_data` kernel to copy `f` back to `f_old`. Refactored uses pointer swapping (`std::swap`-style). This is a **critical functional difference**.
+
+In the source code, after each iteration:
+- `jacobi_step` reads from `f_old`, writes to `f`
+- `swap_data` copies interior of `f` back to `f_old`
+- So `f_old` gets updated but `f` retains its values too
+
+With pointer swapping in the refactored code, after iteration 0:
+- `f_old` and `f` swap roles. The "new" `f_old` is what was `f` (the result), and the "new" `f` is what was `f_old` (the old data that will be overwritten).
+
+This is actually functionally equivalent for the Jacobi iteration since boundary values are identical in both arrays (both initialized the same way), and interior points are always fully recomputed from the "old" array. So pointer swapping is a valid optimization here.
+
+### 3. **Error checking frequency changed**: Source computes error every iteration. Refactored computes error only every 100 iterations (`check_interval = 100`). This means:
+- At iteration 0, error is computed (matches source).
+- At iteration 1000, error is computed (matches source for printing).
+- The convergence check happens less frequently, potentially running slightly more iterations than necessary, but the algorithm still converges correctly.
+
+### 4. **Warp reduction difference**: Source uses `offset = 8` for the first warp reduction (16 threads per warp row in 16×16 block). Refactored uses `offset = 16` (32 threads per warp row in 32×16 block). This is correct for the respective tile sizes.
+
+### 5. **`jacobi_double_step_no_error` kernel**: Defined but never called — dead code, no impact.
+
+## Output Comparison
+
+| | Source | Refactored |
+|---|---|---|
+| Error iter 0 | 0.00276205 | 0.00276205 ✓ |
+| Error iter 1000 | 1.38643e-05 | 1.38644e-05 ≈ (minor FP difference) |
+| Result | PASS | PASS ✓ |
+
+The minor numerical difference (1.38643e-05 vs 1.38644e-05) is expected due to different reduction patterns and floating-point associativity with different tile sizes.
+
+### 6. **Convergence behavior**: Because error is only checked every 100 iterations, the refactored code might run up to 99 extra iterations past convergence. However, both codes converge and print PASS, and the error values at the printed checkpoints are nearly identical.
+
+## Conclusion
+
+The refactored code:
+- Preserves the Jacobi relaxation algorithm correctly
+- Produces equivalent numerical results (within floating-point tolerance)
+- Prints the same format and content
+- Achieves significant energy reduction (897.6 J vs 1540.6 J)
+- The pointer swap is functionally equivalent to the copy kernel for this use case
+- The reduced error checking frequency is an optimization that doesn't affect final correctness
+
+VALID

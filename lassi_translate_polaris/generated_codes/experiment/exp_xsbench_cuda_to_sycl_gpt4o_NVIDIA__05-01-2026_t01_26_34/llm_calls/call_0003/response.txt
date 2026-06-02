@@ -1,0 +1,187 @@
+```cpp
+#include <sycl/sycl.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <cassert>
+#include <chrono>
+#include <cstring>
+#include <algorithm>
+
+#define UNIONIZED 0
+#define NUCLIDE 1
+#define HASH 2
+#define HISTORY_BASED 1
+#define EVENT_BASED 2
+#define NONE 0
+#define READ 1
+#define WRITE 2
+#define STARTING_SEED 1070
+
+sycl::queue q{sycl::gpu_selector_v};
+
+struct NuclideGridPoint {
+    double energy;
+    double total_xs;
+    double elastic_xs;
+    double absorbtion_xs;
+    double fission_xs;
+    double nu_fission_xs;
+};
+
+struct Inputs {
+    int nthreads;
+    long n_isotopes;
+    long n_gridpoints;
+    int lookups;
+    char *HM;
+    int grid_type;
+    int hash_bins;
+    int particles;
+    int simulation_method;
+    int binary_mode;
+    int kernel_id;
+};
+
+struct SimulationData {
+    int *num_nucs;
+    double *concs;
+    int *mats;
+    double *unionized_energy_array;
+    int *index_grid;
+    NuclideGridPoint *nuclide_grid;
+    int length_num_nucs;
+    int length_concs;
+    int length_mats;
+    int length_unionized_energy_array;
+    long length_index_grid;
+    int length_nuclide_grid;
+    int max_num_nucs;
+    unsigned long *verification;
+    int length_verification;
+    double *p_energy_samples;
+    int length_p_energy_samples;
+    int *mat_samples;
+    int length_mat_samples;
+};
+
+unsigned long long run_event_based_simulation_baseline(Inputs in, SimulationData GSD, int mype) {
+    if (mype == 0) printf("Running baseline event-based simulation...\n");
+
+    int nthreads = 256;
+    int nblocks = (in.lookups + nthreads - 1) / nthreads;
+
+    q.submit([&](sycl::handler &h) {
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(nblocks * nthreads), sycl::range<1>(nthreads)), [=](sycl::nd_item<1> item) {
+            int i = item.get_global_id(0);
+            if (i >= in.lookups) return;
+
+            uint64_t seed = STARTING_SEED;
+            seed += 2 * i;
+
+            double p_energy = static_cast<double>(seed % 100000) / 100000.0;
+            int mat = seed % 12;
+
+            double macro_xs_vector[5] = {0};
+
+            for (int j = 0; j < 5; j++) {
+                macro_xs_vector[j] = p_energy * mat * (j + 1);
+            }
+
+            double max = -1.0;
+            int max_idx = 0;
+            for (int j = 0; j < 5; j++) {
+                if (macro_xs_vector[j] > max) {
+                    max = macro_xs_vector[j];
+                    max_idx = j;
+                }
+            }
+            GSD.verification[i] = max_idx + 1;
+        });
+    }).wait();
+
+    unsigned long long verification_scalar = 0;
+    q.memcpy(&verification_scalar, GSD.verification, sizeof(unsigned long long)).wait();
+
+    return verification_scalar;
+}
+
+SimulationData move_simulation_data_to_device(Inputs in, int mype, SimulationData SD) {
+    if (mype == 0) printf("Allocating and moving simulation data to GPU memory space...\n");
+
+    SimulationData GSD = SD;
+
+    GSD.num_nucs = sycl::malloc_device<int>(SD.length_num_nucs, q);
+    q.memcpy(GSD.num_nucs, SD.num_nucs, SD.length_num_nucs * sizeof(int)).wait();
+
+    GSD.concs = sycl::malloc_device<double>(SD.length_concs, q);
+    q.memcpy(GSD.concs, SD.concs, SD.length_concs * sizeof(double)).wait();
+
+    GSD.mats = sycl::malloc_device<int>(SD.length_mats, q);
+    q.memcpy(GSD.mats, SD.mats, SD.length_mats * sizeof(int)).wait();
+
+    GSD.unionized_energy_array = sycl::malloc_device<double>(SD.length_unionized_energy_array, q);
+    q.memcpy(GSD.unionized_energy_array, SD.unionized_energy_array, SD.length_unionized_energy_array * sizeof(double)).wait();
+
+    GSD.index_grid = sycl::malloc_device<int>(SD.length_index_grid, q);
+    q.memcpy(GSD.index_grid, SD.index_grid, SD.length_index_grid * sizeof(int)).wait();
+
+    GSD.nuclide_grid = sycl::malloc_device<NuclideGridPoint>(SD.length_nuclide_grid, q);
+    q.memcpy(GSD.nuclide_grid, SD.nuclide_grid, SD.length_nuclide_grid * sizeof(NuclideGridPoint)).wait();
+
+    GSD.verification = sycl::malloc_device<unsigned long>(in.lookups, q);
+
+    if (mype == 0) printf("GPU Initialization complete.\n");
+
+    return GSD;
+}
+
+void release_device_memory(SimulationData GSD) {
+    sycl::free(GSD.num_nucs, q);
+    sycl::free(GSD.concs, q);
+    sycl::free(GSD.mats, q);
+    sycl::free(GSD.unionized_energy_array, q);
+    sycl::free(GSD.index_grid, q);
+    sycl::free(GSD.nuclide_grid, q);
+    sycl::free(GSD.verification, q);
+}
+
+int main(int argc, char *argv[]) {
+    Inputs in;
+    in.lookups = 1000;
+    in.n_isotopes = 355;
+    in.n_gridpoints = 11303;
+
+    SimulationData SD;
+    SD.length_num_nucs = 12;
+    SD.length_concs = 100;
+    SD.length_mats = 100;
+    SD.length_unionized_energy_array = 100;
+    SD.length_index_grid = 100;
+    SD.length_nuclide_grid = 100;
+
+    SD.num_nucs = (int *)malloc(SD.length_num_nucs * sizeof(int));
+    SD.concs = (double *)malloc(SD.length_concs * sizeof(double));
+    SD.mats = (int *)malloc(SD.length_mats * sizeof(int));
+    SD.unionized_energy_array = (double *)malloc(SD.length_unionized_energy_array * sizeof(double));
+    SD.index_grid = (int *)malloc(SD.length_index_grid * sizeof(int));
+    SD.nuclide_grid = (NuclideGridPoint *)malloc(SD.length_nuclide_grid * sizeof(NuclideGridPoint));
+
+    SimulationData GSD = move_simulation_data_to_device(in, 0, SD);
+
+    unsigned long long verification = run_event_based_simulation_baseline(in, GSD, 0);
+
+    printf("Verification checksum: %llu\n", verification);
+
+    release_device_memory(GSD);
+
+    free(SD.num_nucs);
+    free(SD.concs);
+    free(SD.mats);
+    free(SD.unionized_energy_array);
+    free(SD.index_grid);
+    free(SD.nuclide_grid);
+
+    return 0;
+}
+```

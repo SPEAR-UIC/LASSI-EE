@@ -1,0 +1,35 @@
+Looking at the two codes, I need to evaluate functional equivalence and output correctness.
+
+## Key Differences Analysis
+
+### 1. **Pointer swapping vs. data copying**
+The source code uses a `swap_data` kernel to copy interior values from `d_f` to `d_f_old`. The refactored code swaps pointers instead. This is a significant behavioral change.
+
+In the source code, boundary values in `f_old` are never overwritten (the swap kernel only copies interior points `i>=1 && i<=N-2, j>=1 && j<=N-2`). The Jacobi step writes to `f` only at interior points, preserving boundary values in `f`. So after swap_data, `f_old` has updated interior + original boundaries, and `f` still has its original boundaries.
+
+With pointer swapping, after iteration 0: `d_f` has new interior values + original boundaries, `d_f_old` has original values. After swap, what was `d_f` becomes `d_f_old` and vice versa. Now the "new" `d_f` (originally `d_f_old`) still has the original data everywhere. The next Jacobi step writes interior of this `d_f` using `d_f_old` (which has updated interior + original boundaries). This is actually equivalent because:
+- Boundaries are never modified by the Jacobi kernel
+- Both buffers were initialized with the same boundary conditions
+- The swap is mathematically equivalent to copying interior points when boundaries are identical in both buffers
+
+So pointer swapping is functionally correct here.
+
+### 2. **Error checking frequency**
+The source code computes error **every iteration**. The refactored code computes error only every 100 iterations. This means the convergence check happens less frequently, potentially causing the algorithm to run extra iterations past convergence. However, since convergence is checked every 100 iterations, and 1000 % 100 == 0, the printed error at iterations 0 and 1000 will still be computed.
+
+### 3. **Tile dimensions changed**
+Source uses 16×16 tiles; refactored uses 32×8. This changes the warp reduction logic. The source reduces with offset starting at 8 (since warp = 16 threads in x × 2 rows from y). The refactored uses offset starting at 16 for a full 32-thread warp. This is correct for the new tile dimensions.
+
+### 4. **Output comparison**
+- Source: `Error after iteration 0 = 0.00276205` → Refactored: `0.00276205` ✓
+- Source: `Error after iteration 1000 = 1.38643e-05` → Refactored: `1.38644e-05` — slight difference
+- Both print `PASS`
+
+The slight numerical difference at iteration 1000 (`1.38643e-05` vs `1.38644e-05`) is concerning. This could be because the error is computed every 100 iterations instead of every iteration, and the convergence check frequency affects when the algorithm stops or continues. However, since error is only *checked* (not used to modify the computation), and the Jacobi update itself is identical, the actual field values should be the same at iteration 1000. The tiny difference is likely due to floating-point atomicAdd ordering differences from the different tile configuration (32×8 vs 16×16), which changes the order of atomic additions and thus floating-point rounding. This is a minor numerical difference consistent with the optimization.
+
+### 5. **Functional equivalence**
+The core Jacobi computation is preserved. The convergence behavior is preserved (both converge and print PASS). The error computation logic is mathematically equivalent. The pointer swap is equivalent to data copy given identical boundary conditions in both buffers.
+
+The output format matches: same iteration reporting, same PASS/FAIL logic, same timing output format.
+
+VALID

@@ -1,0 +1,81 @@
+
+
+----- METRICS -----
+Experiment date-time: 2026-05-02 22:46:55
+Time (sec): 1725.21
+Self-correction iteration count: 15
+Energy efficiency improvement count: 3
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Error after iteration 0 = 0.00276205
+Error after iteration 1000 = 1.38643e-05
+Average execution time per iteration: 0.00420697 (s)
+PASS
+Total elapsed time: 7.848 seconds
+
+=== Energy results ===
+{"energy_joules": 1540.567, "avg_power_w": 181.778, "duration_s": 8.475, "num_samples": 9}=== Execution OK ===
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Error after iteration 0 = 0.00276205
+Error after iteration 1000 = 1.38644e-05
+Average execution time per iteration: 0.00185186 (s)
+PASS
+Total elapsed time: 4.366 seconds
+
+=== Energy results ===
+{"energy_joules": 897.641, "avg_power_w": 179.6, "duration_s": 4.998, "num_samples": 5}=== Execution OK ===
+
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Total Energy (J):  Source code: 1540.57  Refactored code: 897.64
+Average Power (W):  Source code: 181.78  Refactored code: 179.6
+Runtime (s):  Source code: 8.47  Refactored code: 5.0
+
+
+----- CODE COMPARISON -----
+## Comparison Analysis
+
+### Key Differences in the Refactored Code
+
+**1. Larger Thread Block Dimensions (TILE_X=32, TILE_Y=16 vs 16x16)**
+The refactored code uses 32×16 thread blocks (512 threads) instead of 16×16 (256 threads). This means each warp covers a full row of the tile (32 threads), which improves **global memory coalescing** since threads in a warp now access 32 consecutive addresses along the `i` dimension. The shared memory tile is also correspondingly resized to `[TILE_Y+2][TILE_X+2]` = `[18][34]`.
+
+**2. Elimination of the Separate `swap_data` Kernel**
+The source code launches a separate `swap_data` kernel every iteration to copy `f` back to `f_old`. The refactored code instead **swaps device pointers** (`float* tmp = d_f_old; d_f_old = d_f; d_f = tmp;`), completely eliminating a full kernel launch and the associated global memory reads/writes every iteration. This is a major source of energy savings.
+
+**3. Infrequent Error Computation (Check Interval = 100)**
+The source code computes and transfers the error **every single iteration**. The refactored code only computes the error every 100 iterations (`check_interval = 100`), using a lightweight `jacobi_step_no_error` kernel for the other 99 out of 100 iterations. This eliminates the `cudaMemset`, `cudaMemcpy`, warp-level reduction, and `atomicAdd` overhead for most iterations.
+
+**4. Use of `__ldg()` Intrinsic for Read-Only Data**
+All reads from `f_old` in the refactored kernels use `__ldg()` to route through the read-only texture cache, e.g., `__ldg(&f_old[IDX(i, j)])`. The source code accesses `f_old` directly without `__ldg()`.
+
+**5. `__launch_bounds__` Annotation**
+The refactored kernels use `__launch_bounds__(512, 4)` to hint the compiler about occupancy, allowing better register allocation decisions.
+
+**6. Warp Reduction Adjusted and `#pragma unroll` Added**
+The warp shuffle reduction loop starts at offset 16 (matching warp size 32) instead of 8, and uses `#pragma unroll` to unroll the reduction loops, reducing loop overhead.
+
+**7. Removal of Implicit Synchronization via `cudaMemcpy`**
+In the source code, `cudaMemcpy` of the error every iteration acts as an implicit synchronization barrier. In the refactored code, this synchronization only happens every 100 iterations, allowing the GPU to pipeline kernel launches more efficiently.
+
+### Results Summary
+- **Energy**: 1540.57 J → 897.64 J (42% reduction)
+- **Time**: 8.47s → 5.0s (41% reduction)
+- **Power**: 181.78 W → 179.6 W (slight reduction)
+
+The dominant savings come from eliminating the swap kernel and reducing error computation frequency, which dramatically cut execution time.
+
+[OPTIMIZATION LIST]
+1. Pointer swapping instead of a separate data copy kernel (eliminated `swap_data` kernel)
+2. Infrequent error computation — error only checked every 100 iterations instead of every iteration
+3. Larger thread block dimensions (32×16) for better memory coalescing (full warp per row)
+4. Use of `__ldg()` intrinsic for read-only global memory accesses through texture cache
+5. `__launch_bounds__` directive to guide compiler register allocation and occupancy
+6. `#pragma unroll` on warp shuffle reduction loops
+7. Reduced host-device synchronization by eliminating per-iteration `cudaMemcpy` and `cudaMemset`
+[/OPTIMIZATION LIST]

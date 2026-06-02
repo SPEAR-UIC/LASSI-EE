@@ -1,0 +1,141 @@
+
+
+----- METRICS -----
+Experiment date-time: 2026-05-02 22:12:49
+Time (sec): 2150.64
+Self-correction iteration count: 15
+Energy efficiency improvement count: 1
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+Error after iteration 0 = 0.00276205
+Error after iteration 1000 = 1.38643e-05
+Average execution time per iteration: 0.00420544 (s)
+PASS
+Total elapsed time: 7.838 seconds
+
+=== Energy results ===
+{"energy_joules": 1519.621, "avg_power_w": 179.667, "duration_s": 8.458, "num_samples": 9}=== Execution OK ===
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+Error after iteration 0 = 0.00276205
+Error after iteration 1000 = 1.38643e-05
+Average execution time per iteration: 0.00253947 (s)
+PASS
+Total elapsed time: 5.001 seconds
+
+=== Energy results ===
+{"energy_joules": 1010.67, "avg_power_w": 177.0, "duration_s": 5.71, "num_samples": 6}=== Execution OK ===
+
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Total Energy (J):  Source code: 1519.62  Refactored code: 1010.67
+Average Power (W):  Source code: 179.67  Refactored code: 177.0
+Runtime (s):  Source code: 8.46  Refactored code: 5.71
+
+
+----- CODE COMPARISON -----
+```cpp
+/*
+The REFACTORED CODE preserves the same observable stdout results for the reported run, but makes several implementation changes that plausibly explain the lower energy consumption:
+
+1. Elimination of the per-iteration swap_data kernel
+   - SOURCE CODE launches two kernels per Jacobi iteration:
+       jacobi_step(...)
+       swap_data(...)
+   - REFACTORED CODE removes the swap_data kernel launch from the iteration loop and instead swaps the device pointers:
+       float* tmp = d_f_old;
+       d_f_old = d_f;
+       d_f = tmp;
+   - This avoids a full-grid device memory copy of the interior points every iteration.
+   - Since the grid is very large, N x N = 16384 x 16384, the removed swap_data kernel would otherwise read and write nearly the entire interior array every iteration.
+   - This is the dominant optimization: it reduces global memory traffic, kernel launch overhead, execution time, and therefore total GPU energy.
+
+2. Device-to-device initialization instead of duplicate host initialization and host-to-device copy
+   - SOURCE CODE allocates and initializes two host arrays:
+       f
+       f_old
+     and copies both separately to the GPU.
+   - REFACTORED CODE initializes only one host array, copies it to d_f, then initializes d_f_old using:
+       cudaMemcpy(d_f_old, d_f, field_bytes, cudaMemcpyDeviceToDevice);
+   - This reduces CPU-side initialization work, host memory footprint, and host-to-device PCIe/NVLink transfer volume.
+   - While this affects setup more than the main timed iteration loop, it contributes to the lower total elapsed time and total energy.
+
+3. Reduced host memory allocation and initialization
+   - SOURCE CODE allocates two large aligned host buffers:
+       f
+       f_old
+   - REFACTORED CODE allocates only one:
+       f
+   - This avoids one very large host allocation and a full second call to initialize_data.
+   - For N = 16384, each array is about 1 GiB, so avoiding the second host array reduces memory capacity pressure and initialization energy.
+
+4. Use of __ldg() for read-only global loads from f_old
+   - In jacobi_step, the REFACTORED CODE changes loads such as:
+       f_old[IDX(i,j)]
+     into:
+       __ldg(&f_old[IDX(i,j)])
+   - This explicitly routes read-only data through the read-only cache path.
+   - Since f_old is read-only within jacobi_step, this can improve cache behavior and reduce global memory access cost.
+   - On sm_80, the benefit may be smaller than on older architectures because caching behavior is already improved, but the intent is energy/performance-oriented.
+
+5. Avoiding an extra global memory read after computing the new value
+   - SOURCE CODE writes:
+       f[IDX(i,j)] = 0.25f * (...);
+       float df = f[IDX(i,j)] - f_old_tile[...];
+   - REFACTORED CODE stores the computed result in a register:
+       float new_value = 0.25f * (...);
+       f[IDX(i,j)] = new_value;
+       float df = new_value - f_old_tile[...];
+   - This avoids relying on a reload or compiler recovery of f[IDX(i,j)] after the store.
+   - Even if the compiler could optimize the source version, the refactored version makes register reuse explicit and may reduce memory traffic or instruction count.
+
+6. __launch_bounds__(256) annotations
+   - REFACTORED CODE adds:
+       __launch_bounds__(256)
+     to both kernels.
+   - The block size is 16 x 16 = 256 threads, so this annotation communicates the intended maximum block size to the compiler.
+   - This can help register allocation and occupancy decisions, potentially improving execution efficiency.
+   - The practical impact is likely smaller than eliminating the swap_data kernel.
+
+7. Narrower shuffle mask in the second reduction stage
+   - SOURCE CODE uses:
+       __shfl_down_sync(0xffffffff, err, offset)
+     in the second reduction.
+   - REFACTORED CODE uses:
+       __shfl_down_sync(0x0000ffff, err, offset)
+     for the reduction over the 16 active lanes in the first warp.
+   - This more accurately reflects that only lanes 0 through 15 participate in that reduction.
+   - It may reduce unnecessary active-lane participation semantics, though the energy impact is likely minor.
+
+8. Shared memory declaration placement
+   - SOURCE CODE declares reduction_array later in the kernel.
+   - REFACTORED CODE declares both shared arrays together at the top:
+       __shared__ float f_old_tile[18][18];
+       __shared__ float reduction_array[16];
+   - This is mostly a clarity/layout change and is unlikely to be a major independent energy optimization.
+
+The measured results are consistent with the main optimization being removal of the explicit swap_data kernel:
+- Average execution time per iteration improves from about 0.00420544 s to 0.00253947 s.
+- Total runtime drops from about 8.46 s to 5.71 s in the energy measurement.
+- Average power changes only slightly, from about 179.67 W to 177.0 W.
+- Total energy drops substantially, from about 1519.62 J to 1010.67 J.
+
+This indicates that the energy reduction primarily comes from reduced runtime and reduced memory traffic rather than a large reduction in instantaneous GPU power.
+
+[OPTIMIZATION LIST]
+- Replaced per-iteration full-grid swap_data kernel with device pointer swapping
+- Reduced global memory traffic by avoiding the interior-array copy each iteration
+- Reduced kernel launch overhead by removing one kernel launch per iteration
+- Initialized only one host array and used device-to-device copy for the second device array
+- Reduced host memory allocation and duplicate host-side initialization
+- Added __ldg() read-only cache loads for f_old in jacobi_step
+- Reused the computed Jacobi value from a register instead of referring back to f[IDX(i,j)]
+- Added __launch_bounds__(256) to kernels
+- Used a narrower active-lane mask for the 16-lane warp reduction
+[/OPTIMIZATION LIST]
+*/
+```

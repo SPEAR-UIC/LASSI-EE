@@ -4,7 +4,13 @@ import json
 import subprocess
 import html
 import re
-from IPython.display import display, HTML
+
+# IPython is optional outside notebooks.
+try:
+    from IPython.display import display, HTML  # type: ignore
+except Exception:  # pragma: no cover
+    display = None  # type: ignore
+    HTML = None  # type: ignore
 
 def argo_fetch_with_curl(data):
     url = "https://apps-dev.inside.anl.gov/argoapi/api/v1/resource/streamchat/"
@@ -32,8 +38,10 @@ def argo_fetch_with_curl(data):
         # Small payload - pass directly
         data_arg = ["-d", data]
 
-    # Create an HTML display object for live streaming output
-    html_display = display(HTML(""), display_id=True)
+    # Create an HTML display object for live streaming output (if IPython is available)
+    html_display = None
+    if display is not None and HTML is not None:
+        html_display = display(HTML(""), display_id=True)
 
     try:
         # Run curl as a subprocess, capturing output as it streams
@@ -79,9 +87,10 @@ def argo_fetch_with_curl(data):
                 f"@keyframes blink {{0%{{opacity:1}}50%{{opacity:0}}100%{{opacity:1}}}}"
                 f"</style>"
             )
-            
-            # Update the display output with styled text
-            html_display.update(HTML(html_content))
+
+            # Update the display output with styled text (if IPython is available)
+            if html_display is not None and HTML is not None:
+                html_display.update(HTML(html_content))
             
             # print(line, end="", flush=True)  # Print each chunk live
             #output += line  # Capture full response

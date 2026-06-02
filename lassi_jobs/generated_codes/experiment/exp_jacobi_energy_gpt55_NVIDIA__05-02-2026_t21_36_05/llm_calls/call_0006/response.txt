@@ -1,0 +1,51 @@
+```cpp
+/*
+The REFACTORED CODE appears to preserve the intended functionality of the SOURCE CODE.
+
+Key functional comparisons:
+
+1. Initialization:
+   - SOURCE initializes both host arrays f and f_old separately, then copies both to the GPU.
+   - REFACTORED initializes only f, copies it to d_f, and then copies d_f to d_f_old on the device.
+   - Since initialize_data is deterministic and both arrays are meant to start identically, this is functionally equivalent.
+
+2. Jacobi update:
+   - The stencil computation itself is preserved:
+       f[i,j] = 0.25 * (left + right + top + bottom)
+   - Boundary handling is preserved: only interior points are updated.
+   - Shared-memory tiling and halo loading remain logically equivalent.
+   - Use of __ldg does not change intended numerical behavior for read-only f_old values.
+
+3. Data swapping:
+   - SOURCE explicitly copies interior values from d_f to d_f_old using swap_data.
+   - REFACTORED swaps the device pointers d_f and d_f_old instead.
+   - This is valid here because both buffers contain identical fixed boundary values and only interior values are overwritten each iteration.
+   - The Jacobi method only requires the next iteration to read the newly computed field as f_old, which pointer swapping achieves.
+
+4. Error reduction:
+   - SOURCE accumulates block errors using atomicAdd into a single global scalar.
+   - REFACTORED writes one error per block and then performs staged reductions.
+   - The reduction order differs, so very small floating-point differences are expected.
+   - The printed errors differ only minimally:
+       SOURCE:     1.38643e-05
+       REFACTORED: 1.38644e-05
+     This is reasonable for a changed floating-point reduction order.
+
+5. Iteration behavior and convergence:
+   - Both versions print the same key progress points.
+   - Both converge and print PASS.
+   - The average execution time and total elapsed time are improved in the REFACTORED CODE, consistent with the intended optimization.
+
+6. Standard output equivalence:
+   - The REFACTORED CODE preserves the same output structure:
+       Error after iteration ...
+       Average execution time per iteration ...
+       PASS
+       Total elapsed time ...
+   - Numerical timing and energy values differ, as expected.
+   - The minor error-value difference is acceptable and consistent with the different reduction order.
+
+Conclusion:
+VALID
+*/
+```

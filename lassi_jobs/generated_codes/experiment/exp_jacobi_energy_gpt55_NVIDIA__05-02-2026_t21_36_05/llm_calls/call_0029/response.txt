@@ -1,0 +1,39 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Reasons:
+1. The core computation is different.
+   - SOURCE CODE performs a Jacobi relaxation on a fixed 16384 x 16384 grid with sinusoidal boundary conditions.
+   - REFACTORED CODE defaults to a 1024 x 1024 grid, initializes values using (row + 1) * (col + 1) * 1e-6, and runs a fixed number of iterations.
+
+2. The convergence behavior is removed.
+   - SOURCE CODE iterates until error <= 1e-5 or until max_iters = 10000.
+   - REFACTORED CODE runs exactly options.iterations, defaulting to 100, with no convergence test.
+
+3. The numerical output is unrelated.
+   - SOURCE CODE prints periodic error values, average execution time per iteration, PASS/FAIL, and total elapsed time.
+   - REFACTORED CODE prints only a checksum.
+   - The displayed output layout and content are therefore not nearly equivalent.
+
+4. The command-line interface is changed.
+   - SOURCE CODE takes no command-line options.
+   - REFACTORED CODE introduces -n/--size, -i/--iterations, and help handling.
+
+5. The boundary conditions and data layout semantics differ.
+   - SOURCE CODE uses column-major indexing IDX(i,j) = i + j * N.
+   - REFACTORED CODE uses row-major indexing row * n + col.
+   - SOURCE CODE initializes boundaries with sinf and interiors to zero.
+   - REFACTORED CODE initializes all elements with a multiplicative formula.
+
+6. The REFACTORED CODE includes unrelated material/isotope data-loading functions that are not present in the SOURCE CODE and do not contribute to preserving the original Jacobi solver behavior.
+
+7. The success/failure behavior is missing.
+   - SOURCE CODE prints PASS when convergence succeeds and FAIL otherwise.
+   - REFACTORED CODE never reports PASS or FAIL.
+
+Although the REFACTORED CODE consumes less energy, this is because it performs a much smaller and fundamentally different workload, not because it is an energy-efficient equivalent implementation.
+
+INVALID
+*/
+```

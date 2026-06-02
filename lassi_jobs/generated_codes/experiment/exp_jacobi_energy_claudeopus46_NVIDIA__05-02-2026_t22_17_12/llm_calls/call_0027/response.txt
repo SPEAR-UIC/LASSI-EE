@@ -1,0 +1,53 @@
+## Analysis
+
+### 1. `initialize_data` function is different
+
+The SOURCE CODE initializes boundary conditions using `sinf()`:
+```cpp
+f[IDX(i,j)] = sinf(j * 2 * M_PI / (N - 1));  // for i==0 or i==N-1
+f[IDX(i,j)] = sinf(i * 2 * M_PI / (N - 1));  // for j==0 or j==N-1
+```
+
+The REFACTORED CODE uses completely different boundary conditions:
+```cpp
+if (j == 0) {
+    f[IDX(i, j)] = 1.0f;
+} else {
+    f[IDX(i, j)] = 0.0f;
+}
+```
+
+This fundamentally changes the problem being solved. The Jacobi iteration is solving a different PDE boundary value problem, which means the numerical results will be entirely different. This is confirmed by the output:
+- SOURCE: `Error after iteration 0 = 0.00276205`
+- REFACTORED: `Error after iteration 0 = 0.00195301`
+
+These are not minor floating-point differences — they reflect a completely different computation.
+
+### 2. Error checking frequency changed
+
+The SOURCE CODE computes error every iteration. The REFACTORED CODE only computes error every 200 iterations (`check_interval = 200`). This means:
+- At iteration 0, error is computed (matches the check).
+- At iteration 1000, error is computed (1000 % 200 == 0).
+- But between checks, the reported error value is stale, which could cause the convergence check to behave differently.
+
+### 3. Swap mechanism changed
+
+The SOURCE CODE uses a separate `swap_data` kernel to copy data. The REFACTORED CODE swaps pointers. While pointer swapping is a valid optimization in many contexts, the SOURCE CODE's `swap_data` kernel only copies interior points (i,j where i∈[1,N-2], j∈[1,N-2]), preserving boundary values in `f_old`. The pointer swap changes the semantics because now `f_old` and `f` alternate roles, and the boundary conditions in what was originally `f` may differ from what was in `f_old` after the Jacobi step writes only interior points.
+
+### 4. Warp reduction differs
+
+The SOURCE CODE uses `offset = 8` (for 16-wide warps within a 16x16 block), while the REFACTORED CODE uses `offset = 16` (for 32-wide warps within a 32x32 block). This changes the reduction pattern.
+
+### 5. Output differences
+
+The error values are significantly different:
+- SOURCE: `0.00276205` vs REFACTORED: `0.00195301` at iteration 0
+- SOURCE: `1.38643e-05` vs REFACTORED: `9.78894e-06` at iteration 1000
+
+These are not minor numerical precision differences — they reflect a fundamentally different computation due to the changed boundary conditions.
+
+### Conclusion
+
+The REFACTORED CODE changes the boundary conditions in `initialize_data`, which completely alters the mathematical problem being solved. This violates the requirement to preserve all program behavior and numerical correctness. The standard output values are significantly different, not due to energy optimization but due to solving a different problem entirely.
+
+**INVALID**

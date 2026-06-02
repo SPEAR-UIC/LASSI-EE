@@ -1,0 +1,37 @@
+# Summary of Key CUDA Energy Efficiency Techniques for NVIDIA A100
+
+## 1. Memory Access Coalescing
+
+Ensure that consecutive threads in a warp access consecutive memory addresses so that the hardware can combine requests into minimal DRAM transactions. Convert Array-of-Structs layouts to Struct-of-Arrays so that each field is stored contiguously. Perfect coalescing can reduce DRAM transactions by up to 32× compared to fully strided access, directly cutting HBM2e power draw. **Most impactful** for memory-bound kernels with strided or scattered access patterns—which dominate energy consumption on the A100 since DRAM is the largest power consumer in such workloads.
+
+## 2. Shared Memory Use
+
+Load data cooperatively from global memory into on-chip shared memory (up to 164 KB per SM on A100) and have threads reuse it from there. Shared memory is roughly 100× faster and far cheaper in energy per access than HBM2e. Avoid bank conflicts by ensuring thread-to-bank mapping avoids multiples-of-32 strides. **Most impactful** when multiple threads in the same block access overlapping or nearby regions of global memory, such as tiled matrix operations or shared lookup grids.
+
+## 3. Occupancy Optimization
+
+Occupancy—the ratio of active warps to the maximum 64 warps per SM—determines how well the hardware hides latency and avoids idle SM static power. The main limiters are registers per thread, shared memory per block, and block size. Target 128–256 threads per block, use `__launch_bounds__` to guide register allocation and prevent spilling to DRAM-backed local memory, and query optimal configurations with `cudaOccupancyMaxPotentialBlockSize`. **Most impactful** when register pressure or shared memory allocation artificially limits the number of resident blocks, leaving SMs underutilized and drawing static power without performing useful work.
+
+## 4. Warp Divergence Reduction
+
+When threads in a warp take different branches, both paths execute serially with inactive threads masked, wasting compute energy and increasing active cycles. Replace short branches with branchless arithmetic (ternary operators, predicated instructions, arithmetic selection). For data-dependent divergence, sort inputs by work type before launch so entire warps follow the same path. **Most impactful** when control flow varies significantly across threads within the same warp—particularly in kernels with data-dependent branching over non-trivial code regions.
+
+## 5. Kernel Fusion
+
+Merging consecutive kernels that operate on the same data eliminates intermediate DRAM round-trips and kernel launch overhead (~5–15 µs each). Intermediate results stay in registers or shared memory instead of being written to and read back from HBM2e. **Most impactful** when a pipeline of lightweight kernels processes the same dataset sequentially, making the inter-kernel memory traffic a significant fraction of total energy.
+
+## 6. Read-Only Cache (`__ldg` / `const __restrict__`)
+
+Route read-only global memory loads through the A100's dedicated texture cache path (separate from the L1 that handles read-write traffic) by using the `__ldg()` intrinsic or declaring pointers as `const __restrict__`. This reduces L2 contention and DRAM traffic for repeated accesses to the same cache line. **Most impactful** for kernels that read large, immutable arrays—especially with some spatial or temporal locality—since it effectively provides an additional caching layer at low code-change cost. Even for semi-random access patterns, routing through the texture path can help.
+
+## 7. Arithmetic Precision Tradeoffs
+
+On the A100, FP64 throughput is approximately 8× lower than FP32 (9.7 vs. 77.6 TFLOPS), and double-precision values consume 2× the register space, shared memory, and memory bandwidth. Switching safe intermediate computations from `double` to `float` reduces data movement and compute energy simultaneously. CUDA fast-math intrinsics (`__expf`, `__logf`, etc.) offer further savings with ~22-bit precision. Always use fused multiply-add (`fmaf`/`fma`) for combined accuracy and throughput benefits. **Most impactful** in compute-bound kernels or when memory bandwidth savings from halving data width are significant—provided the application's accuracy requirements are met.
+
+## 8. Synchronization Minimization
+
+Each `__syncthreads()` stalls all threads in a block until the slowest thread arrives, serializing execution and preventing the scheduler from advancing warps. Move barriers outside of loops when shared memory is not modified each iteration, and replace block-wide barriers with warp-level primitives (`__syncwarp`, `__ballot_sync`, `__reduce_sync`) when only intra-warp consistency is needed. For reductions, use shared-memory tree reduction instead of high-contention atomics, yielding one atomic per block rather than one per thread. **Most impactful** in kernels with frequent barrier calls inside tight loops or heavy atomic contention on a small number of addresses.
+
+## 9. Prefetching and Transfer Optimization
+
+Minimize host-device PCIe transfers by keeping data resident on the GPU across multiple kernel invocations. Use pinned host memory (`cudaMallocHost`) and asynchronous copies with CUDA streams to overlap transfers with computation. Prefer explicit `cudaMalloc`/`cudaMemcpy` over unified memory to avoid costly implicit page migrations. Within kernels, use `#pragma unroll` on short, fixed-count inner loops to enable the compiler to schedule more independent loads in flight, effectively prefetching data through instruction-level parallelism. **Most impactful** when host-device transfer volume is large relative to computation, or when inner-loop memory access patterns can benefit from having multiple outstanding load requests to hide HBM2e latency.

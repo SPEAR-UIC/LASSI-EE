@@ -1,0 +1,35 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Reasoning:
+1. The SOURCE CODE implements a fixed-size 16384 x 16384 Jacobi relaxation solver with sinusoidal boundary conditions.
+   It iterates until the normalized L2 error falls below 1e-5 or until 10000 iterations are reached.
+
+2. The REFACTORED CODE implements a completely different program:
+   - It uses a default size of 1024 instead of fixed N = 16384.
+   - It uses a fixed default iteration count of 100 instead of convergence-based stopping.
+   - It initializes the grid with a simple polynomial value, not sinusoidal boundary conditions.
+   - It does not preserve the original boundary initialization behavior.
+   - It performs Jacobi iterations without computing or checking convergence error.
+   - It introduces unrelated material/isotope data structures and functions that have no counterpart in the source program.
+   - It changes the command-line interface by adding size and iteration arguments, whereas the source program has no such interface.
+
+3. The printed output is not nearly equivalent:
+   SOURCE CODE prints:
+   - Error after iteration 0
+   - Error after iteration 1000
+   - Average execution time per iteration
+   - PASS or FAIL
+   - Total elapsed time
+
+   REFACTORED CODE prints only:
+   - Checksum: ...
+
+   It omits the iterative error reporting, convergence status, timing format, and PASS/FAIL result.
+
+4. The much lower energy usage is not evidence of a valid optimization because the refactored program performs a substantially smaller and different computation.
+
+Conclusion: INVALID
+*/
+```

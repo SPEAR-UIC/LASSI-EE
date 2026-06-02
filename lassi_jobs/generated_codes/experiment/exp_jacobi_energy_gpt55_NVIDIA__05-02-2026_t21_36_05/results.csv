@@ -1,0 +1,2 @@
+timestamp,app,model,gpu_vendor,success,runtime_min,baseline_energy_j,optimized_energy_j,energy_reduction_pct
+05-02-2026_t21_36_05,jacobi,gpt55,NVIDIA,True,35.84,1519.621,1010.67,33.49

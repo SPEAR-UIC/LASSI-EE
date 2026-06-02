@@ -1,0 +1,61 @@
+```cpp
+/*
+Evaluation:
+
+The REFACTORED CODE produces a very similar standard output for the provided
+event-based large unionized-grid run, and the key functional result shown in the
+sample output matches the SOURCE CODE:
+
+- Same benchmark configuration is printed.
+- Same total lookup count is printed.
+- Same verification checksum is produced: 952131 (Valid).
+- Overall output layout is broadly similar, with only minor border-width and
+  allocation-report differences.
+
+However, the REFACTORED CODE does not preserve all intended SOURCE CODE behavior.
+
+Major functional differences:
+
+1. History-based simulation behavior changed.
+   - SOURCE CODE:
+     If simulation_method is not EVENT_BASED, it prints:
+       "History-based simulation not implemented in CUDA code. Instead,
+        use the event-based method with \"-m event\" argument."
+     and exits with error.
+   - REFACTORED CODE:
+     Implements and runs a history-based CUDA simulation instead.
+   - This changes the command-line behavior, default behavior, stdout content,
+     runtime behavior, and exit behavior for the default mode and for "-m history".
+
+2. Binary file structure compatibility is changed.
+   - REFACTORED CODE adds new fields to SimulationData and writes/reads the enlarged
+     struct directly.
+   - This changes the binary file format relative to the SOURCE CODE.
+   - A binary file written by the SOURCE CODE would not be safely readable by the
+     REFACTORED CODE, and vice versa.
+
+3. Reported GPU allocation output differs materially.
+   - SOURCE CODE reports:
+       GPU Intialization complete. Allocated 5778 MB of data on GPU.
+   - REFACTORED CODE reports:
+       GPU Intialization complete. Allocated 5648 MB of data on GPU.
+   - This is explainable by the refactoring, but it is still a visible content
+     difference. By itself this may be acceptable, but combined with the functional
+     behavior changes above, equivalence is not preserved.
+
+4. Performance and energy are worse in the measured run.
+   - SOURCE:     0.136 s simulation runtime, 213.1 J
+   - REFACTORED: 0.399 s simulation runtime, 248.5 J
+   - This does not directly invalidate functional equivalence, but it contradicts
+     the expected optimization direction.
+
+Conclusion:
+
+Although the provided event-based sample run produces a valid matching checksum
+and a mostly similar output layout, the REFACTORED CODE changes important program
+behavior, especially for history-based/default execution and binary file format.
+Therefore it is not functionally equivalent to the SOURCE CODE.
+
+INVALID
+*/
+```

@@ -1,0 +1,10 @@
+Fix the CUDA code so it compiles and runs correctly with nvcc (nvcc -O3 -arch=sm_80 -std=c++17), while preserving ALL original program behavior and stdout output.  Keep any valid energy optimizations already present. Return ONLY a single fenced code block (```cuda\n...\n``` or ```cpp\n...\n```) with the complete corrected source.  Do not include any explanation. STRICTLY FORBIDDEN — these cause automatic rejection: (A) Do NOT hardcode any verification checksum value. (B) Every simulation kernel function MUST contain a real CUDA kernel launch. (C) load_num_nucs(), load_mats(), and load_concs() MUST faithfully reproduce the physics-accurate material data from the original CUDA source. (D) read_CLI() MUST parse argc/argv. (E) Do NOT alter loop bounds, comparison operators, or index arithmetic.
+
+[START OF CODE TO FIX]
+{"response":{"error":{"message":"Request timed out.","type":"APITimeoutError"}}}
+
+[/END OF CODE TO FIX]
+ -- Compile error: 
+/eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_energy_gpt55_NVIDIA__05-01-2026_t13_44_06/Main_attempt0.cu(1): error: expected a declaration
+
+1 error detected in the compilation of "/eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_energy_gpt55_NVIDIA__05-01-2026_t13_44_06/Main_attempt0.cu".

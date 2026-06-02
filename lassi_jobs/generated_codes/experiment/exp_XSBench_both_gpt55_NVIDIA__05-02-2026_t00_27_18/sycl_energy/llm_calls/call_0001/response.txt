@@ -1,0 +1,676 @@
+## 1. Overall algorithm and GPU resource-utilization profile
+
+### Algorithm
+
+The program implements the event-based XSBench cross-section lookup workload. For each lookup:
+
+1. Generate a deterministic pseudo-random particle energy using a 64-bit LCG.
+2. Generate a pseudo-random material ID.
+3. Compute macroscopic cross sections for that material by:
+   - locating the relevant energy interval in either a unionized grid, per-nuclide grid, or hash grid,
+   - interpolating microscopic cross sections for each nuclide in the material,
+   - accumulating five macroscopic cross-section components.
+4. Select the largest of the five accumulated values and write a small verification value.
+5. Reduce the verification array on the device.
+
+The baseline performs sampling and cross-section lookup in one kernel. Optimized variants split sampling from lookup and attempt to reduce divergence by launching material-specific or fuel/non-fuel-specific lookup kernels, sometimes after sorting or partitioning the sample arrays.
+
+### Compute-bound vs memory-bound behavior
+
+The dominant lookup kernels are expected to be memory-bound on Intel Data Center GPU Max / PVC.
+
+Reasons:
+
+- The main data structure, `nuclide_grid`, is large and accessed through data-dependent indices.
+- The unionized and hash index grids introduce additional indirect global memory accesses.
+- Binary searches over energy grids perform many unpredictable global loads.
+- Adjacent work-items usually operate on different random particle energies and often different materials, so memory references are not naturally aligned across a sub-group.
+- Each lookup performs some double-precision interpolation and accumulation, but the arithmetic intensity is low relative to the amount of irregular memory traffic.
+
+PVC has strong FP64 throughput, so double-precision arithmetic itself is unlikely to be the limiting factor unless the working set becomes cache-resident. The primary energy-efficiency issue is wasted memory movement and memory-latency stalls rather than peak compute utilization.
+
+### Access regularity
+
+The workload combines:
+
+- Sequential accesses:
+  - sampling writes to `p_energy_samples[i]` and `mat_samples[i]`,
+  - verification writes to `verification[i]`,
+  - reduction reads chunks of `verification`,
+  - count kernels linearly scan `mat_samples`.
+
+- Irregular/random accesses:
+  - binary search over `unionized_energy_array`,
+  - binary search over per-nuclide energy grids,
+  - indirect lookup through `index_grid`,
+  - indirect access into `nuclide_grid`,
+  - material-dependent access into `mats` and `concs`.
+
+The cross-section lookup phase is dominated by irregular, data-dependent reads.
+
+### Energy-efficiency opportunities
+
+- Prefer variants that reduce divergence and improve locality, especially material-sorted or energy-sorted variants, but avoid host-side sorting because it introduces expensive device-to-host and host-to-device transfers.
+- Replace the CPU sorting/partitioning helpers with device-side oneDPL or custom GPU kernels if sorting is retained.
+- Consider using the hash grid mode with tuned bin count to reduce binary-search work while avoiding the extremely large unionized index grid, depending on accuracy and memory-capacity constraints.
+- Consider converting high-volume double data to float if validation allows; this would reduce memory bandwidth, cache pressure, register pressure, and energy per lookup.
+- Restructure `NuclideGridPoint` from array-of-structures to structure-of-arrays if profiling shows inefficient cache-line utilization or poor vector memory coalescing.
+- Cache material metadata in SLM or constant/read-only cache style storage, especially for material-specific kernels.
+- Avoid launching twelve full-size material kernels with mostly inactive work-items unless samples are compacted by material.
+
+---
+
+## 2. SYCL kernel launch configurations and likely occupancy on PVC
+
+### Important observation
+
+The code does not use explicit `sycl::nd_range`. All kernels are launched with `sycl::range<1>`, so there is no programmer-specified local work-group size.
+
+The variables named `nthreads` and `nblocks` only determine the global range size. They do not impose CUDA-like block size or SYCL local range. Therefore, likely occupancy cannot be inferred directly from `nthreads = 32` or `nthreads = 256`.
+
+On PVC, actual occupancy depends on:
+
+- compiler-selected SIMD width,
+- runtime-selected work-group decomposition,
+- register/GRF pressure,
+- private memory usage,
+- SLM usage,
+- memory latency,
+- number of active EUs and hardware threads per EU.
+
+Because no SLM is used and no explicit local size is requested, occupancy is mostly constrained by register pressure and memory stalls.
+
+### Kernel launch summary
+
+#### Baseline simulation
+
+- Main lookup kernel:
+  - Global range: rounded up to `ceil(lookups / 256) * 256`.
+  - Local range: not specified.
+  - One work-item per lookup.
+  - Occupancy expectation: moderate. No SLM, but significant private state and inlined function bodies. Memory stalls dominate.
+
+#### Optimization 1
+
+- Sampling kernel:
+  - Global range: `ceil(lookups / 32) * 32`.
+  - Local range: not specified.
+  - Occupancy expectation: high to moderate. Mostly register and integer-heavy due to LCG fast-forwarding.
+
+- Lookup kernel:
+  - Global range: `ceil(lookups / 32) * 32`.
+  - Local range: not specified.
+  - Occupancy expectation: moderate, memory-latency-bound, with private double arrays.
+
+#### Optimization 2
+
+- Sampling kernel:
+  - Same as Optimization 1.
+
+- Twelve material-specific lookup kernels:
+  - Each kernel uses global range `ceil(lookups / 32) * 32`.
+  - Local range: not specified.
+  - Each kernel exits early for work-items whose sampled material does not match the kernel’s material.
+  - Occupancy expectation: nominal occupancy may be high, but effective useful occupancy is poor because most work-items return early in each material kernel. This wastes scheduling, launch, and memory-read energy.
+
+#### Optimization 3
+
+- Sampling kernel:
+  - Same as Optimization 1.
+
+- Two lookup kernels:
+  - Each uses global range `ceil(lookups / 32) * 32`.
+  - One processes fuel material, one processes non-fuel materials.
+  - Local range: not specified.
+  - Occupancy expectation: better than Optimization 2 because only two passes are made, but each kernel still contains branch filtering and the non-fuel kernel still has mixed material sizes.
+
+#### Optimization 4
+
+- Sampling kernel:
+  - Global range: `ceil(lookups / 32) * 32`.
+
+- Twelve `count_equal_device` kernels:
+  - Each global range: `lookups`.
+  - Local range: not specified.
+  - Uses global atomics into one counter per material count.
+  - Occupancy expectation: high nominal occupancy but poor atomic efficiency due to contention.
+
+- Host-side sort by material:
+  - Copies `mat_samples` and `p_energy_samples` to host, sorts on CPU, copies back to device.
+  - This is a major energy-efficiency concern.
+
+- Twelve compacted material lookup kernels:
+  - For material `m`, global range: `ceil(n_lookups_per_material[m] / 32) * 32`.
+  - Local range: not specified.
+  - Occupancy expectation: better effective occupancy than Optimization 2 because each kernel works mostly on matching material samples. Material-specific loop trip counts become uniform within each kernel.
+
+#### Optimization 5
+
+- Sampling kernel:
+  - Global range: `ceil(lookups / 32) * 32`.
+
+- One `count_equal_device` kernel:
+  - Global range: `lookups`.
+  - Counts fuel samples.
+
+- Host-side partition into fuel and non-fuel:
+  - Copies sample arrays to host, partitions, copies back.
+  - Energy-expensive due to host/device transfers.
+
+- Two compacted lookup kernels:
+  - Fuel global range: `ceil(n_fuel_lookups / 32) * 32`.
+  - Non-fuel global range: `ceil((lookups - n_fuel_lookups) / 32) * 32`.
+  - Local range: not specified.
+  - Occupancy expectation: fuel kernel has good material uniformity; non-fuel kernel still has mixed material loop lengths.
+
+#### Optimization 6
+
+- Sampling kernel:
+  - Global range: `ceil(lookups / 32) * 32`.
+
+- Twelve `count_equal_device` kernels:
+  - Each global range: `lookups`.
+
+- Host-side material sort:
+  - Device-to-host and host-to-device transfers.
+
+- Host-side energy sort within each material segment:
+  - Additional device-to-host and host-to-device transfers for each segment.
+  - Energy-expensive, but may improve lookup locality.
+
+- Twelve compacted material lookup kernels:
+  - Same kernel body as Optimization 4.
+  - Global range per material: `ceil(n_lookups_per_material[m] / 32) * 32`.
+  - Local range: not specified.
+  - Occupancy expectation: best lookup coherence among the provided variants because material and energy locality are improved, but the sorting implementation is not energy-efficient.
+
+#### Reduction kernel in `reduce_verification_device`
+
+- Iterative reduction.
+- Each pass launches global range `next_n`, where `next_n = ceil(current_n / 256)`.
+- Each work-item serially sums up to 256 elements.
+- Local range: not specified.
+- Occupancy expectation: nominally high, but memory access is not ideal for sub-group coalescing because adjacent work-items read chunks separated by 256 elements at the same inner-loop position.
+
+#### Count kernel in `count_equal_device`
+
+- Global range: `n`.
+- Local range: not specified.
+- One global atomic increment target.
+- Occupancy expectation: high nominal occupancy but poor scalability and high energy per useful count due to atomic contention.
+
+---
+
+## 3. Global USM memory access patterns and sub-group coalescing
+
+### USM allocation model
+
+The code uses device USM through `sycl::malloc_device`. The main GPU-resident arrays are:
+
+- `num_nucs`
+- `concs`
+- `mats`
+- `unionized_energy_array`
+- `index_grid`
+- `nuclide_grid`
+- `verification`
+- optional `p_energy_samples`
+- optional `mat_samples`
+
+### Coalesced or mostly coalesced accesses
+
+The following accesses are generally coalesced for consecutive work-items in a sub-group:
+
+- Sampling writes:
+  - `p_energy_samples[i]`
+  - `mat_samples[i]`
+
+- Lookup input reads in optimized variants:
+  - `p_energy_samples[i]`
+  - `mat_samples[i]`
+
+- Verification writes:
+  - `verification[i]`
+
+- Count kernel reads:
+  - `mat_samples[i]`
+
+These are linear in the global work-item ID.
+
+### Poorly coalesced or uncoalesced accesses
+
+The dominant lookup accesses are generally not coalesced across sub-groups:
+
+- `unionized_energy_array` during binary search:
+  - Each work-item searches for a different random energy.
+  - Binary-search paths diverge.
+  - Adjacent lanes are unlikely to read the same or adjacent energy locations unless energy sorting has been applied.
+
+- `index_grid`:
+  - Access pattern is based on `idx * n_isotopes + nuc`.
+  - `idx` is energy-dependent and varies across work-items.
+  - `nuc` follows material-specific nuclide lists.
+  - Material sorting helps because lanes process the same material, but energy-dependent `idx` still varies.
+
+- `nuclide_grid`:
+  - Accessed through material nuclide ID and energy index.
+  - The layout is array-of-structures, with each `NuclideGridPoint` containing six doubles.
+  - Each interpolation reads a low and high grid point.
+  - Across lanes, the nuclide and energy index are often different, so accesses are usually scattered.
+
+- `mats` and `concs`:
+  - In unsorted kernels, material varies across lanes, so these accesses diverge.
+  - In material-specific sorted kernels, these accesses become much more coherent because all lanes use the same material and loop over the same nuclide list.
+
+### Reduction memory pattern
+
+The reduction kernel assigns one work-item to a chunk of 256 verification values. Each work-item reads its own chunk sequentially. However, adjacent work-items read different chunks, so at the same inner-loop iteration, adjacent sub-group lanes read locations separated by 256 elements. That is not an ideal sub-group-coalesced pattern.
+
+A more energy-efficient reduction would use work-groups where adjacent work-items read adjacent elements and then reduce using sub-group operations and/or SLM.
+
+### Effect of the optimized variants
+
+- Optimization 1:
+  - Adds coalesced sample arrays but does not improve lookup locality.
+  - Also adds extra global writes and reads.
+
+- Optimization 2:
+  - Performs twelve full passes over the sample arrays.
+  - Reads `mat_samples` coalesced, but most work-items return early.
+  - Poor energy efficiency because of repeated scanning and kernel launches.
+
+- Optimization 3:
+  - Reduces full passes from twelve to two.
+  - Improves energy compared with Optimization 2 but still has branch filtering.
+
+- Optimization 4:
+  - Material sorting improves coherence of `mats`, `concs`, `num_nucs`, and loop trip counts.
+  - Host-side sorting is energy-expensive.
+
+- Optimization 5:
+  - Fuel/non-fuel partitioning improves the fuel-heavy path but leaves non-fuel divergence.
+
+- Optimization 6:
+  - Material plus energy sorting gives the best chance for cache reuse and more coherent binary-search paths.
+  - The current host-side sort implementation likely consumes substantial energy and may dominate for smaller or moderate lookup counts.
+
+---
+
+## 4. Shared local memory / SLM usage
+
+### Current SLM usage
+
+No explicit SLM is used.
+
+There are also no local accessors, no local memory tiles, and no group-level reductions.
+
+### Current private memory usage
+
+The lookup kernels use private per-work-item arrays:
+
+- `macro_xs_vector[5]`
+- `xs_vector[5]`
+
+These are double arrays. They may remain in registers, but depending on compiler decisions and register pressure, they can increase GRF usage or spill to private memory.
+
+### Potential SLM opportunities
+
+#### Material metadata caching
+
+The arrays `num_nucs`, `mats`, and `concs` are small compared with the grid data. In material-specific kernels, all work-items in a group use the same material. This makes them good candidates for SLM caching.
+
+For example:
+
+- `num_nucs[m]` is uniform.
+- `mats[m, j]` is reused by every work-item processing material `m`.
+- `concs[m, j]` is reused by every work-item processing material `m`.
+
+Fuel material can have up to 321 nuclides, so caching its material list and concentrations requires only a few kilobytes, well within PVC SLM capacity.
+
+Potential benefit:
+
+- lower repeated global memory traffic,
+- lower cache pressure,
+- improved energy per lookup.
+
+Cost:
+
+- one group-level preload,
+- one group barrier after preload,
+- some SLM capacity per work-group.
+
+Because SLM use is currently zero, moderate SLM use for material metadata is unlikely to be the primary occupancy limiter.
+
+#### Reduction using SLM or sub-groups
+
+The verification reduction is currently inefficient. A more energy-efficient design would:
+
+- have adjacent work-items read adjacent verification elements,
+- reduce within sub-groups,
+- optionally use SLM for work-group partial sums,
+- write one partial sum per work-group.
+
+This would improve memory coalescing and reduce redundant global memory traffic.
+
+#### Energy-grid or nuclide-grid caching
+
+Caching the full energy or nuclide grid in SLM is generally not practical because the grids are large and accesses are random. However, after energy sorting, nearby work-items may access nearby regions. There may be limited opportunities to cache small windows of `unionized_energy_array` or `nuclide_grid`, but the benefit is less certain than material metadata caching.
+
+---
+
+## 5. Sub-group divergence and conditional branches inside kernels
+
+### Common divergence sources
+
+The lookup kernels contain substantial divergence from:
+
+- bounds checks,
+- material-dependent loop lengths,
+- binary-search branch decisions,
+- grid-type branches,
+- energy boundary handling,
+- max-selection branches,
+- early returns in material-filtered kernels.
+
+On PVC, this reduces SIMD efficiency. Material and energy sorting can improve branch coherence.
+
+### Sampling kernel divergence
+
+The sampling kernel includes:
+
+- bounds check for `i >= lookups`,
+- LCG fast-forward loop with condition based on `n`,
+- branch on low bit of `n`,
+- material selection loop with `roll < running`,
+- early return from material selection.
+
+The LCG fast-forward branch pattern differs by work-item index, so it can cause SIMD divergence.
+
+### Baseline lookup kernel divergence
+
+The baseline kernel includes:
+
+- bounds check for `i >= lookups`,
+- all sampling divergence listed above,
+- grid-type branch inside macroscopic/microscopic lookup,
+- binary-search branches,
+- material-dependent nuclide loop length,
+- interpolation boundary branches,
+- max-selection branch over five cross-section components.
+
+Because each work-item independently samples material and energy, divergence is high.
+
+### Optimization 1 lookup divergence
+
+The lookup kernel removes sampling from the lookup phase but still includes:
+
+- bounds check,
+- grid-type branches,
+- binary-search branches,
+- material-dependent loop length,
+- interpolation boundary branches,
+- max-selection branches.
+
+Material and energy are still unsorted, so divergence remains high.
+
+### Optimization 2 lookup divergence
+
+Each of the twelve material kernels includes:
+
+- bounds check,
+- load sampled material,
+- early return if sampled material does not match the kernel’s material,
+- all lookup divergence for active work-items.
+
+This reduces material-loop divergence among active work-items but wastes energy because most lanes are inactive in each material pass.
+
+### Optimization 3 lookup divergence
+
+Each of the two fuel/non-fuel kernels includes:
+
+- bounds check,
+- fuel/non-fuel condition,
+- all lookup divergence for active work-items.
+
+The fuel kernel is relatively coherent because material 0 dominates a long uniform loop. The non-fuel kernel still mixes many materials with different nuclide counts.
+
+### Optimization 4 lookup divergence
+
+After material sorting, each material-specific kernel includes:
+
+- bounds check against that material’s compacted count,
+- a material equality check that should normally be true after sorting,
+- lookup divergence.
+
+This is more SIMD-friendly because the material and loop length are uniform within each material kernel.
+
+### Optimization 5 lookup divergence
+
+After fuel/non-fuel partitioning:
+
+- the fuel kernel has uniform material behavior,
+- the non-fuel kernel still has mixed material behavior,
+- both kernels retain energy-search divergence.
+
+### Optimization 6 lookup divergence
+
+After material and energy sorting:
+
+- material loop divergence is reduced,
+- energy-search paths are more coherent among neighboring work-items,
+- cache locality should improve,
+- remaining divergence comes from binary-search comparisons, interpolation boundary cases, and max-selection branches.
+
+This is likely the best lookup-kernel structure for SIMD efficiency, but the current host-side sorting implementation is energy-inefficient.
+
+### Reduction kernel divergence
+
+The reduction kernel includes:
+
+- end-of-chunk bounds clamp,
+- loop over chunk elements.
+
+Only the final chunk is shorter, so divergence is limited.
+
+### Count kernel divergence
+
+The count kernel includes:
+
+- comparison against the target material,
+- atomic increment only for matching work-items.
+
+The branch is data-dependent. The atomic target is highly contended.
+
+---
+
+## 6. Data types and double-precision operations that may be replaceable with float
+
+### Double-heavy data structures
+
+The following high-volume or frequently used values are double precision:
+
+- `NuclideGridPoint.energy`
+- `NuclideGridPoint.total_xs`
+- `NuclideGridPoint.elastic_xs`
+- `NuclideGridPoint.absorbtion_xs`
+- `NuclideGridPoint.fission_xs`
+- `NuclideGridPoint.nu_fission_xs`
+- `concs`
+- `unionized_energy_array`
+- `p_energy_samples`
+- local `macro_xs_vector`
+- local `xs_vector`
+- interpolation factor `f`
+- sampled particle energy `p_energy`
+
+These dominate memory traffic in the lookup phase.
+
+### Candidate float conversions
+
+If validation and checksum requirements allow, the best candidates for conversion to float are:
+
+- particle energies,
+- unionized energy grid,
+- nuclide energy values,
+- cross-section values,
+- concentrations,
+- interpolation arithmetic,
+- macroscopic and microscopic XS vectors.
+
+Potential benefits on PVC:
+
+- roughly half the memory traffic for these arrays,
+- better cache residency,
+- reduced register footprint,
+- reduced private-memory pressure,
+- lower energy per lookup.
+
+### Values that should remain integer or 64-bit
+
+The LCG seed arithmetic should remain 64-bit integer because it defines the deterministic random sequence.
+
+Index and length types should be changed only with great care. Some unionized-grid configurations can produce very large `index_grid` sizes, so 64-bit length arithmetic may be required even if individual per-nuclide indices fit in 32 bits.
+
+### Validation caution
+
+Changing double to float can change:
+
+- binary-search decisions near equal energies,
+- interpolation results,
+- max-index selection,
+- final verification checksum.
+
+Therefore, float conversion is an energy-efficiency opportunity only if the required numerical behavior permits it.
+
+---
+
+## 7. Barrier usage
+
+There are no explicit `group_barrier()` calls anywhere in the source.
+
+Barrier count per kernel:
+
+- Baseline lookup kernel: 0.
+- Sampling kernel: 0.
+- Optimization 1 lookup kernel: 0.
+- Optimization 2 lookup kernel: 0.
+- Optimization 3 lookup kernel: 0.
+- Optimization 4 lookup kernel: 0.
+- Optimization 5 lookup kernel: 0.
+- Optimization 6 uses Optimization 4 lookup kernel: 0.
+- Reduction kernel: 0.
+- Count-equal kernel: 0.
+
+There are, however, many host-side synchronization points through `.wait()` calls and queue waits. These are not `group_barrier()` calls, but they do serialize phases and can reduce energy efficiency by preventing overlap.
+
+---
+
+## 8. Unusual loop bounds or comparison operators — INTENTIONAL, preserve verbatim
+
+The following constructs appear unusual or delicate. They should be treated as INTENTIONAL and preserved verbatim unless there is a validated algorithmic change.
+
+### INTENTIONAL: material sampling accumulation in `pick_mat`
+
+The material picker accumulates probabilities using an inner loop that starts from the current material index and decrements while the index is greater than zero. This excludes the zero-th distribution element from the running sum. Material 0 is returned by the final fallback path.
+
+This is unusual, but it affects the deterministic material distribution and checksum. Preserve verbatim.
+
+### INTENTIONAL: binary-search termination condition
+
+Both grid-search routines use a loop that continues while the interval length is greater than one and then returns the lower limit.
+
+This exact lower-bound behavior is used by later interpolation logic. Preserve verbatim.
+
+### INTENTIONAL: binary-search comparison direction
+
+The search compares the examined energy against the quarry energy using a strict greater-than test and updates either the upper or lower limit.
+
+This determines the selected lower energy index. Preserve verbatim.
+
+### INTENTIONAL: unionized-grid boundary handling
+
+The microscopic lookup checks whether the index-grid value equals the last grid point and then backs up by one element when needed.
+
+This prevents selecting an invalid high point during interpolation. Preserve verbatim.
+
+### INTENTIONAL: hash-grid upper-bin handling
+
+The hash-grid path checks whether the hash bin index is the last bin and uses the final nuclide grid point as the upper bound in that case.
+
+Preserve verbatim.
+
+### INTENTIONAL: hash-grid energy boundary comparisons
+
+The hash-grid path uses less-than-or-equal and greater-than-or-equal comparisons against the low and high bin energies.
+
+These comparisons control whether the code clamps to the beginning or end of the nuclide grid rather than performing a search. Preserve verbatim.
+
+### INTENTIONAL: lower-index final-point handling
+
+After finding a lower index, the code checks whether that index equals the final grid point and backs up by one before interpolation.
+
+This is needed so that `high = low + 1` remains valid. Preserve verbatim.
+
+### INTENTIONAL: unionized-grid initialization uses index plus one
+
+During unionized-grid initialization, the high-energy tracker starts from the second grid point of each nuclide.
+
+This pairs with the later `n_gridpoints - 2` stopping condition. Preserve verbatim.
+
+### INTENTIONAL: unionized-grid initialization stops incrementing at `n_gridpoints - 2`
+
+The initialization logic stops increasing `idx_low` when it reaches the second-to-last grid point.
+
+This ensures later interpolation has a valid high neighbor. Preserve verbatim.
+
+### INTENTIONAL: XXL gridpoint assignment uses a floating multiplier
+
+The XXL input path assigns the gridpoint count using a multiplication by 2.1 before storing into the integer gridpoint field.
+
+This is unusual because it involves floating-to-integer conversion, but it defines the benchmark size used by this source. Preserve verbatim.
+
+### INTENTIONAL: fuel/non-fuel condition in Optimization 3
+
+The Optimization 3 lookup condition maps one kernel launch to fuel material and the other to non-fuel materials using a compound boolean expression.
+
+The logic is somewhat easy to misread because the launch argument names and conditions interact. Preserve verbatim.
+
+---
+
+## Additional PVC-focused energy-efficiency notes
+
+### Host-side sorting is a major concern
+
+The sorting and partitioning helpers copy full sample arrays to the host, use CPU algorithms, and copy data back to the GPU. On PVC systems this can consume substantial energy and time, especially for large lookup counts.
+
+If sorting is beneficial, perform it on the device using oneDPL or custom GPU kernels.
+
+### Atomic material counting is inefficient
+
+`count_equal_device` launches one full scan per material and uses a single contended global atomic counter. Optimization 4 and 6 perform twelve full scans.
+
+More energy-efficient alternatives include:
+
+- one pass that computes all twelve material counts,
+- per-work-group histograms in SLM,
+- sub-group reductions,
+- device-side prefix sums for compaction.
+
+### Device memory release is incomplete
+
+The release routine frees several major arrays but does not free `index_grid`. The optional sample arrays allocated in optimized variants are also not explicitly freed. Program termination may reclaim memory, but for repeated runs or library integration this would waste device memory and energy.
+
+### Explicit `nd_range` may improve control
+
+Using explicit `nd_range` would allow tuning of local size for PVC. Good candidates to evaluate are local sizes such as 128 or 256 work-items, with attention to register pressure and SIMD width. However, the current code does not specify local size, so the runtime decides.
+
+### Best likely optimization direction
+
+For energy efficiency on PVC, the most promising direction is:
+
+1. Keep lookup work material-coherent.
+2. Sort or compact samples on the GPU, not the CPU.
+3. Cache material metadata in SLM for material-specific kernels.
+4. Use sub-group or work-group reductions for verification.
+5. Consider float storage/arithmetic if scientifically valid.
+6. Improve layout of `NuclideGridPoint` if profiling confirms poor cache-line utilization.

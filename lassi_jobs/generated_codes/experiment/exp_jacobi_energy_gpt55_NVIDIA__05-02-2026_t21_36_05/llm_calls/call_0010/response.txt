@@ -1,0 +1,31 @@
+```cpp
+/*
+The refactored code preserves the intended functionality of the source code.
+
+Key functional checks:
+- The initialization is equivalent. The source initializes both host arrays separately with the same deterministic function, while the refactored code initializes one array and device-copies it to the second buffer. This preserves the same initial field and boundary values.
+- The Jacobi stencil computation is unchanged in substance: each interior point is updated from the four neighboring values of the previous iteration, with the same arithmetic expression.
+- Boundary behavior is preserved. The refactored pointer swap is valid because both buffers initially contain the same fixed boundary values, and only interior points are overwritten by the Jacobi kernel.
+- The explicit `swap_data` copy in the source is replaced by pointer swapping in the refactored version. For this double-buffered Jacobi iteration, that is functionally equivalent.
+- The error calculation is still the L2 update norm over the grid. The refactored code replaces global atomic accumulation with hierarchical reductions. This changes floating-point summation order, so tiny numerical differences are expected and acceptable.
+- The convergence behavior remains consistent: both versions print iteration 0 and iteration 1000 errors, both reach tolerance before `max_iters`, and both print `PASS`.
+
+Standard output comparison:
+- The layout and key content are nearly identical.
+- The reported errors differ only in the last few digits:
+  - Source:     1.38643e-05
+  - Refactored: 1.38644e-05
+  This is a reasonable consequence of changed floating-point reduction order.
+- Timing and energy values differ as expected due to optimization.
+- The refactored version preserves the same output structure:
+  - error progress lines
+  - average execution time per iteration
+  - PASS/FAIL status
+  - total elapsed time
+  - energy results from the measurement harness
+
+The refactored code is therefore functionally equivalent and produces sufficiently equivalent standard output.
+
+VALID
+*/
+```

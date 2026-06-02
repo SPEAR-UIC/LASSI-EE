@@ -1,0 +1,234 @@
+
+
+Looking at the code, I need to identify why there's a verification mismatch. The issue is in the `jacobi_step_with_error` kernel's warp reduction for shared memory. When `TILE_X = 32` and `TILE_Y = 32`, the block has 1024 threads. The reduction uses `reduction_array[TILE_Y]` (32 entries), but when `threadIdx.y == 0 && threadIdx.x < TILE_Y`, it reads from `reduction_array[threadIdx.x]`. However, the first warp reduction only reduces across `threadIdx.x` (the warp), so each warp (one per `threadIdx.y` row) produces a partial sum in lane 0. But `reduction_array` has `TILE_Y` entries and is indexed by `threadIdx.y`, which is correct for 32 rows. Then the second reduction reads 32 values and reduces them. This looks correct for TILE_Y=32 since warp size is 32.
+
+The actual issue might be that when `TILE_X != 32` (warp size), the first reduction wouldn't fully reduce. But here TILE_X=32, so it should work.
+
+After careful analysis, I believe the problem is that the code compiles and runs correctly but may have a memory issue with N=16384 (requires ~2GB total). The code itself looks logically correct. Let me check if there's an edge case issue with the halo loading - when `i=0` and `threadIdx.x==0`, it tries to load `i-1 = -1` but the guard `i >= 1` prevents that. Similarly for other edges.
+
+The real issue might be that `TILE_X=32` means `threadIdx.x` ranges 0-31, and `TILE_X-1=31`. The `__shfl_down_sync` with offset up to 16 covers the full warp. This seems fine.
+
+Let me ensure the code compiles cleanly and check for any subtle issues:
+
+```cuda
+#include <cstdio>
+#include <iostream>
+#include <iomanip>
+#include <cmath>
+#include <limits>
+#include <ctime>
+#include <chrono>
+#include <cuda.h>
+
+#define N 16384
+#define IDX(i, j) ((i) + (j) * N)
+
+#define TILE_X 32
+#define TILE_Y 32
+
+void initialize_data(float* f) {
+    for (int j = 0; j < N; j++) {
+        for (int i = 0; i < N; i++) {
+            if (i == 0 || i == N - 1 || j == 0 || j == N - 1) {
+                if (j == 0) {
+                    f[IDX(i, j)] = 1.0f;
+                } else {
+                    f[IDX(i, j)] = 0.0f;
+                }
+            } else {
+                f[IDX(i, j)] = 0.0f;
+            }
+        }
+    }
+}
+
+__global__ __launch_bounds__(1024, 2)
+void jacobi_step_no_error(const float* __restrict__ f_old,
+                          float* __restrict__ f) {
+    __shared__ float tile[TILE_Y + 2][TILE_X + 2];
+
+    const int i = threadIdx.x + blockIdx.x * TILE_X;
+    const int j = threadIdx.y + blockIdx.y * TILE_Y;
+
+    if (i < N && j < N) {
+        tile[threadIdx.y + 1][threadIdx.x + 1] = __ldg(&f_old[IDX(i, j)]);
+    }
+
+    if (threadIdx.x == 0 && i >= 1) {
+        tile[threadIdx.y + 1][0] = __ldg(&f_old[IDX(i - 1, j)]);
+    }
+    if (threadIdx.x == TILE_X - 1 && i <= N - 2) {
+        tile[threadIdx.y + 1][threadIdx.x + 2] = __ldg(&f_old[IDX(i + 1, j)]);
+    }
+    if (threadIdx.y == 0 && j >= 1) {
+        tile[0][threadIdx.x + 1] = __ldg(&f_old[IDX(i, j - 1)]);
+    }
+    if (threadIdx.y == TILE_Y - 1 && j <= N - 2) {
+        tile[threadIdx.y + 2][threadIdx.x + 1] = __ldg(&f_old[IDX(i, j + 1)]);
+    }
+
+    __syncthreads();
+
+    if (j >= 1 && j <= N - 2) {
+        if (i >= 1 && i <= N - 2) {
+            f[IDX(i, j)] = 0.25f * (tile[threadIdx.y + 1][threadIdx.x + 2] +
+                                     tile[threadIdx.y + 1][threadIdx.x + 0] +
+                                     tile[threadIdx.y + 2][threadIdx.x + 1] +
+                                     tile[threadIdx.y + 0][threadIdx.x + 1]);
+        }
+    }
+}
+
+__global__ __launch_bounds__(1024, 2)
+void jacobi_step_with_error(const float* __restrict__ f_old,
+                            float* __restrict__ f,
+                            float* __restrict__ error) {
+    __shared__ float tile[TILE_Y + 2][TILE_X + 2];
+
+    const int i = threadIdx.x + blockIdx.x * TILE_X;
+    const int j = threadIdx.y + blockIdx.y * TILE_Y;
+
+    float old_val = 0.0f;
+    if (i < N && j < N) {
+        old_val = __ldg(&f_old[IDX(i, j)]);
+        tile[threadIdx.y + 1][threadIdx.x + 1] = old_val;
+    }
+
+    if (threadIdx.x == 0 && i >= 1) {
+        tile[threadIdx.y + 1][0] = __ldg(&f_old[IDX(i - 1, j)]);
+    }
+    if (threadIdx.x == TILE_X - 1 && i <= N - 2) {
+        tile[threadIdx.y + 1][threadIdx.x + 2] = __ldg(&f_old[IDX(i + 1, j)]);
+    }
+    if (threadIdx.y == 0 && j >= 1) {
+        tile[0][threadIdx.x + 1] = __ldg(&f_old[IDX(i, j - 1)]);
+    }
+    if (threadIdx.y == TILE_Y - 1 && j <= N - 2) {
+        tile[threadIdx.y + 2][threadIdx.x + 1] = __ldg(&f_old[IDX(i, j + 1)]);
+    }
+
+    __syncthreads();
+
+    float err = 0.0f;
+
+    if (j >= 1 && j <= N - 2) {
+        if (i >= 1 && i <= N - 2) {
+            float new_val = 0.25f * (tile[threadIdx.y + 1][threadIdx.x + 2] +
+                                     tile[threadIdx.y + 1][threadIdx.x + 0] +
+                                     tile[threadIdx.y + 2][threadIdx.x + 1] +
+                                     tile[threadIdx.y + 0][threadIdx.x + 1]);
+            f[IDX(i, j)] = new_val;
+            float df = new_val - old_val;
+            err = df * df;
+        }
+    }
+
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2) {
+        err += __shfl_down_sync(0xffffffff, err, offset);
+    }
+
+    __shared__ float reduction_array[TILE_Y];
+    if (threadIdx.x == 0) {
+        reduction_array[threadIdx.y] = err;
+    }
+    __syncthreads();
+
+    if (threadIdx.y == 0 && threadIdx.x < TILE_Y) {
+        err = reduction_array[threadIdx.x];
+    } else {
+        err = 0.0f;
+    }
+
+    if (threadIdx.y == 0) {
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset /= 2) {
+            err += __shfl_down_sync(0xffffffff, err, offset);
+        }
+        if (threadIdx.x == 0) {
+            atomicAdd(error, err);
+        }
+    }
+}
+
+int main() {
+    std::clock_t start_time = std::clock();
+
+    float* d_f;
+    float* d_f_old;
+    float* d_error;
+    float h_error_val;
+
+    size_t total = (size_t)N * N * sizeof(float);
+    float* f = (float*)malloc(total);
+    float* f_old = (float*)malloc(total);
+
+    initialize_data(f);
+    initialize_data(f_old);
+
+    cudaMalloc(&d_f, total);
+    cudaMemcpy(d_f, f, total, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_f_old, total);
+    cudaMemcpy(d_f_old, f_old, total, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_error, sizeof(float));
+
+    float error = std::numeric_limits<float>::max();
+    const float tolerance = 1.e-5f;
+    const int max_iters = 10000;
+    int num_iters = 0;
+
+    dim3 grid((N + TILE_X - 1) / TILE_X, (N + TILE_Y - 1) / TILE_Y);
+    dim3 block(TILE_X, TILE_Y);
+
+    const int check_interval = 200;
+
+    cudaDeviceSynchronize();
+    auto start = std::chrono::steady_clock::now();
+
+    while (error > tolerance && num_iters < max_iters) {
+        bool do_check = (num_iters % check_interval == 0) || (num_iters == max_iters - 1);
+
+        if (do_check) {
+            cudaMemset(d_error, 0, sizeof(float));
+            jacobi_step_with_error<<<grid, block>>>(d_f_old, d_f, d_error);
+            cudaMemcpy(&h_error_val, d_error, sizeof(float), cudaMemcpyDeviceToHost);
+            error = sqrtf(h_error_val / ((float)N * (float)N));
+        } else {
+            jacobi_step_no_error<<<grid, block>>>(d_f_old, d_f);
+        }
+
+        if (num_iters % 1000 == 0) {
+            std::cout << "Error after iteration " << num_iters << " = " << error << std::endl;
+        }
+
+        float* tmp = d_f_old;
+        d_f_old = d_f;
+        d_f = tmp;
+
+        ++num_iters;
+    }
+
+    cudaDeviceSynchronize();
+    auto end = std::chrono::steady_clock::now();
+    auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    std::cout << "Average execution time per iteration: " << (time * 1e-9f) / num_iters << " (s)\n";
+
+    if (error <= tolerance && num_iters < max_iters) {
+        std::cout << "PASS" << std::endl;
+    } else {
+        std::cout << "FAIL" << std::endl;
+        return -1;
+    }
+
+    cudaFree(d_f);
+    cudaFree(d_f_old);
+    cudaFree(d_error);
+    free(f);
+    free(f_old);
+
+    double duration = (std::clock() - start_time) / (double)CLOCKS_PER_SEC;
+    std::cout << "Total elapsed time: " << std::setprecision(4) << duration << " seconds" << std::endl;
+
+    return 0;
+}
+```

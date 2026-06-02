@@ -1,16 +1,60 @@
-import ollama
-from ollama import ResponseError
-from cerebras.cloud.sdk import Cerebras
+"""LLM backend implementations.
+
+Note: some backends are optional dependencies (e.g. `ollama`). This module is
+imported by the pipeline regardless of which backend is selected, so optional
+imports must be guarded to avoid hard failures when unused.
+"""
+
+from __future__ import annotations
+
+# Cerebras is an optional dependency.
+try:
+    from cerebras.cloud.sdk import Cerebras  # type: ignore
+except Exception:  # pragma: no cover
+    Cerebras = None  # type: ignore
+
 import json
-import requests
-import httpx
-import aiohttp
+
+# requests/httpx/aiohttp are optional; only needed for some backends/experiments.
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover
+    requests = None  # type: ignore
+
+try:
+    import httpx  # type: ignore
+except Exception:  # pragma: no cover
+    httpx = None  # type: ignore
+
+try:
+    import aiohttp  # type: ignore
+except Exception:  # pragma: no cover
+    aiohttp = None  # type: ignore
+
 import asyncio
 import subprocess
 import re
 import html
 import time
-from IPython.display import display, HTML, clear_output
+
+# IPython is optional outside notebooks.
+try:
+    from IPython.display import display, HTML, clear_output  # type: ignore
+except Exception:  # pragma: no cover
+    display = None  # type: ignore
+    HTML = None  # type: ignore
+    clear_output = None  # type: ignore
+
+# Ollama is an optional dependency.
+try:
+    import ollama  # type: ignore
+    from ollama import ResponseError  # type: ignore
+except Exception:  # pragma: no cover
+    ollama = None  # type: ignore
+
+    class ResponseError(Exception):
+        pass
+
 import lassi.argostream_curl
 
 import warnings

@@ -1,0 +1,2 @@
+trial_number,timestamp,experiment,gpu_vendor,app_name,code_line_count,llm,llm_coder,llm_judge,source_stdout,sycl_compile_ok,sycl_run_ok,sycl_stdout,pipeline_runtime_min
+1,01-28-2026_t20_43_48,exp_xsbench_translate_cuda_to_sycl_gpt52_NVIDIA,NVIDIA,Main,2200,gpt52,gpt52,gpt52,,,,,

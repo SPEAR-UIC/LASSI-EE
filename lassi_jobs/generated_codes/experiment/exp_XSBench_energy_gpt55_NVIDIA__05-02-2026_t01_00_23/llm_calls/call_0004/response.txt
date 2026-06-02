@@ -1,0 +1,15 @@
+```cpp
+The REFACTORED CODE is functionally equivalent for the provided tested execution.
+
+Reasoning:
+- The command-line interface and printed input summary are preserved.
+- The same benchmark configuration is used: event-based, large H-M size, unionized grid, 17,000,000 lookups.
+- Initialization messages, simulation section, results section, and energy-reporting layout are nearly identical.
+- The verification checksum is exactly the same: 952131, and both outputs mark it as Valid.
+- Runtime and Lookups/s differ slightly, but the difference is small and consistent with a performance-oriented refactor.
+- Energy usage is also nearly identical, with a very small reduction from 213.057 J to 212.793 J.
+- Formatting differences are minor: the refactored border line appears slightly shorter, but all key displayed content and layout structure are preserved.
+- The refactor adds constant-memory use for material metadata and changes some launch/block details, but these do not change the observed numerical result or printed benchmark result.
+
+Conclusion: VALID
+```

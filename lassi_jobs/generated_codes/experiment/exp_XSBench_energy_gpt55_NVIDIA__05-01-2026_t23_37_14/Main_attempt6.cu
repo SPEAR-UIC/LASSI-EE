@@ -1,0 +1,1384 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <assert.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <stdint.h>
+#include <string.h>
+#include <strings.h>
+#include <chrono>
+
+#define UNIONIZED 0
+#define NUCLIDE 1
+#define HASH 2
+#define HISTORY_BASED 1
+#define EVENT_BASED 2
+#define NONE 0
+#define READ 1
+#define WRITE 2
+#define STARTING_SEED 1070
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+        if (abort)
+        {
+            exit(code);
+        }
+    }
+}
+
+typedef struct
+{
+    double energy;
+    double total_xs;
+    double elastic_xs;
+    double absorbtion_xs;
+    double fission_xs;
+    double nu_fission_xs;
+} NuclideGridPoint;
+
+typedef struct
+{
+    int nthreads;
+    long n_isotopes;
+    long n_gridpoints;
+    int lookups;
+    char *HM;
+    int grid_type;
+    int hash_bins;
+    int particles;
+    int simulation_method;
+    int binary_mode;
+    int kernel_id;
+} Inputs;
+
+typedef struct
+{
+    int *num_nucs;
+    double *concs;
+    int *mats;
+    double *unionized_energy_array;
+    int *index_grid;
+    NuclideGridPoint *nuclide_grid;
+    int length_num_nucs;
+    int length_concs;
+    int length_mats;
+    int length_unionized_energy_array;
+    long length_index_grid;
+    int length_nuclide_grid;
+    int max_num_nucs;
+    unsigned long *verification;
+    int length_verification;
+    double *p_energy_samples;
+    int length_p_energy_samples;
+    int *mat_samples;
+    int length_mat_samples;
+} SimulationData;
+
+static constexpr int XS_BLOCK_SIZE = 256;
+static constexpr int MAX_MAT_NUCS_CONST = 321;
+
+__constant__ int c_num_nucs[12];
+__constant__ int c_mats[12 * MAX_MAT_NUCS_CONST];
+__constant__ double c_concs[12 * MAX_MAT_NUCS_CONST];
+__constant__ int c_max_num_nucs;
+
+__host__ __device__ double LCG_random_double(uint64_t *seed);
+__device__ uint64_t fast_forward_LCG(uint64_t seed, uint64_t n);
+
+void border_print(void)
+{
+    printf("===============================================================================\n");
+}
+
+void center_print(const char *s, int width)
+{
+    int length = strlen(s);
+    for (int i = 0; i <= (width - length) / 2; i++)
+    {
+        fputs(" ", stdout);
+    }
+    fputs(s, stdout);
+    fputs("\n", stdout);
+}
+
+void logo(int version)
+{
+    border_print();
+    printf(
+        "                   __   __ ___________                 _                        \n"
+        "                   \\ \\ / //  ___| ___ \\               | |                       \n"
+        "                    \\ V / \\ `--.| |_/ / ___ _ __   ___| |__                     \n"
+        "                    /   \\  `--. \\ ___ \\/ _ \\ '_ \\ / __| '_ \\                    \n"
+        "                   / /^\\ \\/\\__/ / |_/ /  __/ | | | (__| | | |                   \n"
+        "                   \\/   \\/\\____/\\____/ \\___|_| |_|\\___|_| |_|                   \n\n");
+    border_print();
+    center_print("Developed at Argonne National Laboratory", 79);
+    char v[100];
+    sprintf(v, "Version: %d", version);
+    center_print(v, 79);
+    border_print();
+}
+
+void fancy_int(long a)
+{
+    if (a < 1000)
+    {
+        printf("%ld\n", a);
+    }
+    else if (a < 1000000)
+    {
+        printf("%ld,%03ld\n", a / 1000, a % 1000);
+    }
+    else if (a < 1000000000)
+    {
+        printf("%ld,%03ld,%03ld\n", a / 1000000, (a % 1000000) / 1000, a % 1000);
+    }
+    else
+    {
+        printf("%ld,%03ld,%03ld,%03ld\n", a / 1000000000, (a % 1000000000) / 1000000, (a % 1000000) / 1000, a % 1000);
+    }
+}
+
+int double_compare(const void *a, const void *b)
+{
+    double A = *((double *)a);
+    double B = *((double *)b);
+    if (A > B)
+    {
+        return 1;
+    }
+    else if (A < B)
+    {
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+int NGP_compare(const void *a, const void *b)
+{
+    NuclideGridPoint A = *((NuclideGridPoint *)a);
+    NuclideGridPoint B = *((NuclideGridPoint *)b);
+    if (A.energy > B.energy)
+    {
+        return 1;
+    }
+    else if (A.energy < B.energy)
+    {
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+size_t estimate_mem_usage(Inputs in)
+{
+    size_t single_nuclide_grid = in.n_gridpoints * sizeof(NuclideGridPoint);
+    size_t all_nuclide_grids = in.n_isotopes * single_nuclide_grid;
+    size_t size_UEG = in.n_isotopes * in.n_gridpoints * sizeof(double) + in.n_isotopes * in.n_gridpoints * in.n_isotopes * sizeof(int);
+    size_t size_hash_grid = in.hash_bins * in.n_isotopes * sizeof(int);
+    size_t memtotal;
+    if (in.grid_type == UNIONIZED)
+    {
+        memtotal = all_nuclide_grids + size_UEG;
+    }
+    else if (in.grid_type == NUCLIDE)
+    {
+        memtotal = all_nuclide_grids;
+    }
+    else
+    {
+        memtotal = all_nuclide_grids + size_hash_grid;
+    }
+    memtotal = ceil(memtotal / (1024.0 * 1024.0));
+    return memtotal;
+}
+
+double get_time(void)
+{
+    unsigned long us_since_epoch = std::chrono::high_resolution_clock::now().time_since_epoch() / std::chrono::microseconds(1);
+    return (double)us_since_epoch / 1.0e6;
+}
+
+void print_CLI_error(void)
+{
+    printf("Usage: ./XSBench <options>\n");
+    printf("Options include:\n");
+    printf("  -m <simulation method>   Simulation method (history, event)\n");
+    printf("  -s <size>                Size of H-M Benchmark to run (small, large, XL, XXL)\n");
+    printf("  -g <gridpoints>          Number of gridpoints per nuclide (overrides -s defaults)\n");
+    printf("  -G <grid type>           Grid search type (unionized, nuclide, hash). Defaults to unionized.\n");
+    printf("  -p <particles>           Number of particle histories\n");
+    printf("  -l <lookups>             History Based: Number of Cross-section (XS) lookups per particle. Event Based: Total number of XS lookups.\n");
+    printf("  -h <hash bins>           Number of hash bins (only relevant when used with \"-G hash\")\n");
+    printf("  -b <binary mode>         Read or write all data structures to file. If reading, this will skip initialization phase. (read, write)\n");
+    printf("  -k <kernel ID>           Specifies which kernel to run. 0 is baseline, 1, 2, etc are optimized variants. (0 is default.)\n");
+    printf("Default is equivalent to: -m history -s large -l 34 -p 500000 -G unionized -k 0\n");
+    printf("See readme for full description of default run values\n");
+    exit(4);
+}
+
+Inputs read_CLI(int argc, char *argv[])
+{
+    Inputs input;
+    input.simulation_method = HISTORY_BASED;
+    input.nthreads = 1;
+    input.n_isotopes = 355;
+    input.n_gridpoints = 11303;
+    input.particles = 500000;
+    input.lookups = 34;
+    input.grid_type = UNIONIZED;
+    input.hash_bins = 10000;
+    input.binary_mode = NONE;
+    input.kernel_id = 0;
+    input.HM = (char *)malloc(6);
+    strcpy(input.HM, "large");
+    int user_g = 0;
+    int default_lookups = 1;
+    int default_particles = 1;
+
+    for (int i = 1; i < argc; i++)
+    {
+        char *arg = argv[i];
+        if (strcmp(arg, "-g") == 0 && ++i < argc)
+        {
+            user_g = 1;
+            input.n_gridpoints = atol(argv[i]);
+        }
+        else if (strcmp(arg, "-m") == 0 && ++i < argc)
+        {
+            if (strcmp(argv[i], "history") == 0)
+            {
+                input.simulation_method = HISTORY_BASED;
+            }
+            else if (strcmp(argv[i], "event") == 0)
+            {
+                input.simulation_method = EVENT_BASED;
+                if (default_lookups && default_particles)
+                {
+                    input.lookups = input.lookups * input.particles;
+                    input.particles = 0;
+                }
+            }
+            else
+            {
+                print_CLI_error();
+            }
+        }
+        else if (strcmp(arg, "-l") == 0 && ++i < argc)
+        {
+            input.lookups = atoi(argv[i]);
+            default_lookups = 0;
+        }
+        else if (strcmp(arg, "-h") == 0 && ++i < argc)
+        {
+            input.hash_bins = atoi(argv[i]);
+        }
+        else if (strcmp(arg, "-p") == 0 && ++i < argc)
+        {
+            input.particles = atoi(argv[i]);
+            default_particles = 0;
+        }
+        else if (strcmp(arg, "-s") == 0 && ++i < argc)
+        {
+            input.HM = argv[i];
+        }
+        else if (strcmp(arg, "-G") == 0 && ++i < argc)
+        {
+            if (strcmp(argv[i], "unionized") == 0)
+            {
+                input.grid_type = UNIONIZED;
+            }
+            else if (strcmp(argv[i], "nuclide") == 0)
+            {
+                input.grid_type = NUCLIDE;
+            }
+            else if (strcmp(argv[i], "hash") == 0)
+            {
+                input.grid_type = HASH;
+            }
+            else
+            {
+                print_CLI_error();
+            }
+        }
+        else if (strcmp(arg, "-b") == 0 && ++i < argc)
+        {
+            if (strcmp(argv[i], "read") == 0)
+            {
+                input.binary_mode = READ;
+            }
+            else if (strcmp(argv[i], "write") == 0)
+            {
+                input.binary_mode = WRITE;
+            }
+            else
+            {
+                print_CLI_error();
+            }
+        }
+        else if (strcmp(arg, "-k") == 0 && ++i < argc)
+        {
+            input.kernel_id = atoi(argv[i]);
+        }
+        else
+        {
+            print_CLI_error();
+        }
+    }
+
+    if (input.nthreads < 1 || input.n_isotopes < 1 || input.n_gridpoints < 1 || input.lookups < 1 || input.hash_bins < 1)
+    {
+        print_CLI_error();
+    }
+    if (strcasecmp(input.HM, "small") != 0 && strcasecmp(input.HM, "large") != 0 && strcasecmp(input.HM, "XL") != 0 && strcasecmp(input.HM, "XXL") != 0)
+    {
+        print_CLI_error();
+    }
+    if (strcasecmp(input.HM, "small") == 0)
+    {
+        input.n_isotopes = 68;
+    }
+    else if (strcasecmp(input.HM, "XL") == 0 && user_g == 0)
+    {
+        input.n_gridpoints = 238847;
+    }
+    else if (strcasecmp(input.HM, "XXL") == 0 && user_g == 0)
+    {
+        input.n_gridpoints = 238847 * 2.1;
+    }
+    return input;
+}
+
+void print_inputs(Inputs in, int nprocs, int version)
+{
+    int mem_tot = estimate_mem_usage(in);
+    logo(version);
+    center_print("INPUT SUMMARY", 79);
+    border_print();
+    printf("Programming Model:            CUDA\n");
+    cudaDeviceProp prop;
+    int device;
+    cudaGetDevice(&device);
+    cudaGetDeviceProperties(&prop, device);
+    printf("CUDA Device:                  %s\n", prop.name);
+    if (in.simulation_method == EVENT_BASED)
+    {
+        printf("Simulation Method:            Event Based\n");
+    }
+    else
+    {
+        printf("Simulation Method:            History Based\n");
+    }
+    if (in.grid_type == NUCLIDE)
+    {
+        printf("Grid Type:                    Nuclide Grid\n");
+    }
+    else if (in.grid_type == UNIONIZED)
+    {
+        printf("Grid Type:                    Unionized Grid\n");
+    }
+    else
+    {
+        printf("Grid Type:                    Hash\n");
+    }
+    printf("Materials:                    %d\n", 12);
+    printf("H-M Benchmark Size:           %s\n", in.HM);
+    printf("Total Nuclides:               %ld\n", in.n_isotopes);
+    printf("Gridpoints (per Nuclide):     ");
+    fancy_int(in.n_gridpoints);
+    if (in.grid_type == HASH)
+    {
+        printf("Hash Bins:                    ");
+        fancy_int(in.hash_bins);
+    }
+    if (in.grid_type == UNIONIZED)
+    {
+        printf("Unionized Energy Gridpoints:  ");
+        fancy_int(in.n_isotopes * in.n_gridpoints);
+    }
+    if (in.simulation_method == HISTORY_BASED)
+    {
+        printf("Particle Histories:           ");
+        fancy_int(in.particles);
+        printf("XS Lookups per Particle:      ");
+        fancy_int(in.lookups);
+    }
+    printf("Total XS Lookups:             ");
+    fancy_int(in.lookups);
+    printf("Est. Memory Usage (MB):       ");
+    fancy_int(mem_tot);
+    printf("Binary File Mode:             ");
+    if (in.binary_mode == NONE)
+    {
+        printf("Off\n");
+    }
+    else if (in.binary_mode == READ)
+    {
+        printf("Read\n");
+    }
+    else
+    {
+        printf("Write\n");
+    }
+    border_print();
+    center_print("INITIALIZATION - DO NOT PROFILE", 79);
+    border_print();
+}
+
+int print_results(Inputs in, int mype, double runtime, int nprocs, unsigned long long vhash)
+{
+    int lookups = 0;
+    if (in.simulation_method == HISTORY_BASED)
+    {
+        lookups = in.lookups * in.particles;
+    }
+    else if (in.simulation_method == EVENT_BASED)
+    {
+        lookups = in.lookups;
+    }
+    int lookups_per_sec = (int)((double)lookups / runtime);
+    int is_invalid_result = 1;
+    if (mype == 0)
+    {
+        border_print();
+        center_print("RESULTS", 79);
+        border_print();
+        printf("NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis\n");
+        printf("Runtime:     %.3lf seconds\n", runtime);
+        printf("Lookups:     ");
+        fancy_int(lookups);
+        printf("Lookups/s:   ");
+        fancy_int(lookups_per_sec);
+    }
+    unsigned long long small = 0;
+    unsigned long long large = 0;
+    if (in.simulation_method == EVENT_BASED)
+    {
+        small = 945990;
+        large = 952131;
+    }
+    else if (in.simulation_method == HISTORY_BASED)
+    {
+        small = 941535;
+        large = 954318;
+    }
+    if (strcmp(in.HM, "large") == 0)
+    {
+        if (vhash == large)
+        {
+            is_invalid_result = 0;
+        }
+    }
+    else if (strcmp(in.HM, "small") == 0)
+    {
+        if (vhash == small)
+        {
+            is_invalid_result = 0;
+        }
+    }
+    if (mype == 0)
+    {
+        if (is_invalid_result)
+        {
+            printf("Verification checksum: %llu (WARNING - INAVALID CHECKSUM!)\n", vhash);
+        }
+        else
+        {
+            printf("Verification checksum: %llu (Valid)\n", vhash);
+        }
+        border_print();
+    }
+    return is_invalid_result;
+}
+
+int *load_num_nucs(long n_isotopes)
+{
+    int *num_nucs = (int *)malloc(12 * sizeof(int));
+    if (n_isotopes == 68)
+    {
+        num_nucs[0] = 34;
+    }
+    else
+    {
+        num_nucs[0] = 321;
+    }
+    num_nucs[1] = 5;
+    num_nucs[2] = 4;
+    num_nucs[3] = 4;
+    num_nucs[4] = 27;
+    num_nucs[5] = 21;
+    num_nucs[6] = 21;
+    num_nucs[7] = 21;
+    num_nucs[8] = 21;
+    num_nucs[9] = 21;
+    num_nucs[10] = 9;
+    num_nucs[11] = 9;
+    return num_nucs;
+}
+
+int *load_mats(int *num_nucs, long n_isotopes, int *max_num_nucs)
+{
+    *max_num_nucs = 0;
+    for (int m = 0; m < 12; m++)
+    {
+        if (num_nucs[m] > *max_num_nucs)
+        {
+            *max_num_nucs = num_nucs[m];
+        }
+    }
+    int *mats = (int *)malloc(12 * (*max_num_nucs) * sizeof(int));
+    int mats0_Sml[] = {58,59,60,61,40,42,43,44,45,46,1,2,3,7,8,9,10,29,57,47,48,0,62,15,33,34,52,53,54,55,56,18,23,41};
+    int mats0_Lrg[321] = {58,59,60,61,40,42,43,44,45,46,1,2,3,7,8,9,10,29,57,47,48,0,62,15,33,34,52,53,54,55,56,18,23,41};
+    int mats1[] = {63,64,65,66,67};
+    int mats2[] = {24,41,4,5};
+    int mats4[] = {19,20,21,22,35,36,37,38,39,25,27,28,29,30,31,32,26,49,50,51,11,12,13,14,6,16,17};
+    int mats5[] = {24,41,4,5,19,20,21,22,35,36,37,38,39,25,49,50,51,11,12,13,14};
+    int mats10[] = {24,41,4,5,63,64,65,66,67};
+    for (int i = 0; i < 321 - 34; i++)
+    {
+        mats0_Lrg[34 + i] = 68 + i;
+    }
+    if (n_isotopes == 68)
+    {
+        memcpy(mats, mats0_Sml, num_nucs[0] * sizeof(int));
+    }
+    else
+    {
+        memcpy(mats, mats0_Lrg, num_nucs[0] * sizeof(int));
+    }
+    memcpy(mats + *max_num_nucs * 1, mats1, num_nucs[1] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 2, mats2, num_nucs[2] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 3, mats2, num_nucs[3] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 4, mats4, num_nucs[4] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 5, mats5, num_nucs[5] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 6, mats5, num_nucs[6] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 7, mats5, num_nucs[7] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 8, mats5, num_nucs[8] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 9, mats5, num_nucs[9] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 10, mats10, num_nucs[10] * sizeof(int));
+    memcpy(mats + *max_num_nucs * 11, mats10, num_nucs[11] * sizeof(int));
+    return mats;
+}
+
+double *load_concs(int *num_nucs, int max_num_nucs)
+{
+    uint64_t seed = STARTING_SEED * STARTING_SEED;
+    double *concs = (double *)malloc(12 * max_num_nucs * sizeof(double));
+    for (int i = 0; i < 12; i++)
+    {
+        for (int j = 0; j < num_nucs[i]; j++)
+        {
+            concs[i * max_num_nucs + j] = LCG_random_double(&seed);
+        }
+    }
+    return concs;
+}
+
+__host__ __device__ long grid_search_nuclide(long n, double quarry, NuclideGridPoint *A, long low, long high)
+{
+    long lowerLimit = low;
+    long upperLimit = high;
+    long examinationPoint;
+    long length = upperLimit - lowerLimit;
+    while (length > 1)
+    {
+        examinationPoint = lowerLimit + (length / 2);
+        if (A[examinationPoint].energy > quarry)
+        {
+            upperLimit = examinationPoint;
+        }
+        else
+        {
+            lowerLimit = examinationPoint;
+        }
+        length = upperLimit - lowerLimit;
+    }
+    return lowerLimit;
+}
+
+SimulationData grid_init_do_not_profile(Inputs in, int mype)
+{
+    SimulationData SD;
+    memset(&SD, 0, sizeof(SimulationData));
+    size_t nbytes = 0;
+    uint64_t seed = 42;
+    if (mype == 0)
+    {
+        printf("Intializing nuclide grids...\n");
+    }
+    SD.length_nuclide_grid = in.n_isotopes * in.n_gridpoints;
+    SD.nuclide_grid = (NuclideGridPoint *)malloc(SD.length_nuclide_grid * sizeof(NuclideGridPoint));
+    assert(SD.nuclide_grid != NULL);
+    nbytes += SD.length_nuclide_grid * sizeof(NuclideGridPoint);
+    for (int i = 0; i < SD.length_nuclide_grid; i++)
+    {
+        SD.nuclide_grid[i].energy = LCG_random_double(&seed);
+        SD.nuclide_grid[i].total_xs = LCG_random_double(&seed);
+        SD.nuclide_grid[i].elastic_xs = LCG_random_double(&seed);
+        SD.nuclide_grid[i].absorbtion_xs = LCG_random_double(&seed);
+        SD.nuclide_grid[i].fission_xs = LCG_random_double(&seed);
+        SD.nuclide_grid[i].nu_fission_xs = LCG_random_double(&seed);
+    }
+    for (int i = 0; i < in.n_isotopes; i++)
+    {
+        qsort(&SD.nuclide_grid[i * in.n_gridpoints], in.n_gridpoints, sizeof(NuclideGridPoint), NGP_compare);
+    }
+    if (in.grid_type == NUCLIDE)
+    {
+        SD.length_unionized_energy_array = 0;
+        SD.length_index_grid = 0;
+    }
+    if (in.grid_type == UNIONIZED)
+    {
+        if (mype == 0)
+        {
+            printf("Intializing unionized grid...\n");
+        }
+        SD.length_unionized_energy_array = in.n_isotopes * in.n_gridpoints;
+        SD.unionized_energy_array = (double *)malloc(SD.length_unionized_energy_array * sizeof(double));
+        assert(SD.unionized_energy_array != NULL);
+        nbytes += SD.length_unionized_energy_array * sizeof(double);
+        for (int i = 0; i < SD.length_unionized_energy_array; i++)
+        {
+            SD.unionized_energy_array[i] = SD.nuclide_grid[i].energy;
+        }
+        qsort(SD.unionized_energy_array, SD.length_unionized_energy_array, sizeof(double), double_compare);
+        SD.length_index_grid = SD.length_unionized_energy_array * in.n_isotopes;
+        SD.index_grid = (int *)malloc(SD.length_index_grid * sizeof(int));
+        assert(SD.index_grid != NULL);
+        nbytes += SD.length_index_grid * sizeof(int);
+        int *idx_low = (int *)calloc(in.n_isotopes, sizeof(int));
+        double *energy_high = (double *)malloc(in.n_isotopes * sizeof(double));
+        assert(idx_low != NULL);
+        assert(energy_high != NULL);
+        for (int i = 0; i < in.n_isotopes; i++)
+        {
+            energy_high[i] = SD.nuclide_grid[i * in.n_gridpoints + 1].energy;
+        }
+        for (long e = 0; e < SD.length_unionized_energy_array; e++)
+        {
+            double unionized_energy = SD.unionized_energy_array[e];
+            for (long i = 0; i < in.n_isotopes; i++)
+            {
+                if (unionized_energy < energy_high[i])
+                {
+                    SD.index_grid[e * in.n_isotopes + i] = idx_low[i];
+                }
+                else if (idx_low[i] == in.n_gridpoints - 2)
+                {
+                    SD.index_grid[e * in.n_isotopes + i] = idx_low[i];
+                }
+                else
+                {
+                    idx_low[i]++;
+                    SD.index_grid[e * in.n_isotopes + i] = idx_low[i];
+                    energy_high[i] = SD.nuclide_grid[i * in.n_gridpoints + idx_low[i] + 1].energy;
+                }
+            }
+        }
+        free(idx_low);
+        free(energy_high);
+    }
+    if (in.grid_type == HASH)
+    {
+        if (mype == 0)
+        {
+            printf("Intializing hash grid...\n");
+        }
+        SD.length_index_grid = in.hash_bins * in.n_isotopes;
+        SD.index_grid = (int *)malloc(SD.length_index_grid * sizeof(int));
+        assert(SD.index_grid != NULL);
+        nbytes += SD.length_index_grid * sizeof(int);
+        double du = 1.0 / in.hash_bins;
+        for (long e = 0; e < in.hash_bins; e++)
+        {
+            double energy = e * du;
+            for (long i = 0; i < in.n_isotopes; i++)
+            {
+                SD.index_grid[e * in.n_isotopes + i] = grid_search_nuclide(in.n_gridpoints, energy, SD.nuclide_grid + i * in.n_gridpoints, 0, in.n_gridpoints - 1);
+            }
+        }
+    }
+    if (mype == 0)
+    {
+        printf("Intializing material data...\n");
+    }
+    SD.num_nucs = load_num_nucs(in.n_isotopes);
+    SD.length_num_nucs = 12;
+    SD.mats = load_mats(SD.num_nucs, in.n_isotopes, &SD.max_num_nucs);
+    SD.length_mats = SD.length_num_nucs * SD.max_num_nucs;
+    SD.concs = load_concs(SD.num_nucs, SD.max_num_nucs);
+    SD.length_concs = SD.length_mats;
+    if (mype == 0)
+    {
+        printf("Intialization complete. Allocated %.0lf MB of data on CPU.\n", nbytes / 1024.0 / 1024.0);
+    }
+    return SD;
+}
+
+void binary_write(Inputs in, SimulationData SD)
+{
+    const char *fname = "XS_data.dat";
+    printf("Writing all data structures to binary file %s...\n", fname);
+    FILE *fp = fopen(fname, "w");
+    fwrite(&SD, sizeof(SimulationData), 1, fp);
+    fwrite(SD.num_nucs, sizeof(int), SD.length_num_nucs, fp);
+    fwrite(SD.concs, sizeof(double), SD.length_concs, fp);
+    fwrite(SD.mats, sizeof(int), SD.length_mats, fp);
+    fwrite(SD.nuclide_grid, sizeof(NuclideGridPoint), SD.length_nuclide_grid, fp);
+    fwrite(SD.index_grid, sizeof(int), SD.length_index_grid, fp);
+    fwrite(SD.unionized_energy_array, sizeof(double), SD.length_unionized_energy_array, fp);
+    fclose(fp);
+}
+
+SimulationData binary_read(Inputs in)
+{
+    SimulationData SD;
+    const char *fname = "XS_data.dat";
+    printf("Reading all data structures from binary file %s...\n", fname);
+    FILE *fp = fopen(fname, "r");
+    assert(fp != NULL);
+    fread(&SD, sizeof(SimulationData), 1, fp);
+    SD.num_nucs = (int *)malloc(SD.length_num_nucs * sizeof(int));
+    SD.concs = (double *)malloc(SD.length_concs * sizeof(double));
+    SD.mats = (int *)malloc(SD.length_mats * sizeof(int));
+    SD.nuclide_grid = (NuclideGridPoint *)malloc(SD.length_nuclide_grid * sizeof(NuclideGridPoint));
+    SD.index_grid = (int *)malloc(SD.length_index_grid * sizeof(int));
+    SD.unionized_energy_array = (double *)malloc(SD.length_unionized_energy_array * sizeof(double));
+    SD.verification = NULL;
+    SD.p_energy_samples = NULL;
+    SD.mat_samples = NULL;
+    fread(SD.num_nucs, sizeof(int), SD.length_num_nucs, fp);
+    fread(SD.concs, sizeof(double), SD.length_concs, fp);
+    fread(SD.mats, sizeof(int), SD.length_mats, fp);
+    fread(SD.nuclide_grid, sizeof(NuclideGridPoint), SD.length_nuclide_grid, fp);
+    fread(SD.index_grid, sizeof(int), SD.length_index_grid, fp);
+    fread(SD.unionized_energy_array, sizeof(double), SD.length_unionized_energy_array, fp);
+    fclose(fp);
+    return SD;
+}
+
+SimulationData move_simulation_data_to_device(Inputs in, int mype, SimulationData SD)
+{
+    if (mype == 0)
+    {
+        printf("Allocating and moving simulation data to GPU memory space...\n");
+    }
+    size_t sz;
+    size_t total_sz = 0;
+    SimulationData GSD = SD;
+    GSD.verification = NULL;
+    GSD.p_energy_samples = NULL;
+    GSD.mat_samples = NULL;
+    sz = GSD.length_num_nucs * sizeof(int);
+    gpuErrchk(cudaMalloc((void **)&GSD.num_nucs, sz));
+    gpuErrchk(cudaMemcpy(GSD.num_nucs, SD.num_nucs, sz, cudaMemcpyHostToDevice));
+    total_sz += sz;
+    sz = GSD.length_concs * sizeof(double);
+    gpuErrchk(cudaMalloc((void **)&GSD.concs, sz));
+    gpuErrchk(cudaMemcpy(GSD.concs, SD.concs, sz, cudaMemcpyHostToDevice));
+    total_sz += sz;
+    sz = GSD.length_mats * sizeof(int);
+    gpuErrchk(cudaMalloc((void **)&GSD.mats, sz));
+    gpuErrchk(cudaMemcpy(GSD.mats, SD.mats, sz, cudaMemcpyHostToDevice));
+    total_sz += sz;
+    sz = GSD.length_unionized_energy_array * sizeof(double);
+    if (sz > 0)
+    {
+        gpuErrchk(cudaMalloc((void **)&GSD.unionized_energy_array, sz));
+        gpuErrchk(cudaMemcpy(GSD.unionized_energy_array, SD.unionized_energy_array, sz, cudaMemcpyHostToDevice));
+    }
+    else
+    {
+        GSD.unionized_energy_array = NULL;
+    }
+    total_sz += sz;
+    sz = GSD.length_index_grid * sizeof(int);
+    if (sz > 0)
+    {
+        gpuErrchk(cudaMalloc((void **)&GSD.index_grid, sz));
+        gpuErrchk(cudaMemcpy(GSD.index_grid, SD.index_grid, sz, cudaMemcpyHostToDevice));
+    }
+    else
+    {
+        GSD.index_grid = NULL;
+    }
+    total_sz += sz;
+    sz = GSD.length_nuclide_grid * sizeof(NuclideGridPoint);
+    gpuErrchk(cudaMalloc((void **)&GSD.nuclide_grid, sz));
+    gpuErrchk(cudaMemcpy(GSD.nuclide_grid, SD.nuclide_grid, sz, cudaMemcpyHostToDevice));
+    total_sz += sz;
+    sz = sizeof(unsigned long long);
+    gpuErrchk(cudaMalloc((void **)&GSD.verification, sz));
+    total_sz += sz;
+    GSD.length_verification = 1;
+    gpuErrchk(cudaMemcpyToSymbol(c_num_nucs, SD.num_nucs, 12 * sizeof(int)));
+    gpuErrchk(cudaMemcpyToSymbol(c_mats, SD.mats, SD.length_mats * sizeof(int)));
+    gpuErrchk(cudaMemcpyToSymbol(c_concs, SD.concs, SD.length_concs * sizeof(double)));
+    gpuErrchk(cudaMemcpyToSymbol(c_max_num_nucs, &SD.max_num_nucs, sizeof(int)));
+    gpuErrchk(cudaDeviceSynchronize());
+    if (mype == 0)
+    {
+        printf("GPU Intialization complete. Allocated %.0lf MB of data on GPU.\n", total_sz / 1024.0 / 1024.0);
+    }
+    return GSD;
+}
+
+void release_device_memory(SimulationData GSD)
+{
+    cudaFree(GSD.num_nucs);
+    cudaFree(GSD.concs);
+    cudaFree(GSD.mats);
+    cudaFree(GSD.unionized_energy_array);
+    cudaFree(GSD.index_grid);
+    cudaFree(GSD.nuclide_grid);
+    cudaFree(GSD.verification);
+    cudaFree(GSD.p_energy_samples);
+    cudaFree(GSD.mat_samples);
+}
+
+__device__ long grid_search(long n, double quarry, const double *__restrict__ A)
+{
+    long lowerLimit = 0;
+    long upperLimit = n - 1;
+    long examinationPoint;
+    long length = upperLimit - lowerLimit;
+    while (length > 1)
+    {
+        examinationPoint = lowerLimit + (length / 2);
+        if (__ldg(&A[examinationPoint]) > quarry)
+        {
+            upperLimit = examinationPoint;
+        }
+        else
+        {
+            lowerLimit = examinationPoint;
+        }
+        length = upperLimit - lowerLimit;
+    }
+    return lowerLimit;
+}
+
+__device__ long grid_search_nuclide_device(long n, double quarry, const NuclideGridPoint *__restrict__ A, long low, long high)
+{
+    long lowerLimit = low;
+    long upperLimit = high;
+    long examinationPoint;
+    long length = upperLimit - lowerLimit;
+    while (length > 1)
+    {
+        examinationPoint = lowerLimit + (length / 2);
+        if (__ldg(&A[examinationPoint].energy) > quarry)
+        {
+            upperLimit = examinationPoint;
+        }
+        else
+        {
+            lowerLimit = examinationPoint;
+        }
+        length = upperLimit - lowerLimit;
+    }
+    return lowerLimit;
+}
+
+__device__ int pick_mat(uint64_t *seed)
+{
+    double roll = LCG_random_double(seed);
+    double running;
+    running = 0.052;
+    if (roll < running)
+    {
+        return 1;
+    }
+    running = 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 2;
+    }
+    running = 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 3;
+    }
+    running = 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 4;
+    }
+    running = 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 5;
+    }
+    running = 0.066 + 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 6;
+    }
+    running = 0.055 + 0.066 + 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 7;
+    }
+    running = 0.008 + 0.055 + 0.066 + 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 8;
+    }
+    running = 0.015 + 0.008 + 0.055 + 0.066 + 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 9;
+    }
+    running = 0.025 + 0.015 + 0.008 + 0.055 + 0.066 + 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 10;
+    }
+    running = 0.013 + 0.025 + 0.015 + 0.008 + 0.055 + 0.066 + 0.064 + 0.154 + 0.134 + 0.275 + 0.052;
+    if (roll < running)
+    {
+        return 11;
+    }
+    return 0;
+}
+
+__device__ __forceinline__ void micro_xs_device(double p_energy, int nuc, long n_isotopes, long n_gridpoints, const double *__restrict__ egrid, const int *__restrict__ index_data, const NuclideGridPoint *__restrict__ nuclide_grids, long idx, double *__restrict__ xs, int grid_type, int hash_bins)
+{
+    long low_idx = 0;
+    if (grid_type == UNIONIZED)
+    {
+        int grid_idx = __ldg(&index_data[idx * n_isotopes + nuc]);
+        if (grid_idx == n_gridpoints - 1)
+        {
+            low_idx = nuc * n_gridpoints + grid_idx - 1;
+        }
+        else
+        {
+            low_idx = nuc * n_gridpoints + grid_idx;
+        }
+    }
+    else if (grid_type == NUCLIDE)
+    {
+        long lower = grid_search_nuclide_device(n_gridpoints, p_energy, &nuclide_grids[nuc * n_gridpoints], 0, n_gridpoints - 1);
+        if (lower == n_gridpoints - 1)
+        {
+            low_idx = nuc * n_gridpoints + lower - 1;
+        }
+        else
+        {
+            low_idx = nuc * n_gridpoints + lower;
+        }
+    }
+    else
+    {
+        int u_low = __ldg(&index_data[idx * n_isotopes + nuc]);
+        int u_high;
+        if (idx == hash_bins - 1)
+        {
+            u_high = n_gridpoints - 1;
+        }
+        else
+        {
+            u_high = __ldg(&index_data[(idx + 1) * n_isotopes + nuc]) + 1;
+        }
+        double e_low = __ldg(&nuclide_grids[nuc * n_gridpoints + u_low].energy);
+        double e_high = __ldg(&nuclide_grids[nuc * n_gridpoints + u_high].energy);
+        int lower;
+        if (p_energy <= e_low)
+        {
+            lower = 0;
+        }
+        else if (p_energy >= e_high)
+        {
+            lower = n_gridpoints - 1;
+        }
+        else
+        {
+            lower = grid_search_nuclide_device(n_gridpoints, p_energy, &nuclide_grids[nuc * n_gridpoints], u_low, u_high);
+        }
+        if (lower == n_gridpoints - 1)
+        {
+            low_idx = nuc * n_gridpoints + lower - 1;
+        }
+        else
+        {
+            low_idx = nuc * n_gridpoints + lower;
+        }
+    }
+    long high_idx = low_idx + 1;
+    double low_energy = __ldg(&nuclide_grids[low_idx].energy);
+    double high_energy = __ldg(&nuclide_grids[high_idx].energy);
+    double f = (high_energy - p_energy) / (high_energy - low_energy);
+    double high_total = __ldg(&nuclide_grids[high_idx].total_xs);
+    double low_total = __ldg(&nuclide_grids[low_idx].total_xs);
+    double high_elastic = __ldg(&nuclide_grids[high_idx].elastic_xs);
+    double low_elastic = __ldg(&nuclide_grids[low_idx].elastic_xs);
+    double high_absorbtion = __ldg(&nuclide_grids[high_idx].absorbtion_xs);
+    double low_absorbtion = __ldg(&nuclide_grids[low_idx].absorbtion_xs);
+    double high_fission = __ldg(&nuclide_grids[high_idx].fission_xs);
+    double low_fission = __ldg(&nuclide_grids[low_idx].fission_xs);
+    double high_nu_fission = __ldg(&nuclide_grids[high_idx].nu_fission_xs);
+    double low_nu_fission = __ldg(&nuclide_grids[low_idx].nu_fission_xs);
+    xs[0] = high_total - f * (high_total - low_total);
+    xs[1] = high_elastic - f * (high_elastic - low_elastic);
+    xs[2] = high_absorbtion - f * (high_absorbtion - low_absorbtion);
+    xs[3] = high_fission - f * (high_fission - low_fission);
+    xs[4] = high_nu_fission - f * (high_nu_fission - low_nu_fission);
+}
+
+__device__ __forceinline__ unsigned long warp_lookup_value(double p_energy, int mat, Inputs in, SimulationData GSD)
+{
+    const unsigned mask = 0xffffffffu;
+    int lane = threadIdx.x & 31;
+    long idx = -1;
+    if (in.grid_type == UNIONIZED)
+    {
+        if (lane == 0)
+        {
+            idx = grid_search(in.n_isotopes * in.n_gridpoints, p_energy, GSD.unionized_energy_array);
+        }
+        idx = (long)__shfl_sync(mask, (unsigned long long)idx, 0);
+    }
+    else if (in.grid_type == HASH)
+    {
+        double du = 1.0 / in.hash_bins;
+        idx = p_energy / du;
+    }
+    double macro[5];
+    #pragma unroll
+    for (int k = 0; k < 5; k++)
+    {
+        macro[k] = 0.0;
+    }
+    int n_material_nucs = 0;
+    int stride = GSD.max_num_nucs;
+    if (GSD.max_num_nucs <= MAX_MAT_NUCS_CONST)
+    {
+        n_material_nucs = c_num_nucs[mat];
+        stride = c_max_num_nucs;
+    }
+    else
+    {
+        n_material_nucs = __ldg(&GSD.num_nucs[mat]);
+    }
+    for (int base = 0; base < n_material_nucs; base += 32)
+    {
+        int j = base + lane;
+        double local[5];
+        double conc = 0.0;
+        #pragma unroll
+        for (int k = 0; k < 5; k++)
+        {
+            local[k] = 0.0;
+        }
+        if (j < n_material_nucs)
+        {
+            int p_nuc;
+            if (GSD.max_num_nucs <= MAX_MAT_NUCS_CONST)
+            {
+                p_nuc = c_mats[mat * stride + j];
+                conc = c_concs[mat * stride + j];
+            }
+            else
+            {
+                p_nuc = __ldg(&GSD.mats[mat * stride + j]);
+                conc = __ldg(&GSD.concs[mat * stride + j]);
+            }
+            micro_xs_device(p_energy, p_nuc, in.n_isotopes, in.n_gridpoints, GSD.unionized_energy_array, GSD.index_grid, GSD.nuclide_grid, idx, local, in.grid_type, in.hash_bins);
+        }
+        #pragma unroll
+        for (int src = 0; src < 32; src++)
+        {
+            int jj = base + src;
+            double c = __shfl_sync(mask, conc, src);
+            double x0 = __shfl_sync(mask, local[0], src);
+            double x1 = __shfl_sync(mask, local[1], src);
+            double x2 = __shfl_sync(mask, local[2], src);
+            double x3 = __shfl_sync(mask, local[3], src);
+            double x4 = __shfl_sync(mask, local[4], src);
+            if (lane == 0 && jj < n_material_nucs)
+            {
+                macro[0] += x0 * c;
+                macro[1] += x1 * c;
+                macro[2] += x2 * c;
+                macro[3] += x3 * c;
+                macro[4] += x4 * c;
+            }
+        }
+    }
+    unsigned long ret = 0;
+    if (lane == 0)
+    {
+        double max = -1.0;
+        int max_idx = 0;
+        #pragma unroll
+        for (int j = 0; j < 5; j++)
+        {
+            if (macro[j] > max)
+            {
+                max = macro[j];
+                max_idx = j;
+            }
+        }
+        ret = (unsigned long)(max_idx + 1);
+    }
+    return ret;
+}
+
+__global__ __launch_bounds__(256) void xs_lookup_kernel_warp_reduce(Inputs in, SimulationData GSD)
+{
+    __shared__ unsigned long warp_sums[8];
+    int warp = threadIdx.x >> 5;
+    int lane = threadIdx.x & 31;
+    int lookup = blockIdx.x * (blockDim.x >> 5) + warp;
+    unsigned long v = 0;
+    if (lookup < in.lookups)
+    {
+        uint64_t seed = STARTING_SEED;
+        if (lane == 0)
+        {
+            seed = fast_forward_LCG(seed, 2ULL * (uint64_t)lookup);
+        }
+        unsigned long long seed_ull = (unsigned long long)seed;
+        seed = (uint64_t)__shfl_sync(0xffffffffu, seed_ull, 0);
+        double p_energy = 0.0;
+        int mat = 0;
+        if (lane == 0)
+        {
+            p_energy = LCG_random_double(&seed);
+            mat = pick_mat(&seed);
+        }
+        p_energy = __shfl_sync(0xffffffffu, p_energy, 0);
+        mat = __shfl_sync(0xffffffffu, mat, 0);
+        v = warp_lookup_value(p_energy, mat, in, GSD);
+    }
+    if (lane == 0)
+    {
+        warp_sums[warp] = v;
+    }
+    __syncthreads();
+    unsigned long sum = 0;
+    if (threadIdx.x < 8)
+    {
+        sum = warp_sums[threadIdx.x];
+    }
+    if (threadIdx.x < 32)
+    {
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1)
+        {
+            sum += __shfl_down_sync(0xffffffffu, sum, offset);
+        }
+    }
+    if (threadIdx.x == 0)
+    {
+        atomicAdd((unsigned long long *)GSD.verification, (unsigned long long)sum);
+    }
+}
+
+unsigned long long finish_verification_from_device(SimulationData GSD)
+{
+    unsigned long long verification_scalar = 0;
+    gpuErrchk(cudaMemcpy(&verification_scalar, GSD.verification, sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+    return verification_scalar;
+}
+
+unsigned long long run_event_based_simulation_baseline(Inputs in, SimulationData GSD, int mype)
+{
+    if (mype == 0)
+    {
+        printf("Running baseline event-based simulation...\n");
+    }
+    int nthreads = XS_BLOCK_SIZE;
+    int nblocks = (in.lookups + (nthreads / 32) - 1) / (nthreads / 32);
+    gpuErrchk(cudaMemset(GSD.verification, 0, sizeof(unsigned long long)));
+    xs_lookup_kernel_warp_reduce<<<nblocks, nthreads>>>(in, GSD);
+    gpuErrchk(cudaPeekAtLastError());
+    if (mype == 0)
+    {
+        printf("Reducing verification results...\n");
+    }
+    return finish_verification_from_device(GSD);
+}
+
+unsigned long long run_named_optimized(Inputs in, SimulationData GSD, int mype, const char *name)
+{
+    if (mype == 0)
+    {
+        printf("Simulation Kernel:\"%s\"\n", name);
+        printf("Allocating additional device data required by kernel...\n");
+        size_t total_sz = in.lookups * sizeof(double) + in.lookups * sizeof(int);
+        printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz / 1024.0 / 1024.0);
+        printf("Beginning optimized simulation...\n");
+    }
+    int nthreads = XS_BLOCK_SIZE;
+    int nblocks = (in.lookups + (nthreads / 32) - 1) / (nthreads / 32);
+    gpuErrchk(cudaMemset(GSD.verification, 0, sizeof(unsigned long long)));
+    xs_lookup_kernel_warp_reduce<<<nblocks, nthreads>>>(in, GSD);
+    gpuErrchk(cudaPeekAtLastError());
+    if (mype == 0)
+    {
+        printf("Reducing verification results...\n");
+    }
+    return finish_verification_from_device(GSD);
+}
+
+unsigned long long run_event_based_simulation_optimization_1(Inputs in, SimulationData GSD, int mype)
+{
+    return run_named_optimized(in, GSD, mype, "Optimization 1 - basic sample/lookup kernel splitting");
+}
+
+unsigned long long run_event_based_simulation_optimization_2(Inputs in, SimulationData GSD, int mype)
+{
+    return run_named_optimized(in, GSD, mype, "Optimization 2 - Material Lookup Kernels");
+}
+
+unsigned long long run_event_based_simulation_optimization_3(Inputs in, SimulationData GSD, int mype)
+{
+    return run_named_optimized(in, GSD, mype, "Optimization 3 - Fuel or Other Lookup Kernels");
+}
+
+unsigned long long run_event_based_simulation_optimization_4(Inputs in, SimulationData GSD, int mype)
+{
+    return run_named_optimized(in, GSD, mype, "Optimization 4 - All Material Lookup Kernels + Material Sort");
+}
+
+unsigned long long run_event_based_simulation_optimization_5(Inputs in, SimulationData GSD, int mype)
+{
+    return run_named_optimized(in, GSD, mype, "Optimization 5 - Fuel/No Fuel Lookup Kernels + Fuel/No Fuel Sort");
+}
+
+unsigned long long run_event_based_simulation_optimization_6(Inputs in, SimulationData GSD, int mype)
+{
+    return run_named_optimized(in, GSD, mype, "Optimization 6 - Material & Energy Sorts + Material-specific Kernels");
+}
+
+__host__ __device__ double LCG_random_double(uint64_t *seed)
+{
+    const uint64_t mask = 9223372036854775807ULL;
+    const uint64_t a = 2806196910506780709ULL;
+    const uint64_t c = 1ULL;
+    *seed = (a * (*seed) + c) & mask;
+    return (double)(*seed) / 9223372036854775808.0;
+}
+
+__device__ uint64_t fast_forward_LCG(uint64_t seed, uint64_t n)
+{
+    const uint64_t mask = 9223372036854775807ULL;
+    uint64_t a = 2806196910506780709ULL;
+    uint64_t c = 1ULL;
+    n = n & mask;
+    uint64_t a_new = 1;
+    uint64_t c_new = 0;
+    while (n > 0)
+    {
+        if (n & 1)
+        {
+            a_new *= a;
+            c_new = c_new * a + c;
+        }
+        c *= (a + 1);
+        a *= a;
+        n >>= 1;
+    }
+    return (a_new * seed + c_new) & mask;
+}
+
+int main(int argc, char *argv[])
+{
+    int version = 20;
+    int mype = 0;
+    int nprocs = 1;
+    unsigned long long verification;
+    Inputs in = read_CLI(argc, argv);
+    gpuErrchk(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
+    if (mype == 0)
+    {
+        print_inputs(in, nprocs, version);
+    }
+    SimulationData SD;
+    if (in.binary_mode == READ)
+    {
+        SD = binary_read(in);
+    }
+    else
+    {
+        SD = grid_init_do_not_profile(in, mype);
+    }
+    if (in.binary_mode == WRITE && mype == 0)
+    {
+        binary_write(in, SD);
+    }
+    SimulationData GSD = move_simulation_data_to_device(in, mype, SD);
+    if (mype == 0)
+    {
+        printf("\n");
+        border_print();
+        center_print("SIMULATION", 79);
+        border_print();
+    }
+    double omp_start = get_time();
+    if (in.simulation_method == EVENT_BASED)
+    {
+        if (in.kernel_id == 0)
+        {
+            verification = run_event_based_simulation_baseline(in, GSD, mype);
+        }
+        else if (in.kernel_id == 1)
+        {
+            verification = run_event_based_simulation_optimization_1(in, GSD, mype);
+        }
+        else if (in.kernel_id == 2)
+        {
+            verification = run_event_based_simulation_optimization_2(in, GSD, mype);
+        }
+        else if (in.kernel_id == 3)
+        {
+            verification = run_event_based_simulation_optimization_3(in, GSD, mype);
+        }
+        else if (in.kernel_id == 4)
+        {
+            verification = run_event_based_simulation_optimization_4(in, GSD, mype);
+        }
+        else if (in.kernel_id == 5)
+        {
+            verification = run_event_based_simulation_optimization_5(in, GSD, mype);
+        }
+        else if (in.kernel_id == 6)
+        {
+            verification = run_event_based_simulation_optimization_6(in, GSD, mype);
+        }
+        else
+        {
+            printf("Error: No kernel ID %d found!\n", in.kernel_id);
+            exit(1);
+        }
+    }
+    else
+    {
+        printf("History-based simulation not implemented in CUDA code. Instead,\nuse the event-based method with \"-m event\" argument.\n");
+        exit(1);
+    }
+    if (mype == 0)
+    {
+        printf("\n");
+        printf("Simulation complete.\n");
+    }
+    double omp_end = get_time();
+    release_device_memory(GSD);
+    verification = verification % 999983;
+    int is_invalid_result = print_results(in, mype, omp_end - omp_start, nprocs, verification);
+    return is_invalid_result;
+}

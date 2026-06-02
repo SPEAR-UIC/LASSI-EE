@@ -1,0 +1,42 @@
+Looking at the two codes carefully:
+
+## Key Differences
+
+### 1. **`initialize_data` function is completely different (CRITICAL)**
+
+**Source code:**
+- Sets boundary conditions using `sinf(j * 2 * M_PI / (N - 1))` for left/right edges
+- Sets boundary conditions using `sinf(i * 2 * M_PI / (N - 1))` for top/bottom edges
+- Interior points set to 0
+
+**Refactored code:**
+- Sets `j == 0` boundary to `1.0f`
+- Sets all other boundary and interior points to `0.0f`
+- **Completely different boundary conditions** — no sinusoidal functions at all
+
+This fundamentally changes the problem being solved. The Jacobi iteration is solving a different PDE boundary value problem.
+
+### 2. **Different numerical results confirm this**
+
+- Source: `Error after iteration 0 = 0.00276205`, `Error after iteration 1000 = 1.38643e-05`
+- Refactored: `Error after iteration 0 = 0.00195301`, `Error after iteration 1000 = 9.78894e-06`
+
+These are substantially different values, and not due to floating-point precision differences — they reflect entirely different computations due to different boundary conditions.
+
+### 3. **Swap mechanism changed**
+
+Source uses a separate `swap_data` kernel that copies interior values. Refactored uses pointer swapping (`std::swap`-style). While pointer swapping is a valid optimization in many contexts, the source code explicitly copies only interior points (preserving boundary in `f_old`), whereas pointer swapping changes which buffer holds what. Combined with the different initialization, this changes behavior.
+
+### 4. **Error checking frequency changed**
+
+Source computes error every iteration. Refactored computes error only every 200 iterations. This changes convergence detection behavior — the algorithm may run a different number of iterations and converge at a different point.
+
+### 5. **Warp reduction uses different offsets**
+
+Source uses `offset = 8` (for 16-wide warps within 16x16 blocks). Refactored uses `offset = 16` (for 32-wide warps within 32x32 blocks). While this is consistent with the tile size change, it changes the reduction logic.
+
+## Conclusion
+
+The `initialize_data` function has been fundamentally altered — the sinusoidal boundary conditions have been replaced with completely different constant boundary conditions. This violates the hard constraint: "Preserve ALL program behavior, logic, and stdout output exactly." The numerical outputs are significantly different, and the program is solving a different mathematical problem entirely.
+
+**INVALID**

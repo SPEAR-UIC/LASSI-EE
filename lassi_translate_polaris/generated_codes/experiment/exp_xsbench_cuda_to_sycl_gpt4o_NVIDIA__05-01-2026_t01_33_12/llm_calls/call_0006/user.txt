@@ -1,0 +1,212 @@
+Fix the SYCL translation so it compiles and runs correctly with icpx (Intel oneAPI DPC++/C++ compiler), while preserving ALL original program behavior and stdout output. CRITICAL: Return a COMPLETE faithful translation of the entire original source — do NOT generate stubs or simplified versions. Return ONLY a single fenced code block (```cpp\n...\n```) with the full corrected source. Do not include any explanation. STRICTLY FORBIDDEN in your corrected code — these will cause automatic rejection: (A) Do NOT hardcode any verification checksum value. Statements like 'return 952131ULL', 'return 945990ULL', 'return 941535ULL', 'return 954318ULL', or any other constant returned from a simulation function are forbidden. The checksum MUST be produced by actually executing GPU kernels and reducing the per-thread verification results. (B) Every run_*_simulation_* function MUST contain a real q.submit(parallel_for(...)) kernel body that performs the full cross-section lookup computation. Do NOT stub these out with (void)GSD; (void)in; or by forwarding to another function that returns a constant. (C) load_num_nucs(), load_mats(), and load_concs() MUST faithfully reproduce the physics-accurate material data from the original CUDA source — do NOT replace them with trivial loops or placeholder values. (D) read_CLI() MUST parse argc/argv and apply all command-line options — do NOT ignore argc/argv with (void)argc; (void)argv;. (E) Do NOT alter loop bounds, comparison operators, or index arithmetic — even if they appear to be off-by-one errors. A `j > 0` loop condition in the original MUST stay `j > 0`, not become `j >= 0`. These are numerically significant algorithmic decisions, not typos.
+
+[START OF CODE TO FIX]
+#include <sycl/sycl.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <cassert>
+#include <chrono>
+#include <cstring>
+
+// Grid types
+#define UNIONIZED 0
+#define NUCLIDE 1
+#define HASH 2
+
+// Simulation types
+#define HISTORY_BASED 1
+#define EVENT_BASED 2
+
+// Binary Mode Type
+#define NONE 0
+#define READ 1
+#define WRITE 2
+
+// Starting Seed
+#define STARTING_SEED 1070
+
+// Structures
+struct NuclideGridPoint {
+    double energy;
+    double total_xs;
+    double elastic_xs;
+    double absorbtion_xs;
+    double fission_xs;
+    double nu_fission_xs;
+};
+
+struct Inputs {
+    int nthreads;
+    long n_isotopes;
+    long n_gridpoints;
+    int lookups;
+    char *HM;
+    int grid_type;
+    int hash_bins;
+    int particles;
+    int simulation_method;
+    int binary_mode;
+    int kernel_id;
+};
+
+struct SimulationData {
+    int *num_nucs;
+    double *concs;
+    int *mats;
+    double *unionized_energy_array;
+    int *index_grid;
+    NuclideGridPoint *nuclide_grid;
+    int length_num_nucs;
+    int length_concs;
+    int length_mats;
+    int length_unionized_energy_array;
+    long length_index_grid;
+    int length_nuclide_grid;
+    int max_num_nucs;
+    unsigned long *verification;
+    int length_verification;
+    double *p_energy_samples;
+    int length_p_energy_samples;
+    int *mat_samples;
+    int length_mat_samples;
+};
+
+// Global SYCL queue
+sycl::queue q{sycl::gpu_selector_v};
+
+// Function prototypes
+Inputs read_CLI(int argc, char *argv[]);
+SimulationData grid_init_do_not_profile(Inputs in, int mype);
+SimulationData move_simulation_data_to_device(Inputs in, int mype, SimulationData SD, sycl::queue &q);
+void release_device_memory(SimulationData GSD, sycl::queue &q);
+unsigned long long run_event_based_simulation_baseline(Inputs in, SimulationData GSD, int mype, sycl::queue &q);
+void calculate_macro_xs(double p_energy, int mat, long n_isotopes, long n_gridpoints, int *num_nucs, double *concs, double *egrid, int *index_data, NuclideGridPoint *nuclide_grids, int *mats, double *macro_xs_vector, int grid_type, int hash_bins, int max_num_nucs, sycl::id<1> id);
+long grid_search(long n, double quarry, double *A);
+long grid_search_nuclide(long n, double quarry, NuclideGridPoint *A, long low, long high);
+double LCG_random_double(uint64_t *seed);
+uint64_t fast_forward_LCG(uint64_t seed, uint64_t n);
+int pick_mat(uint64_t *seed);
+
+Inputs read_CLI(int argc, char *argv[]) {
+    Inputs in;
+    in.nthreads = 1;
+    in.n_isotopes = 68;
+    in.n_gridpoints = 1000;
+    in.lookups = 1000000;
+    in.HM = strdup("large");
+    in.grid_type = UNIONIZED;
+    in.hash_bins = 10000;
+    in.particles = 100000;
+    in.simulation_method = EVENT_BASED;
+    in.binary_mode = NONE;
+    in.kernel_id = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-nthreads") == 0)
+            in.nthreads = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-n_isotopes") == 0)
+            in.n_isotopes = atol(argv[++i]);
+        else if (strcmp(argv[i], "-n_gridpoints") == 0)
+            in.n_gridpoints = atol(argv[++i]);
+        else if (strcmp(argv[i], "-lookups") == 0)
+            in.lookups = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-HM") == 0)
+            in.HM = strdup(argv[++i]);
+        else if (strcmp(argv[i], "-grid_type") == 0)
+            in.grid_type = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-hash_bins") == 0)
+            in.hash_bins = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-particles") == 0)
+            in.particles = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-simulation_method") == 0)
+            in.simulation_method = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-binary_mode") == 0)
+            in.binary_mode = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-kernel_id") == 0)
+            in.kernel_id = atoi(argv[++i]);
+    }
+
+    return in;
+}
+
+SimulationData grid_init_do_not_profile(Inputs in, int mype) {
+    SimulationData SD;
+
+    SD.length_num_nucs = in.n_isotopes;
+    SD.num_nucs = (int *)malloc(SD.length_num_nucs * sizeof(int));
+    for (int i = 0; i < SD.length_num_nucs; i++)
+        SD.num_nucs[i] = (i % 10) + 1;
+
+    SD.length_concs = in.n_isotopes * 10;
+    SD.concs = (double *)malloc(SD.length_concs * sizeof(double));
+    for (int i = 0; i < SD.length_concs; i++)
+        SD.concs[i] = (double)(i % 10) / 10.0;
+
+    SD.length_mats = in.n_isotopes * 10;
+    SD.mats = (int *)malloc(SD.length_mats * sizeof(int));
+    for (int i = 0; i < SD.length_mats; i++)
+        SD.mats[i] = i % 10;
+
+    SD.length_unionized_energy_array = in.n_gridpoints;
+    SD.unionized_energy_array = (double *)malloc(SD.length_unionized_energy_array * sizeof(double));
+    for (int i = 0; i < SD.length_unionized_energy_array; i++)
+        SD.unionized_energy_array[i] = (double)i / in.n_gridpoints;
+
+    SD.length_index_grid = in.n_gridpoints * in.n_isotopes;
+    SD.index_grid = (int *)malloc(SD.length_index_grid * sizeof(int));
+    for (int i = 0; i < SD.length_index_grid; i++)
+        SD.index_grid[i] = i % in.n_isotopes;
+
+    SD.length_nuclide_grid = in.n_isotopes * in.n_gridpoints;
+    SD.nuclide_grid = (NuclideGridPoint *)malloc(SD.length_nuclide_grid * sizeof(NuclideGridPoint));
+    for (int i = 0; i < SD.length_nuclide_grid; i++) {
+        SD.nuclide_grid[i].energy = (double)i / in.n_gridpoints;
+        SD.nuclide_grid[i].total_xs = 0.1;
+        SD.nuclide_grid[i].elastic_xs = 0.2;
+        SD.nuclide_grid[i].absorbtion_xs = 0.3;
+        SD.nuclide_grid[i].fission_xs = 0.4;
+        SD.nuclide_grid[i].nu_fission_xs = 0.5;
+    }
+
+    SD.max_num_nucs = 10;
+    SD.verification = nullptr;
+
+    return SD;
+}
+
+int main(int argc, char *argv[]) {
+    int version = 20;
+    int mype = 0;
+    double omp_start, omp_end;
+    int nprocs = 1;
+    unsigned long long verification;
+
+    Inputs in = read_CLI(argc, argv);
+
+    SimulationData SD = grid_init_do_not_profile(in, mype);
+
+    SimulationData GSD = move_simulation_data_to_device(in, mype, SD, q);
+
+    omp_start = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1.0e6;
+
+    verification = run_event_based_simulation_baseline(in, GSD, mype, q);
+
+    omp_end = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1.0e6;
+
+    release_device_memory(GSD, q);
+
+    verification = verification % 999983;
+
+    printf("Verification checksum: %llu\n", verification);
+
+    return 0;
+}
+
+[/END OF CODE TO FIX]
+ -- Compile error: 
+/usr/lib64/gcc/x86_64-suse-linux/14/../../../../x86_64-suse-linux/bin/ld: /var/tmp/pbs.7109043.polaris-pbs-01.hsn.cm.polaris.alcf.anl.gov/icpx-3fef5c0eb5/Main_attempt2-0c117d.o: in function `main':
+Main_attempt2-f05594.cpp:(.text+0xf1c): undefined reference to `move_simulation_data_to_device(Inputs, int, SimulationData, sycl::_V1::queue&)'
+/usr/lib64/gcc/x86_64-suse-linux/14/../../../../x86_64-suse-linux/bin/ld: Main_attempt2-f05594.cpp:(.text+0xfd4): undefined reference to `run_event_based_simulation_baseline(Inputs, SimulationData, int, sycl::_V1::queue&)'
+/usr/lib64/gcc/x86_64-suse-linux/14/../../../../x86_64-suse-linux/bin/ld: Main_attempt2-f05594.cpp:(.text+0x104d): undefined reference to `release_device_memory(SimulationData, sycl::_V1::queue&)'
+icpx: error: linker command failed with exit code 1 (use -v to see invocation)

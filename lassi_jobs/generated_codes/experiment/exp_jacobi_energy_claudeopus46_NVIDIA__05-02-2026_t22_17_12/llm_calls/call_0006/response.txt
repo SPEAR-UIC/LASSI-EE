@@ -1,0 +1,32 @@
+Looking at the two codes, I need to evaluate functional equivalence and output correctness.
+
+**Key Differences:**
+
+1. **`jacobi_step` parameter order**: The refactored code swaps `f` and `f_old` in the parameter list, but the kernel body still reads from `f_old` and writes to `f`, so this is just a cosmetic change in parameter ordering — functionally equivalent.
+
+2. **`__ldg()` usage**: The refactored code uses `__ldg()` for read-only accesses to `f_old`. This is a valid optimization that doesn't change correctness.
+
+3. **`__launch_bounds__`**: Added to hint occupancy — doesn't change correctness.
+
+4. **`#pragma unroll`**: Added to warp reduction loops — doesn't change correctness.
+
+5. **`swap_data` kernel change**: The source code uses a 2D grid (N/16 × N/16) with 16×16 blocks and only copies interior points (i ∈ [1, N-2], j ∈ [1, N-2]). The refactored code uses a 1D grid with 256-thread blocks and copies **ALL** points (`f_old[idx] = f[idx]` for all idx < N*N). This means boundary points in `f_old` get overwritten with values from `f`. However, since `f` is only written to at interior points in `jacobi_step`, boundary points in `f` retain their initial values (same as `f_old`'s boundary values). So copying all points is equivalent — boundary values are the same in both arrays.
+
+6. **Order of operations in the loop**: In the source code, the order is: jacobi_step → swap_data → cudaMemcpy(error). In the refactored code, the order is: jacobi_step → cudaMemcpy(error) → swap_data. The `cudaMemcpy` acts as an implicit synchronization, so `jacobi_step` completes before error is read in both cases. The swap happens after the error read in the refactored version, but this doesn't affect the error value (error is computed in jacobi_step, not swap_data). The swap still completes before the next iteration's `cudaMemset` (which also implicitly synchronizes). So this reordering is functionally correct.
+
+7. **`cudaMemset` size**: Source uses `4`, refactored uses `sizeof(float)` — both are 4 bytes, equivalent.
+
+**Output Comparison:**
+- Both produce identical error values: `0.00276205` at iteration 0, `1.38643e-05` at iteration 1000
+- Both print "PASS"
+- Execution times differ slightly (expected with optimizations)
+- Format and layout are identical
+
+**Energy Results:**
+- Source: 1540.6 J, 181.8 W
+- Refactored: 1479.0 J, 177.4 W
+- The refactored code achieves ~4% energy reduction, consistent with the optimizations applied.
+
+All functionality is preserved, numerical results are identical, and output format matches.
+
+VALID

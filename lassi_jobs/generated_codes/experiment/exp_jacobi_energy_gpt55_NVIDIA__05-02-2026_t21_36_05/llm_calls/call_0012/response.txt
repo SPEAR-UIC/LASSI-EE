@@ -1,0 +1,38 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Reasoning:
+
+1. The intended Jacobi update itself is mostly preserved:
+   - The source computes d_f from d_f_old, then copies d_f back into d_f_old.
+   - The refactored version alternates d_f and d_f_old as ping-pong buffers.
+   - Since both arrays are initialized identically and boundaries remain unchanged, this pointer alternation is a valid replacement for the explicit swap/copy behavior.
+
+2. However, the error reduction in the REFACTORED CODE is incorrect.
+   - In reduce_partials_256, the kernel reduces 256 values down to 64 shared-memory partial sums:
+       smem[0..63]
+     but then only threads tid < 32 participate in the warp reduction.
+   - This ignores smem[32..63], meaning half of the block's partial sums are dropped.
+   - The same reduction pattern appears in reduce_final_256, which can again drop part of the accumulated error.
+   - This explains why the refactored output reports:
+       Error after iteration 0 = 0.00138103
+     while the source reports:
+       Error after iteration 0 = 0.00276205
+     The refactored value is exactly about half of the source value, indicating the squared-error sum is being undercounted by approximately a factor of four.
+
+3. Because the convergence test depends directly on this error value, the refactored program can terminate too early.
+   - The source still prints an error at iteration 1000:
+       Error after iteration 1000 = 1.38643e-05
+   - The refactored code prints no iteration-1000 line and passes much earlier.
+   - This is not merely an acceptable numerical difference from optimization; it changes the convergence criterion and therefore the intended functionality.
+
+4. The standard output is also not nearly equivalent in content.
+   - The refactored output omits the iteration-1000 progress line present in the source.
+   - More importantly, the reported error values are not consistent with the same computation.
+
+Conclusion:
+
+INVALID
+*/
+```

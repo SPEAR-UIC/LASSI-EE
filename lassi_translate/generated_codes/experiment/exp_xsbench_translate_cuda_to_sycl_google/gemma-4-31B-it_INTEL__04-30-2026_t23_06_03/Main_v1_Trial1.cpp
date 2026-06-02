@@ -162,7 +162,7 @@ inline int pick_mat(uint64_t* seed) {
     double roll = LCG_random_double(seed);
     for (int i = 0; i < 12; i++) {
         double running = 0;
-        for (int j = i; j >= 0; j--) running += dist[j];
+        for (int j = i; j > 0; j--) running += dist[j];
         if (roll < running) return i;
     }
     return 0;

@@ -1,0 +1,48 @@
+Looking at both codes and their outputs, I need to evaluate functional equivalence and output similarity.
+
+## Functional Analysis
+
+### Core Logic Preservation
+The refactored code preserves all the essential logic:
+1. **All kernel functions** are present and complete (baseline, optimizations 1-6)
+2. **Mathematical computations** are identical - LCG random number generation, grid searches, cross-section calculations
+3. **Data structures** are unchanged
+4. **CLI parsing** is identical
+5. **Verification checksum computation** is preserved
+
+### Key Differences in the Refactored Code
+
+1. **Thread block sizes changed**: Source uses `nthreads = 32` for optimization kernels 1-5; refactored uses `nthreads = 256`. This changes execution behavior but not correctness.
+
+2. **`__launch_bounds__` added**: Added to kernels for occupancy hints.
+
+3. **`__ldg()` intrinsics added**: Used for read-only cache access in several places.
+
+4. **`#pragma unroll` added**: For small loops.
+
+5. **Shared memory in optimization 4**: The refactored kernel 4 uses shared memory for mats/concs, which is a structural change but produces the same results since the data is the same.
+
+6. **Optimization 4 kernel signature change**: The refactored version uses `extern __shared__ char smem[]` and dynamic shared memory, while the source uses no shared memory. The kernel is called with `smem_sz` as third argument in the refactored version.
+
+### Standard Output Comparison
+
+| Item | Source | Refactored |
+|------|--------|------------|
+| Logo/header | ✓ Match | ✓ Match |
+| Input summary | ✓ Match | ✓ Match |
+| Initialization messages | ✓ Match | ✓ Match |
+| Simulation messages | ✓ Match | ✓ Match |
+| Runtime | 0.136s | 0.140s (acceptable) |
+| Lookups | 17,000,000 | 17,000,000 ✓ |
+| **Verification checksum** | **952131 (Valid)** | **952131 (Valid)** ✓ |
+
+The verification checksum matches exactly (952131), confirming numerical correctness is preserved. The runtime difference is minor and expected. The output format and content are essentially identical.
+
+### Correctness of Optimization 4 Change
+The shared memory optimization in kernel 4 loads the same data (mats and concs for material m) that was previously loaded from global memory, producing identical results. The `__syncthreads()` ensures correct loading before use.
+
+## Conclusion
+
+The refactored code preserves all functionality, produces the same verification checksum (952131 Valid), and generates nearly identical standard output. The minor runtime difference (0.136s vs 0.140s) is within normal variation.
+
+VALID

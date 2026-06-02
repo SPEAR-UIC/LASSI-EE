@@ -8,9 +8,40 @@ from threading import Thread
 import threading
 from queue import Queue
 import queue
-import pandas as pd
-import matplotlib.pyplot as plt
-from pynvml import nvmlInit, nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetPowerUsage, NVMLError, nvmlShutdown
+
+# Optional dependencies (only needed when power measurement is enabled).
+try:
+    import pandas as pd  # type: ignore
+except Exception:  # pragma: no cover
+    pd = None  # type: ignore
+
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:  # pragma: no cover
+    plt = None  # type: ignore
+
+try:
+    from pynvml import (  # type: ignore
+        nvmlInit,
+        nvmlDeviceGetCount,
+        nvmlDeviceGetHandleByIndex,
+        nvmlDeviceGetMemoryInfo,
+        nvmlDeviceGetPowerUsage,
+        NVMLError,
+        nvmlShutdown,
+    )
+except Exception:  # pragma: no cover
+    nvmlInit = None  # type: ignore
+    nvmlDeviceGetCount = None  # type: ignore
+    nvmlDeviceGetHandleByIndex = None  # type: ignore
+    nvmlDeviceGetMemoryInfo = None  # type: ignore
+    nvmlDeviceGetPowerUsage = None  # type: ignore
+
+    class NVMLError(Exception):
+        pass
+
+    nvmlShutdown = None  # type: ignore
+
 from lassi.format_colors import color
 
 
@@ -35,6 +66,12 @@ def query_gpu_state():
 
         
 def report_gpu_memory():
+    # This is called unconditionally by the pipeline, even when power measurement
+    # is disabled. Make it a no-op if NVML isn't available.
+    if nvmlInit is None or nvmlShutdown is None:
+        print("\n----- GPU Memory Status: (skipped; pynvml not installed)")
+        return
+
     try:
         nvmlInit()
         device_count = nvmlDeviceGetCount()
@@ -52,7 +89,7 @@ def report_gpu_memory():
     finally:
         try:
             nvmlShutdown()
-        except NVMLError as shutdown_error:
+        except Exception as shutdown_error:
             print("Failed to shut down NVML cleanly:", shutdown_error)
 
             
@@ -237,6 +274,10 @@ def power_collect_data(experiment_data_directory, code_version, zero_shot, trial
 
     
 def idlepower(experiment_data_directory, trial_number, duration):
+    if nvmlInit is None:
+        print("Skipping idle power measurement (pynvml not installed)")
+        return 0.0, 0.0, 0.0
+
     nvmlInit()
     handle = nvmlDeviceGetHandleByIndex(0)  # Assuming GPU 0
     

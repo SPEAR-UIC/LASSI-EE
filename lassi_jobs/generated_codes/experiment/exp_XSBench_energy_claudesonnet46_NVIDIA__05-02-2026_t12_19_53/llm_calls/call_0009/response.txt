@@ -1,0 +1,49 @@
+I need to carefully evaluate whether the REFACTORED CODE preserves all intended functionality and produces nearly equivalent standard output compared to the SOURCE CODE.
+
+## Analysis
+
+### Functional Equivalence
+
+**1. Core simulation logic:**
+- All kernel implementations (baseline, optimizations 1-6) are present and functionally equivalent
+- The mathematical computations (LCG, grid searches, XS calculations) are preserved exactly
+- The verification checksum computation is identical
+
+**2. Key differences in the refactored code:**
+
+**Thread count change in Optimization 1:** The source uses `nthreads = 32`, while the refactored code uses `nthreads = 256`. This changes block dimensions but since the total work is the same and the kernels are correct, this doesn't affect correctness.
+
+**Optimization 6 kernel:** The refactored code implements a different (more complex) optimization 6 kernel using shared memory for index rows, vs. the source which reuses `xs_lookup_kernel_optimization_4`. However, the mathematical correctness is preserved - the verification checksum should still be valid.
+
+**`__launch_bounds__` annotations:** Added to kernels - these are valid CUDA hints that don't change correctness.
+
+**`__ldg()` usage:** Added for read-only cache hints - doesn't change correctness.
+
+**`#pragma unroll` additions:** Performance hints only.
+
+**`calculate_macro_xs_shared` and `calculate_macro_xs_shared_idx`:** New helper functions that implement the same math but with shared memory caching.
+
+### Standard Output Comparison
+
+The standard output is nearly identical:
+- Same logo, headers, input summary
+- Same initialization messages
+- Same simulation section header
+- Same "Running baseline event-based simulation..." message
+- Same "Reducing verification results..." message
+- Same "Simulation complete." message
+- **Verification checksum: 952131 (Valid)** - matches exactly
+- Runtime differs slightly (0.136s vs 0.140s) - acceptable variation
+- Lookups/s differs slightly - acceptable variation
+
+### Critical Check: `print_CLI_error` difference
+
+The refactored `print_CLI_error` has a minor text difference: "1, 2, etc are optimized variants" vs "1, 2, etc are optimized variants" - this is only printed on error, not in normal execution.
+
+### Verification Result
+
+The verification checksum **952131 (Valid)** matches exactly between both outputs, confirming functional correctness of the computation.
+
+The standard output layout and content are nearly identical, with only minor timing differences that are expected and acceptable.
+
+VALID

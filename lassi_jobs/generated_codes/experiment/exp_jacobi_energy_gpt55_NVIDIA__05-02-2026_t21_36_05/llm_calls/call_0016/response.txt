@@ -1,0 +1,39 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Key issues:
+
+1. The reported numerical error is significantly different.
+   - SOURCE iteration 0 error:     0.00276205
+   - REFACTORED iteration 0 error: 0.00138103
+
+   The refactored value is almost exactly half of the source value, which is not a minor numerical variation.
+
+2. The refactored reduction kernels appear to under-sum the error.
+   In reduce_partials_256 and reduce_final_256, the shared-memory reduction does:
+     - tid < 128: add smem[tid + 128]
+     - tid < 64:  add smem[tid + 64]
+     - then only tid < 32 participates in warp reduction
+
+   This omits contributions from smem[32..63] after the second stage. As a result, only part of the reduction is included. Because both reduction stages have this issue, the final accumulated error is substantially underestimated.
+
+3. The convergence behavior changes.
+   The SOURCE prints:
+     Error after iteration 0
+     Error after iteration 1000
+
+   The REFACTORED CODE prints only:
+     Error after iteration 0
+
+   This indicates it terminates before reaching iteration 1000, unlike the source. Since the error is underestimated, the refactored code reaches the tolerance condition prematurely.
+
+4. The lower runtime and energy are therefore not evidence of a valid optimization.
+   The refactored code consumes less energy primarily because it performs fewer iterations due to an incorrect convergence metric, not because it preserves the original computation more efficiently.
+
+5. Output layout is broadly similar, but key content differs.
+   Missing the iteration 1000 error line and producing a substantially different iteration 0 error are meaningful deviations from the source behavior.
+
+Conclusion: INVALID
+*/
+```

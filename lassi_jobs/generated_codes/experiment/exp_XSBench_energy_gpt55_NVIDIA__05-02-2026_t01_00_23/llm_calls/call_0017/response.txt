@@ -1,0 +1,43 @@
+```cpp
+/*
+Evaluation: INVALID
+
+Reasoning:
+1. For the provided event-based large/unionized baseline run, the refactored code produces a very similar standard output layout and the same final verification checksum:
+   - Source checksum:     952131 (Valid)
+   - Refactored checksum: 952131 (Valid)
+   This indicates that the main event-based baseline numerical result for this specific run is preserved.
+
+2. However, the refactored code does not preserve all SOURCE CODE behavior.
+   The most significant functional difference is history-based simulation behavior:
+   - SOURCE CODE explicitly does not implement history-based simulation in CUDA. If the simulation method is history-based, it prints:
+       "History-based simulation not implemented in CUDA code. Instead,
+        use the event-based method with \"-m event\" argument."
+     and exits with error.
+   - REFACTORED CODE implements and runs a history-based simulation path instead.
+   This changes program behavior for the default CLI configuration and for any `-m history` run, so functionality is not equivalent.
+
+3. The printed output also differs for history-based inputs:
+   - SOURCE CODE prints total lookups as `in.lookups` in the input summary.
+   - REFACTORED CODE prints `in.lookups * in.particles` for history mode.
+   Therefore, the standard output is not preserved across supported CLI modes.
+
+4. Binary file compatibility/behavior is also changed:
+   - REFACTORED CODE changes the `SimulationData` structure layout by adding SoA pointer fields.
+   - Its `binary_read`/`binary_write` serialize this changed structure layout.
+   This makes the binary file format behavior different from the SOURCE CODE and potentially incompatible with files produced by the source implementation.
+
+5. For the shown event-based run, formatting differences such as a slightly shorter border line are minor and acceptable, and the key content is present.
+   The changed GPU allocation line is explainable by the refactor's different verification storage strategy.
+   However, these do not outweigh the larger functional behavior changes.
+
+6. The refactored metrics are also worse for the shown run:
+   - Source energy:     213.1 J
+   - Refactored energy: 247.1 J
+   - Source runtime:    0.136 s simulation timing
+   - Refactored runtime:0.399 s simulation timing
+   While energy/performance alone is not the core correctness criterion here, this does not support the claim of an energy-efficiency-preserving/improving refactor.
+
+Conclusion: INVALID
+*/
+```

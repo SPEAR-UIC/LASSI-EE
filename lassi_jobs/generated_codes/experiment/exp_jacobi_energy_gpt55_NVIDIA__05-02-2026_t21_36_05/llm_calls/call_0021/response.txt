@@ -1,0 +1,50 @@
+```cpp
+/*
+Evaluation: INVALID
+
+The REFACTORED CODE does not preserve the intended functionality of the SOURCE CODE.
+
+Key differences:
+
+1. Different problem size and interface
+   - SOURCE CODE uses a fixed N = 16384.
+   - REFACTORED CODE defaults to n = 1024 and adds command-line options.
+   - This changes the computational domain and program interface.
+
+2. Different initialization
+   - SOURCE CODE initializes sinusoidal boundary conditions and zero interior values.
+   - REFACTORED CODE initializes every element using:
+       ((row + 1) * (col + 1)) * 0.000001f
+   - This is a completely different numerical problem.
+
+3. Different Jacobi behavior
+   - SOURCE CODE performs Jacobi iterations until the normalized L2 error is below tolerance or max_iters is reached.
+   - REFACTORED CODE runs a fixed number of iterations only.
+   - SOURCE CODE computes and reduces an error value every iteration.
+   - REFACTORED CODE does not compute convergence error at all.
+
+4. Different boundary behavior
+   - SOURCE CODE preserves sinusoidal boundary values by only updating/copying interior points.
+   - REFACTORED CODE initializes all points with non-boundary-specific values and only updates interior points, but the boundary values are not equivalent to the source.
+
+5. Different output
+   - SOURCE CODE prints:
+       Error after iteration 0 = ...
+       Error after iteration 1000 = ...
+       Average execution time per iteration: ... (s)
+       PASS
+       Total elapsed time: ... seconds
+   - REFACTORED CODE prints only:
+       Checksum: ...
+   - The output layout and content are not nearly equivalent.
+
+6. Unrelated added functionality
+   - REFACTORED CODE includes material/isotope loading routines that are unrelated to the SOURCE CODE.
+   - These do not reproduce any behavior from the original Jacobi convergence program.
+
+Conclusion:
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE and does not produce comparable standard output.
+
+INVALID
+*/
+```

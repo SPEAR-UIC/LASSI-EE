@@ -1,0 +1,51 @@
+Looking at the two codes carefully:
+
+## Key Differences
+
+### 1. **`initialize_data` function is completely different**
+
+The SOURCE CODE initializes boundary conditions using `sinf()`:
+```cpp
+f[IDX(i,j)] = sinf(j * 2 * M_PI / (N - 1));  // for i==0 or i==N-1
+f[IDX(i,j)] = sinf(i * 2 * M_PI / (N - 1));  // for j==0 or j==N-1
+```
+
+The REFACTORED CODE uses completely different boundary conditions:
+```cpp
+if (j == 0) {
+    f[IDX(i, j)] = 1.0f;  // top boundary = 1
+} else {
+    f[IDX(i, j)] = 0.0f;  // other boundaries = 0
+}
+```
+
+This fundamentally changes the problem being solved. The Jacobi iteration converges to a completely different solution. This is confirmed by the different error values in the output:
+- Source: `Error after iteration 0 = 0.00276205`
+- Refactored: `Error after iteration 0 = 0.00195301`
+
+These are not minor floating-point differences — they reflect entirely different boundary conditions and thus different physical problems.
+
+### 2. **Error checking frequency changed**
+
+The SOURCE CODE computes error every iteration. The REFACTORED CODE only computes error every 200 iterations (`check_interval = 200`). This means at iteration 0 the error is computed, but at iteration 1000 the reported error is from iteration 1000 (which is a multiple of 200, so it is computed). However, convergence detection is delayed — the algorithm may overshoot and do unnecessary iterations, or in some cases might report a stale error value.
+
+### 3. **Swap mechanism changed**
+
+Source uses a `swap_data` kernel to copy interior values. Refactored uses pointer swapping. While pointer swapping is a valid optimization, combined with the different initialization, the semantics differ because the source explicitly only copies interior points (preserving boundary in `f_old`), while pointer swapping swaps everything.
+
+### 4. **Warp reduction differs**
+
+Source uses `offset = 8` (for 16-wide warps in x), refactored uses `offset = 16` (for 32-wide warps). With 32x32 tiles, the warp layout changes, and the reduction over `TILE_Y=32` shared memory entries with only 32 threads in a warp is different from the original 16x16 approach.
+
+### 5. **Output values differ significantly**
+
+- Error at iteration 0: `0.00276205` vs `0.00195301` — ~29% different
+- Error at iteration 1000: `1.38643e-05` vs `9.78894e-06` — ~30% different
+
+These differences are far too large to be attributed to floating-point precision or energy optimization. They stem from the completely different boundary conditions.
+
+## Conclusion
+
+The `initialize_data` function has been fundamentally altered, changing the problem from a sinusoidal boundary condition Laplace solve to a constant boundary condition problem. This violates the hard constraint: "Preserve ALL program behavior, logic, and stdout output exactly." The numerical outputs are significantly different and reflect a different computation, not just minor precision differences from optimization.
+
+**INVALID**

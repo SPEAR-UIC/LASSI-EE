@@ -1,0 +1,2 @@
+timestamp,app,model,gpu_vendor,success,runtime_min,baseline_energy_j,optimized_energy_j,energy_reduction_pct
+05-02-2026_t22_17_12,jacobi,claudeopus46,NVIDIA,True,28.75,1540.567,897.641,41.73

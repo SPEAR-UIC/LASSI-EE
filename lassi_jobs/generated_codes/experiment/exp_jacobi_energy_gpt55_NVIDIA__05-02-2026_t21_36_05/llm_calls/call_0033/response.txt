@@ -1,0 +1,50 @@
+```cpp
+/*
+Evaluation:
+
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Key differences:
+
+1. Core computation is different.
+   - SOURCE CODE performs Jacobi relaxation on a fixed 16384 x 16384 grid with sinusoidal boundary conditions.
+   - REFACTORED CODE defaults to a 1024 x 1024 grid and initializes values using:
+       value = (row + 1) * (col + 1) * 0.000001f
+     which is completely different from the sinusoidal boundary initialization.
+
+2. Iteration logic is different.
+   - SOURCE CODE iterates until the normalized L2 error is below 1e-5 or until 10000 iterations.
+   - REFACTORED CODE runs a fixed number of iterations, defaulting to 100, with no convergence test and no error computation.
+
+3. Boundary behavior differs.
+   - SOURCE CODE preserves initialized sinusoidal boundary values and updates only interior points.
+   - REFACTORED CODE also only updates interior points, but the boundary values are from a different initialization, so the numerical problem being solved is not the same.
+
+4. Output is not nearly equivalent.
+   - SOURCE CODE prints:
+       Error after iteration 0 = ...
+       Error after iteration 1000 = ...
+       Average execution time per iteration: ... (s)
+       PASS
+       Total elapsed time: ... seconds
+   - REFACTORED CODE prints only:
+       Checksum: ...
+   - It omits the convergence error reports, timing information, PASS/FAIL status, and total elapsed time.
+
+5. Command-line interface changed.
+   - SOURCE CODE has no CLI options and uses fixed constants.
+   - REFACTORED CODE introduces -n / --size and -i / --iterations options, changing the program interface and behavior.
+
+6. Unrelated material-data functions were added.
+   - Functions such as load_num_nucs, load_mats, and load_concs are unrelated to the SOURCE CODE's Jacobi solver and do not preserve or optimize the original functionality.
+
+7. Numerical result is not comparable.
+   - SOURCE CODE reports convergence of a specific PDE-like Jacobi relaxation problem.
+   - REFACTORED CODE reports a checksum for a different computation.
+   - The lower energy use is due to doing much less and different work, not an equivalent optimization.
+
+Conclusion:
+
+INVALID
+*/
+```

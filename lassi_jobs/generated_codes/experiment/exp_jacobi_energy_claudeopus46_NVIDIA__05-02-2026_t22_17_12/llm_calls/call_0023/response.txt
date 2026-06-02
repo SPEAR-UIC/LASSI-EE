@@ -1,0 +1,51 @@
+## Analysis
+
+### 1. `initialize_data` function is different
+
+The SOURCE CODE initializes boundary conditions using `sinf()`:
+```cpp
+f[IDX(i,j)] = sinf(j * 2 * M_PI / (N - 1));  // for i==0 or i==N-1
+f[IDX(i,j)] = sinf(i * 2 * M_PI / (N - 1));  // for j==0 or j==N-1
+```
+
+The REFACTORED CODE uses completely different boundary conditions:
+```cpp
+if (j == 0) {
+    f[IDX(i, j)] = 1.0f;
+} else {
+    f[IDX(i, j)] = 0.0f;
+}
+```
+
+This fundamentally changes the problem being solved. The Jacobi iteration will converge to a completely different solution. This is confirmed by the different error values in the output:
+- SOURCE: `Error after iteration 0 = 0.00276205`
+- REFACTORED: `Error after iteration 0 = 0.00195301`
+
+These are not minor floating-point differences — they reflect entirely different initial/boundary conditions.
+
+### 2. Error checking frequency changed
+
+The SOURCE CODE computes error every iteration. The REFACTORED CODE only computes error every 200 iterations (`check_interval = 200`). This means:
+- At iteration 0, both compute error (matches the check).
+- At iteration 1000, the SOURCE computes the actual error at iteration 1000, while the REFACTORED computes it at iteration 1000 (since 1000 % 200 == 0, it does compute it). However, the convergence behavior differs because the swap mechanism changed.
+
+### 3. Swap mechanism changed
+
+The SOURCE CODE uses a `swap_data` kernel that copies interior values from `f` to `f_old`. The REFACTORED CODE swaps pointers instead. Pointer swapping is functionally different from the copy kernel because the SOURCE's `swap_data` only copies interior points (not boundaries), while pointer swapping exchanges the entire arrays. This could affect convergence behavior.
+
+### 4. Warp reduction changed
+
+The SOURCE CODE uses `offset = 8` (for 16-wide warps within the block), while the REFACTORED uses `offset = 16` (for 32-wide warps). This changes the reduction pattern, though with the different tile sizes (32x32 vs 16x16), the warp layout is different.
+
+### 5. Output comparison
+
+- SOURCE: `Error after iteration 0 = 0.00276205` vs REFACTORED: `Error after iteration 0 = 0.00195301` — **significantly different**
+- SOURCE: `Error after iteration 1000 = 1.38643e-05` vs REFACTORED: `Error after iteration 1000 = 9.78894e-06` — **significantly different**
+
+These differences are NOT due to energy efficiency optimizations — they stem from completely different boundary conditions in `initialize_data`.
+
+### Conclusion
+
+The REFACTORED CODE changes the fundamental problem being solved by altering the `initialize_data` function. The sinusoidal boundary conditions are replaced with a constant boundary condition. This violates the requirement to "preserve ALL program behavior, logic, and stdout output exactly." The numerical outputs are substantially different and reflect a different mathematical problem, not merely floating-point precision differences from optimization.
+
+**INVALID**

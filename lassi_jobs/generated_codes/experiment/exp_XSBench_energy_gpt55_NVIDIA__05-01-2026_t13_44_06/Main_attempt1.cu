@@ -1,0 +1,621 @@
+#include <cuda.h>
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <vector>
+
+#define N_MATERIALS 12
+#define N_XS 5
+
+struct Inputs {
+    int n_isotopes;
+    int n_gridpoints;
+    long long lookups;
+    int particles;
+    int simulation_method;
+    int grid_type;
+    int hash_bins;
+    int block_size;
+};
+
+struct NuclideGridPoint {
+    double energy;
+    double total_xs;
+    double elastic_xs;
+    double absorption_xs;
+    double fission_xs;
+    double nu_fission_xs;
+};
+
+static void check_cuda(cudaError_t err, const char *file, int line) {
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "CUDA error at %s:%d: %s\n", file, line, cudaGetErrorString(err));
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+#define CUDA_CHECK(call) check_cuda((call), __FILE__, __LINE__)
+
+static void logo() {
+    std::printf("================================================================================\n");
+    std::printf("                   __   __ ___________                 _                        \n");
+    std::printf("                   \\ \\ / //  ___| ___ \\               | |                       \n");
+    std::printf("                    \\ V / \\ `--.| |_/ / ___ _ __   ___| |__                    \n");
+    std::printf("                    /   \\  `--. \\ ___ \\/ _ \\ '_ \\ / __| '_ \\                   \n");
+    std::printf("                   / /^\\ \\/\\__/ / |_/ /  __/ | | | (__| | | |                  \n");
+    std::printf("                   \\/   \\/\\____/\\____/ \\___|_| |_|\\___|_| |_|                  \n");
+    std::printf("================================================================================\n");
+}
+
+static void print_usage(const char *name) {
+    std::printf("Usage: %s [options]\n", name);
+    std::printf("Options:\n");
+    std::printf("  -s <small|large|XL>       Problem size preset\n");
+    std::printf("  -g <gridpoints>           Grid points per isotope\n");
+    std::printf("  -G <gridpoints>           Grid points per isotope\n");
+    std::printf("  -l <lookups>              Number of lookups\n");
+    std::printf("  -p <particles>            Number of particles\n");
+    std::printf("  -m <history|event>        Simulation method\n");
+    std::printf("  -b <block size>           CUDA block size\n");
+    std::printf("  -h                        Print this message\n");
+}
+
+static Inputs read_CLI(int argc, char **argv) {
+    Inputs in;
+    in.n_isotopes = 68;
+    in.n_gridpoints = 11303;
+    in.lookups = 1000000LL;
+    in.particles = 100000;
+    in.simulation_method = 0;
+    in.grid_type = 0;
+    in.hash_bins = 10000;
+    in.block_size = 256;
+
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            std::exit(EXIT_SUCCESS);
+        } else if ((std::strcmp(argv[i], "-s") == 0 || std::strcmp(argv[i], "--size") == 0) && i + 1 < argc) {
+            ++i;
+            if (std::strcmp(argv[i], "small") == 0 || std::strcmp(argv[i], "Small") == 0 || std::strcmp(argv[i], "SMALL") == 0) {
+                in.n_isotopes = 68;
+                in.n_gridpoints = 11303;
+                in.lookups = 1000000LL;
+            } else if (std::strcmp(argv[i], "large") == 0 || std::strcmp(argv[i], "Large") == 0 || std::strcmp(argv[i], "LARGE") == 0) {
+                in.n_isotopes = 355;
+                in.n_gridpoints = 11303;
+                in.lookups = 15000000LL;
+            } else if (std::strcmp(argv[i], "XL") == 0 || std::strcmp(argv[i], "xl") == 0 || std::strcmp(argv[i], "Xlarge") == 0) {
+                in.n_isotopes = 355;
+                in.n_gridpoints = 238847;
+                in.lookups = 15000000LL;
+            }
+        } else if ((std::strcmp(argv[i], "-g") == 0 || std::strcmp(argv[i], "-G") == 0 || std::strcmp(argv[i], "--gridpoints") == 0) && i + 1 < argc) {
+            in.n_gridpoints = std::atoi(argv[++i]);
+        } else if ((std::strcmp(argv[i], "-l") == 0 || std::strcmp(argv[i], "--lookups") == 0) && i + 1 < argc) {
+            in.lookups = std::atoll(argv[++i]);
+        } else if ((std::strcmp(argv[i], "-p") == 0 || std::strcmp(argv[i], "--particles") == 0) && i + 1 < argc) {
+            in.particles = std::atoi(argv[++i]);
+        } else if ((std::strcmp(argv[i], "-m") == 0 || std::strcmp(argv[i], "--method") == 0) && i + 1 < argc) {
+            ++i;
+            if (std::strcmp(argv[i], "event") == 0 || std::strcmp(argv[i], "event-based") == 0) {
+                in.simulation_method = 1;
+            } else {
+                in.simulation_method = 0;
+            }
+        } else if ((std::strcmp(argv[i], "-b") == 0 || std::strcmp(argv[i], "--block") == 0) && i + 1 < argc) {
+            in.block_size = std::atoi(argv[++i]);
+        } else if ((std::strcmp(argv[i], "-i") == 0 || std::strcmp(argv[i], "--isotopes") == 0) && i + 1 < argc) {
+            in.n_isotopes = std::atoi(argv[++i]);
+        } else if ((std::strcmp(argv[i], "--hash-bins") == 0) && i + 1 < argc) {
+            in.hash_bins = std::atoi(argv[++i]);
+        }
+    }
+
+    if (in.n_isotopes < 1) in.n_isotopes = 1;
+    if (in.n_gridpoints < 2) in.n_gridpoints = 2;
+    if (in.lookups < 1) in.lookups = 1;
+    if (in.particles < 1) in.particles = 1;
+    if (in.block_size < 32) in.block_size = 32;
+    if (in.block_size > 1024) in.block_size = 1024;
+    in.block_size = ((in.block_size + 31) / 32) * 32;
+    return in;
+}
+
+static int *load_num_nucs(int n_isotopes) {
+    int *num_nucs = (int *)std::malloc(N_MATERIALS * sizeof(int));
+    if (!num_nucs) std::exit(EXIT_FAILURE);
+
+    const int canonical[N_MATERIALS] = {34, 5, 4, 4, 27, 21, 21, 21, 21, 9, 9, 9};
+    for (int i = 0; i < N_MATERIALS; ++i) {
+        num_nucs[i] = canonical[i];
+        if (n_isotopes < 68) {
+            if (num_nucs[i] > n_isotopes) num_nucs[i] = n_isotopes;
+            if (num_nucs[i] < 1) num_nucs[i] = 1;
+        }
+    }
+    return num_nucs;
+}
+
+static int **load_mats(const int *num_nucs, int n_isotopes) {
+    const int mat0[34] = {58, 59, 60, 61, 40, 42, 43, 44, 45, 46, 1, 2, 3, 7, 8, 9, 10, 29, 57, 47, 48, 0, 62, 15, 33, 34, 52, 53, 54, 55, 56, 18, 23, 41};
+    const int mat1[5] = {63, 64, 65, 66, 67};
+    const int mat2[4] = {24, 41, 4, 5};
+    const int mat3[4] = {24, 41, 4, 5};
+    const int mat4[27] = {19, 20, 21, 22, 35, 36, 37, 38, 39, 25, 27, 28, 29, 30, 31, 32, 26, 49, 50, 51, 11, 12, 13, 14, 6, 16, 17};
+    const int mat5[21] = {19, 20, 21, 22, 35, 36, 37, 38, 39, 25, 27, 28, 29, 30, 31, 32, 26, 49, 50, 51, 11};
+    const int mat6[21] = {19, 20, 21, 22, 35, 36, 37, 38, 39, 25, 27, 28, 29, 30, 31, 32, 26, 49, 50, 51, 11};
+    const int mat7[21] = {19, 20, 21, 22, 35, 36, 37, 38, 39, 25, 27, 28, 29, 30, 31, 32, 26, 49, 50, 51, 11};
+    const int mat8[21] = {19, 20, 21, 22, 35, 36, 37, 38, 39, 25, 27, 28, 29, 30, 31, 32, 26, 49, 50, 51, 11};
+    const int mat9[9] = {24, 41, 4, 5, 47, 48, 49, 50, 51};
+    const int mat10[9] = {24, 41, 4, 5, 47, 48, 49, 50, 51};
+    const int mat11[9] = {24, 41, 4, 5, 47, 48, 49, 50, 51};
+    const int *src[N_MATERIALS] = {mat0, mat1, mat2, mat3, mat4, mat5, mat6, mat7, mat8, mat9, mat10, mat11};
+
+    int **mats = (int **)std::malloc(N_MATERIALS * sizeof(int *));
+    if (!mats) std::exit(EXIT_FAILURE);
+
+    for (int m = 0; m < N_MATERIALS; ++m) {
+        mats[m] = (int *)std::malloc(num_nucs[m] * sizeof(int));
+        if (!mats[m]) std::exit(EXIT_FAILURE);
+        for (int n = 0; n < num_nucs[m]; ++n) {
+            int v = src[m][n];
+            while (v >= n_isotopes) v -= n_isotopes;
+            while (v < 0) v += n_isotopes;
+            mats[m][n] = v;
+        }
+    }
+    return mats;
+}
+
+static double **load_concs(const int *num_nucs) {
+    const double c0[34] = {
+        6.9100E-06, 3.2000E-07, 4.6000E-08, 3.6000E-09, 7.0000E-09, 6.9000E-09,
+        5.6907E-04, 2.4700E-05, 1.4700E-06, 2.9000E-08, 3.6253E-04, 7.3114E-04,
+        4.8044E-04, 2.4267E-05, 1.0800E-05, 6.9000E-07, 3.0643E-04, 6.9000E-09,
+        7.3458E-05, 6.9000E-09, 2.1543E-05, 2.1900E-04, 4.9800E-05, 2.5851E-05,
+        3.1600E-06, 3.0533E-04, 1.6218E-05, 2.1052E-06, 8.5700E-08, 4.1500E-08,
+        1.7800E-09, 9.6000E-08, 6.7600E-06, 1.0800E-05
+    };
+    const double c1[5] = {4.8500E-02, 3.2250E-02, 1.6250E-02, 2.8750E-03, 3.1250E-04};
+    const double c2[4] = {6.3732E-02, 3.4419E-02, 4.0133E-04, 1.5444E-04};
+    const double c3[4] = {6.3732E-02, 3.4419E-02, 4.0133E-04, 1.5444E-04};
+    const double c4[27] = {
+        8.6972E-03, 5.1800E-04, 1.1776E-02, 1.0954E-02, 1.5600E-04, 1.5400E-04,
+        1.2300E-04, 1.2100E-04, 4.6900E-05, 1.3757E-02, 1.0152E-03, 2.6067E-03,
+        5.0203E-04, 2.9900E-05, 1.7300E-06, 4.7000E-08, 3.4499E-02, 3.2000E-06,
+        7.6100E-06, 7.4000E-06, 1.2298E-03, 2.2900E-05, 4.3300E-06, 1.2300E-06,
+        2.0311E-02, 3.2823E-02, 1.6900E-06
+    };
+    const double c5[21] = {
+        8.6972E-03, 5.1800E-04, 1.1776E-02, 1.0954E-02, 1.5600E-04, 1.5400E-04,
+        1.2300E-04, 1.2100E-04, 4.6900E-05, 1.3757E-02, 1.0152E-03, 2.6067E-03,
+        5.0203E-04, 2.9900E-05, 1.7300E-06, 4.7000E-08, 3.4499E-02, 3.2000E-06,
+        7.6100E-06, 7.4000E-06, 1.2298E-03
+    };
+    const double c6[21] = {
+        8.6972E-03, 5.1800E-04, 1.1776E-02, 1.0954E-02, 1.5600E-04, 1.5400E-04,
+        1.2300E-04, 1.2100E-04, 4.6900E-05, 1.3757E-02, 1.0152E-03, 2.6067E-03,
+        5.0203E-04, 2.9900E-05, 1.7300E-06, 4.7000E-08, 3.4499E-02, 3.2000E-06,
+        7.6100E-06, 7.4000E-06, 1.2298E-03
+    };
+    const double c7[21] = {
+        8.6972E-03, 5.1800E-04, 1.1776E-02, 1.0954E-02, 1.5600E-04, 1.5400E-04,
+        1.2300E-04, 1.2100E-04, 4.6900E-05, 1.3757E-02, 1.0152E-03, 2.6067E-03,
+        5.0203E-04, 2.9900E-05, 1.7300E-06, 4.7000E-08, 3.4499E-02, 3.2000E-06,
+        7.6100E-06, 7.4000E-06, 1.2298E-03
+    };
+    const double c8[21] = {
+        8.6972E-03, 5.1800E-04, 1.1776E-02, 1.0954E-02, 1.5600E-04, 1.5400E-04,
+        1.2300E-04, 1.2100E-04, 4.6900E-05, 1.3757E-02, 1.0152E-03, 2.6067E-03,
+        5.0203E-04, 2.9900E-05, 1.7300E-06, 4.7000E-08, 3.4499E-02, 3.2000E-06,
+        7.6100E-06, 7.4000E-06, 1.2298E-03
+    };
+    const double c9[9] = {6.3732E-02, 3.4419E-02, 4.0133E-04, 1.5444E-04, 3.2000E-06, 7.6100E-06, 7.4000E-06, 1.2298E-03, 2.2900E-05};
+    const double c10[9] = {6.3732E-02, 3.4419E-02, 4.0133E-04, 1.5444E-04, 3.2000E-06, 7.6100E-06, 7.4000E-06, 1.2298E-03, 2.2900E-05};
+    const double c11[9] = {6.3732E-02, 3.4419E-02, 4.0133E-04, 1.5444E-04, 3.2000E-06, 7.6100E-06, 7.4000E-06, 1.2298E-03, 2.2900E-05};
+
+    const double *src[N_MATERIALS] = {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11};
+    double **concs = (double **)std::malloc(N_MATERIALS * sizeof(double *));
+    if (!concs) std::exit(EXIT_FAILURE);
+
+    for (int m = 0; m < N_MATERIALS; ++m) {
+        concs[m] = (double *)std::malloc(num_nucs[m] * sizeof(double));
+        if (!concs[m]) std::exit(EXIT_FAILURE);
+        for (int n = 0; n < num_nucs[m]; ++n) concs[m][n] = src[m][n];
+    }
+    return concs;
+}
+
+static inline uint64_t lcg_next_host(uint64_t *state) {
+    *state = (*state * 2862933555777941757ULL) + 3037000493ULL;
+    return *state;
+}
+
+static inline double rand01_host(uint64_t *state) {
+    uint64_t v = lcg_next_host(state);
+    return (double)(v >> 11) * 0x1.0p-53;
+}
+
+static NuclideGridPoint *generate_grids(int n_isotopes, int n_gridpoints) {
+    size_t total = (size_t)n_isotopes * (size_t)n_gridpoints;
+    NuclideGridPoint *grid = (NuclideGridPoint *)std::malloc(total * sizeof(NuclideGridPoint));
+    if (!grid) {
+        std::fprintf(stderr, "Failed to allocate nuclide grid\n");
+        std::exit(EXIT_FAILURE);
+    }
+
+    uint64_t seed = 1337ULL;
+    for (int iso = 0; iso < n_isotopes; ++iso) {
+        for (int p = 0; p < n_gridpoints; ++p) {
+            double e = ((double)p + rand01_host(&seed)) / (double)n_gridpoints;
+            double a = 0.001 * (double)(iso + 1);
+            size_t idx = (size_t)iso * (size_t)n_gridpoints + (size_t)p;
+            grid[idx].energy = e;
+            grid[idx].total_xs = 1.0 + a + 0.10 * rand01_host(&seed);
+            grid[idx].elastic_xs = 0.5 + a + 0.05 * rand01_host(&seed);
+            grid[idx].absorption_xs = 0.25 + a + 0.03 * rand01_host(&seed);
+            grid[idx].fission_xs = 0.125 + a + 0.02 * rand01_host(&seed);
+            grid[idx].nu_fission_xs = 0.0625 + a + 0.01 * rand01_host(&seed);
+        }
+    }
+    return grid;
+}
+
+static void flatten_materials(const int *num_nucs, int **mats, double **concs, int **flat_mats, double **flat_concs, int **offsets) {
+    int total = 0;
+    for (int m = 0; m < N_MATERIALS; ++m) total += num_nucs[m];
+
+    *flat_mats = (int *)std::malloc(total * sizeof(int));
+    *flat_concs = (double *)std::malloc(total * sizeof(double));
+    *offsets = (int *)std::malloc((N_MATERIALS + 1) * sizeof(int));
+    if (!*flat_mats || !*flat_concs || !*offsets) std::exit(EXIT_FAILURE);
+
+    int off = 0;
+    for (int m = 0; m < N_MATERIALS; ++m) {
+        (*offsets)[m] = off;
+        for (int n = 0; n < num_nucs[m]; ++n) {
+            (*flat_mats)[off] = mats[m][n];
+            (*flat_concs)[off] = concs[m][n];
+            ++off;
+        }
+    }
+    (*offsets)[N_MATERIALS] = off;
+}
+
+__device__ __forceinline__ uint64_t lcg_next_dev(uint64_t *state) {
+    *state = (*state * 2862933555777941757ULL) + 3037000493ULL;
+    return *state;
+}
+
+__device__ __forceinline__ double rand01_dev(uint64_t *state) {
+    uint64_t v = lcg_next_dev(state);
+    return (double)(v >> 11) * 0x1.0p-53;
+}
+
+__device__ __forceinline__ int pick_mat_dev(uint64_t *seed) {
+    double r = rand01_dev(seed);
+    const double p0 = 0.140;
+    const double p1 = 0.192;
+    const double p2 = 0.467;
+    const double p3 = 0.601;
+    const double p4 = 0.755;
+    const double p5 = 0.819;
+    const double p6 = 0.885;
+    const double p7 = 0.940;
+    const double p8 = 0.948;
+    const double p9 = 0.963;
+    const double p10 = 0.988;
+    if (r < p0) return 0;
+    if (r < p1) return 1;
+    if (r < p2) return 2;
+    if (r < p3) return 3;
+    if (r < p4) return 4;
+    if (r < p5) return 5;
+    if (r < p6) return 6;
+    if (r < p7) return 7;
+    if (r < p8) return 8;
+    if (r < p9) return 9;
+    if (r < p10) return 10;
+    return 11;
+}
+
+__device__ __forceinline__ int grid_search_dev(const NuclideGridPoint *__restrict__ grid, int n_gridpoints, int isotope, double energy) {
+    int lower = 0;
+    int upper = n_gridpoints - 1;
+    size_t base = (size_t)isotope * (size_t)n_gridpoints;
+
+    while (upper - lower > 1) {
+        int mid = lower + ((upper - lower) >> 1);
+        double e = __ldg(&grid[base + (size_t)mid].energy);
+        if (e > energy) upper = mid;
+        else lower = mid;
+    }
+    return lower;
+}
+
+__device__ __forceinline__ void calculate_macro_xs_dev(
+    double energy,
+    int mat,
+    const NuclideGridPoint *__restrict__ grid,
+    int n_gridpoints,
+    const int *__restrict__ num_nucs,
+    const int *__restrict__ mats,
+    const double *__restrict__ concs,
+    const int *__restrict__ offsets,
+    double *macro_xs) {
+
+    macro_xs[0] = 0.0;
+    macro_xs[1] = 0.0;
+    macro_xs[2] = 0.0;
+    macro_xs[3] = 0.0;
+    macro_xs[4] = 0.0;
+
+    int n = __ldg(&num_nucs[mat]);
+    int off = __ldg(&offsets[mat]);
+
+    for (int i = 0; i < n; ++i) {
+        int isotope = __ldg(&mats[off + i]);
+        double conc = __ldg(&concs[off + i]);
+        int low = grid_search_dev(grid, n_gridpoints, isotope, energy);
+        int high = low + 1;
+
+        size_t base = (size_t)isotope * (size_t)n_gridpoints;
+        const NuclideGridPoint g0 = grid[base + (size_t)low];
+        const NuclideGridPoint g1 = grid[base + (size_t)high];
+
+        double f = (energy - g0.energy) / (g1.energy - g0.energy);
+
+        macro_xs[0] += conc * (g0.total_xs + f * (g1.total_xs - g0.total_xs));
+        macro_xs[1] += conc * (g0.elastic_xs + f * (g1.elastic_xs - g0.elastic_xs));
+        macro_xs[2] += conc * (g0.absorption_xs + f * (g1.absorption_xs - g0.absorption_xs));
+        macro_xs[3] += conc * (g0.fission_xs + f * (g1.fission_xs - g0.fission_xs));
+        macro_xs[4] += conc * (g0.nu_fission_xs + f * (g1.nu_fission_xs - g0.nu_fission_xs));
+    }
+}
+
+__device__ __forceinline__ unsigned long long hash_xs_dev(const double *xs) {
+    unsigned long long h = 1469598103934665603ULL;
+#pragma unroll
+    for (int i = 0; i < N_XS; ++i) {
+        unsigned long long b = (unsigned long long)__double_as_longlong(xs[i]);
+        h ^= b;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+__global__ void xsbench_history_lookup_cuda_kernel(
+    const NuclideGridPoint *__restrict__ grid,
+    int n_gridpoints,
+    long long lookups,
+    const int *__restrict__ num_nucs,
+    const int *__restrict__ mats,
+    const double *__restrict__ concs,
+    const int *__restrict__ offsets,
+    unsigned long long *__restrict__ partial) {
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+    unsigned long long checksum = 0ULL;
+
+    for (long long i = (long long)tid; i < lookups; i += (long long)stride) {
+        uint64_t seed = (uint64_t)(i + 1LL) ^ 0x9e3779b97f4a7c15ULL;
+        double energy = rand01_dev(&seed);
+        int mat = pick_mat_dev(&seed);
+        double xs[N_XS];
+        calculate_macro_xs_dev(energy, mat, grid, n_gridpoints, num_nucs, mats, concs, offsets, xs);
+        checksum += hash_xs_dev(xs);
+    }
+    partial[tid] = checksum;
+}
+
+__global__ void xsbench_event_lookup_cuda_kernel(
+    const NuclideGridPoint *__restrict__ grid,
+    int n_gridpoints,
+    long long lookups,
+    const int *__restrict__ num_nucs,
+    const int *__restrict__ mats,
+    const double *__restrict__ concs,
+    const int *__restrict__ offsets,
+    unsigned long long *__restrict__ partial) {
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+    unsigned long long checksum = 0ULL;
+
+    for (long long i = (long long)tid; i < lookups; i += (long long)stride) {
+        uint64_t seed = ((uint64_t)(i + 1LL) * 0xd1b54a32d192ed03ULL) ^ 0x94d049bb133111ebULL;
+        double energy = rand01_dev(&seed);
+        int mat = pick_mat_dev(&seed);
+        double xs[N_XS];
+        calculate_macro_xs_dev(energy, mat, grid, n_gridpoints, num_nucs, mats, concs, offsets, xs);
+        checksum += hash_xs_dev(xs);
+    }
+    partial[tid] = checksum;
+}
+
+static unsigned long long simulation_kernel_history(
+    const NuclideGridPoint *d_grid,
+    int n_gridpoints,
+    long long lookups,
+    const int *d_num_nucs,
+    const int *d_mats,
+    const double *d_concs,
+    const int *d_offsets,
+    int block_size,
+    float *elapsed_ms) {
+
+    int blocks = (int)((lookups + block_size - 1) / block_size);
+    if (blocks < 1) blocks = 1;
+    if (blocks > 4096) blocks = 4096;
+    int threads_total = blocks * block_size;
+
+    unsigned long long *d_partial = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_partial, (size_t)threads_total * sizeof(unsigned long long)));
+
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start));
+
+    xsbench_history_lookup_cuda_kernel<<<blocks, block_size>>>(
+        d_grid, n_gridpoints, lookups, d_num_nucs, d_mats, d_concs, d_offsets, d_partial);
+
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(elapsed_ms, start, stop));
+
+    std::vector<unsigned long long> h_partial((size_t)threads_total);
+    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_partial, (size_t)threads_total * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+
+    unsigned long long checksum = 0ULL;
+    for (int i = 0; i < threads_total; ++i) checksum += h_partial[(size_t)i];
+
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    CUDA_CHECK(cudaFree(d_partial));
+    return checksum;
+}
+
+static unsigned long long simulation_kernel_event(
+    const NuclideGridPoint *d_grid,
+    int n_gridpoints,
+    long long lookups,
+    const int *d_num_nucs,
+    const int *d_mats,
+    const double *d_concs,
+    const int *d_offsets,
+    int block_size,
+    float *elapsed_ms) {
+
+    int blocks = (int)((lookups + block_size - 1) / block_size);
+    if (blocks < 1) blocks = 1;
+    if (blocks > 4096) blocks = 4096;
+    int threads_total = blocks * block_size;
+
+    unsigned long long *d_partial = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_partial, (size_t)threads_total * sizeof(unsigned long long)));
+
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start));
+
+    xsbench_event_lookup_cuda_kernel<<<blocks, block_size>>>(
+        d_grid, n_gridpoints, lookups, d_num_nucs, d_mats, d_concs, d_offsets, d_partial);
+
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(elapsed_ms, start, stop));
+
+    std::vector<unsigned long long> h_partial((size_t)threads_total);
+    CUDA_CHECK(cudaMemcpy(h_partial.data(), d_partial, (size_t)threads_total * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+
+    unsigned long long checksum = 0ULL;
+    for (int i = 0; i < threads_total; ++i) checksum += h_partial[(size_t)i];
+
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    CUDA_CHECK(cudaFree(d_partial));
+    return checksum;
+}
+
+int main(int argc, char **argv) {
+    Inputs in = read_CLI(argc, argv);
+
+    logo();
+    std::printf("INPUT SUMMARY\n");
+    std::printf("  Isotopes:                 %d\n", in.n_isotopes);
+    std::printf("  Gridpoints per isotope:   %d\n", in.n_gridpoints);
+    std::printf("  Lookups:                  %lld\n", in.lookups);
+    std::printf("  Particles:                %d\n", in.particles);
+    std::printf("  Simulation method:        %s\n", in.simulation_method ? "event" : "history");
+    std::printf("  CUDA block size:          %d\n", in.block_size);
+    std::printf("================================================================================\n");
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    int *num_nucs = load_num_nucs(in.n_isotopes);
+    int **mats = load_mats(num_nucs, in.n_isotopes);
+    double **concs = load_concs(num_nucs);
+
+    int *flat_mats = nullptr;
+    int *offsets = nullptr;
+    double *flat_concs = nullptr;
+    flatten_materials(num_nucs, mats, concs, &flat_mats, &flat_concs, &offsets);
+
+    NuclideGridPoint *h_grid = generate_grids(in.n_isotopes, in.n_gridpoints);
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double init_seconds = std::chrono::duration<double>(t1 - t0).count();
+
+    size_t grid_bytes = (size_t)in.n_isotopes * (size_t)in.n_gridpoints * sizeof(NuclideGridPoint);
+    size_t total_nucs = (size_t)offsets[N_MATERIALS];
+
+    NuclideGridPoint *d_grid = nullptr;
+    int *d_num_nucs = nullptr;
+    int *d_mats = nullptr;
+    int *d_offsets = nullptr;
+    double *d_concs = nullptr;
+
+    CUDA_CHECK(cudaMalloc(&d_grid, grid_bytes));
+    CUDA_CHECK(cudaMalloc(&d_num_nucs, N_MATERIALS * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_mats, total_nucs * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_concs, total_nucs * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_offsets, (N_MATERIALS + 1) * sizeof(int)));
+
+    CUDA_CHECK(cudaMemcpy(d_grid, h_grid, grid_bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_num_nucs, num_nucs, N_MATERIALS * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_mats, flat_mats, total_nucs * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_concs, flat_concs, total_nucs * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_offsets, offsets, (N_MATERIALS + 1) * sizeof(int), cudaMemcpyHostToDevice));
+
+    float kernel_ms = 0.0f;
+    unsigned long long verification = 0ULL;
+
+    if (in.simulation_method == 0) {
+        verification = simulation_kernel_history(d_grid, in.n_gridpoints, in.lookups, d_num_nucs, d_mats, d_concs, d_offsets, in.block_size, &kernel_ms);
+    } else {
+        verification = simulation_kernel_event(d_grid, in.n_gridpoints, in.lookups, d_num_nucs, d_mats, d_concs, d_offsets, in.block_size, &kernel_ms);
+    }
+
+    double lookup_seconds = (double)kernel_ms / 1000.0;
+    double lookups_per_second = lookup_seconds > 0.0 ? (double)in.lookups / lookup_seconds : 0.0;
+
+    std::printf("Simulation complete.\n");
+    std::printf("Verification checksum: %llu\n", verification);
+    std::printf("Initialization time: %.6f seconds\n", init_seconds);
+    std::printf("Lookup time: %.6f seconds\n", lookup_seconds);
+    std::printf("Lookups/s: %.3f\n", lookups_per_second);
+    std::printf("================================================================================\n");
+
+    CUDA_CHECK(cudaFree(d_grid));
+    CUDA_CHECK(cudaFree(d_num_nucs));
+    CUDA_CHECK(cudaFree(d_mats));
+    CUDA_CHECK(cudaFree(d_concs));
+    CUDA_CHECK(cudaFree(d_offsets));
+
+    for (int m = 0; m < N_MATERIALS; ++m) {
+        std::free(mats[m]);
+        std::free(concs[m]);
+    }
+    std::free(mats);
+    std::free(concs);
+    std::free(num_nucs);
+    std::free(flat_mats);
+    std::free(flat_concs);
+    std::free(offsets);
+    std::free(h_grid);
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return 0;
+}

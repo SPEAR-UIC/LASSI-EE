@@ -1,0 +1,21 @@
+```cpp
+/*
+The REFACTORED CODE is functionally equivalent to the SOURCE CODE.
+
+Reasoning:
+- The initialization logic is preserved. The source initializes both host arrays separately with identical deterministic boundary/interior values. The refactored version initializes one host array, copies it to d_f, then copies d_f to d_f_old on the device. This produces equivalent initial device data.
+- The Jacobi stencil computation is preserved: same grid/block dimensions, same boundary checks, same index arithmetic, same stencil formula, same error computation, and same convergence criterion.
+- Replacing global loads from f_old with __ldg() does not change numerical behavior because f_old is read-only within jacobi_step.
+- The reduction logic remains intended to compute the same block-level error contribution. The changed shuffle mask in the second reduction is appropriate because only the first 16 lanes participate under threadIdx.y == 0.
+- The main behavioral change is replacing the explicit swap_data copy kernel with pointer swapping. This is equivalent here because both device arrays are initialized with identical fixed boundary values, the Jacobi kernel overwrites only interior points, and the boundary values remain unchanged in both arrays.
+- The unused swap_data kernel remains defined, so no required function behavior is removed from the source text.
+- The printed output retains the same key layout and content:
+  - Iteration error lines are present and numerically identical in the shown output.
+  - Average execution time per iteration is printed in the same format.
+  - PASS/FAIL behavior is preserved, and the refactored code prints PASS.
+  - Total elapsed time is printed in the same format.
+- Differences in timing and energy metrics are expected and reasonable because the refactored code removes a full-grid device copy kernel each iteration, reducing runtime and energy.
+
+Conclusion: VALID
+*/
+```

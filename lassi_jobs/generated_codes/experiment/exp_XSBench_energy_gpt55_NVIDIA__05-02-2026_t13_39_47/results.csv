@@ -1,0 +1,2 @@
+timestamp,app,model,gpu_vendor,success,runtime_min,baseline_energy_j,optimized_energy_j,energy_reduction_pct
+05-02-2026_t13_39_47,XSBench,gpt55,NVIDIA,True,10.65,212.846,209.734,1.46

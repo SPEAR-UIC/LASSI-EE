@@ -1,0 +1,47 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Key differences:
+
+1. Completely different computation:
+   - SOURCE CODE performs Jacobi relaxation on a fixed 16384 x 16384 grid with sinusoidal boundary conditions.
+   - REFACTORED CODE performs a much smaller default 1024 x 1024 Jacobi-like computation initialized with a simple multiplicative formula.
+   - The source uses convergence based on an L2 error tolerance; the refactored code runs a fixed number of iterations.
+
+2. Different program behavior and interface:
+   - SOURCE CODE takes no command-line options.
+   - REFACTORED CODE adds CLI options for size and iteration count.
+   - This changes the command-line interface and runtime behavior.
+
+3. Different numerical initialization:
+   - SOURCE CODE initializes boundaries with sinf(...) and interior values to zero.
+   - REFACTORED CODE initializes every element to ((row + 1) * (col + 1)) * 1e-6.
+   - This is not the same problem.
+
+4. Different iteration logic:
+   - SOURCE CODE iterates until error <= 1e-5 or max_iters is reached.
+   - REFACTORED CODE executes exactly options.iterations iterations, defaulting to 100.
+
+5. Different output:
+   - SOURCE CODE prints:
+     - Error after iteration 0
+     - Error after iteration 1000
+     - Average execution time per iteration
+     - PASS or FAIL
+     - Total elapsed time
+   - REFACTORED CODE prints only:
+     - Checksum: ...
+   - The printed layout and content are not nearly equivalent.
+
+6. Unrelated material data functions:
+   - REFACTORED CODE includes functions such as load_num_nucs, load_mats, and load_concs, which are unrelated to the source Jacobi solver.
+   - These do not preserve the original program logic.
+
+7. Energy reduction is not meaningful here:
+   - Although the refactored code uses much less energy, this is because it performs a much smaller and different workload.
+   - Reduced energy is not valid if achieved by changing the computation and output.
+
+Conclusion: INVALID
+*/
+```

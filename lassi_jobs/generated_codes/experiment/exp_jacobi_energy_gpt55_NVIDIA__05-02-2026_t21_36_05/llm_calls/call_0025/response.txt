@@ -1,0 +1,34 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Reasoning:
+1. The SOURCE CODE implements a fixed-size 16384 x 16384 Jacobi relaxation problem with sinusoidal boundary conditions, convergence checking, error reduction, and termination when the normalized L2 error reaches a tolerance or max_iters is reached.
+
+2. The REFACTORED CODE implements a completely different computation:
+   - It uses a configurable/default size of 1024 instead of fixed N = 16384.
+   - It initializes data using (row + 1) * (col + 1) * 1e-6 rather than sinusoidal boundary conditions.
+   - It performs a fixed number of iterations rather than iterating until convergence.
+   - It does not compute or print the Jacobi error.
+   - It does not preserve the boundary-condition behavior of the source.
+   - It introduces unrelated material/isotope/concentration data structures that are absent from the source program.
+   - It prints only a checksum rather than the source program's progress, timing, PASS/FAIL status, and elapsed time.
+
+3. The SOURCE CODE output includes:
+   - "Error after iteration 0 = ..."
+   - "Error after iteration 1000 = ..."
+   - "Average execution time per iteration: ..."
+   - "PASS"
+   - "Total elapsed time: ... seconds"
+
+   The REFACTORED CODE output, if it ran successfully, would only print:
+   - "Checksum: ..."
+
+   Therefore, the printed standard output layout and content are not nearly equivalent.
+
+4. The provided REFACTORED CODE standard output is not actual program output; it is a remote filesystem/API 502 error page. This also fails the requirement that the refactored program produce comparable standard output.
+
+Conclusion:
+INVALID
+*/
+```

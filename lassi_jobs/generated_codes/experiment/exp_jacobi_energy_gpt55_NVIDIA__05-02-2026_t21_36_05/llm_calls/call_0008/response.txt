@@ -1,0 +1,19 @@
+```cpp
+/*
+The refactored code preserves the intended Jacobi solver functionality.
+
+Key equivalence points:
+- The initialization is equivalent: the source initializes both host arrays separately with identical values, while the refactored code initializes one host array and copies it device-to-device into the second array.
+- The Jacobi stencil computation is preserved: the same grid size, block size, boundary checks, index arithmetic, and numerical update formula are used.
+- Boundary behavior is preserved: both device arrays initially contain the same fixed boundary values, and only interior points are updated.
+- Replacing the explicit swap_data copy kernel with pointer swapping is functionally equivalent for this Jacobi iteration pattern because the next iteration only needs the newly computed field as f_old, and the other buffer can safely receive the next output.
+- The error computation remains an L2-style accumulated squared difference followed by sqrt(error / (N * N)).
+- The refactored reduction changes the accumulation order compared with atomicAdd, so tiny floating-point differences such as 1.38643e-05 vs 1.38644e-05 are expected and acceptable.
+- The loop convergence behavior and PASS result are preserved.
+- The printed output layout and key content are nearly equivalent: iteration error lines, average execution time, PASS, total elapsed time, and energy reporting are all present in the same general format.
+
+The runtime and energy differences are consistent with the refactoring reducing work by avoiding the full-grid swap_data copy kernel and replacing atomic accumulation with a staged reduction.
+
+Conclusion: VALID
+*/
+```

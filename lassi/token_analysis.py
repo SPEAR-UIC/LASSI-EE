@@ -1,11 +1,21 @@
 # Used in similarity metrics
 import difflib
 import tokenize  # apparently only defined for Python code
-import tiktoken
+
+# tiktoken is optional; only required for token counting.
+try:
+    import tiktoken  # type: ignore
+except Exception:  # pragma: no cover
+    tiktoken = None  # type: ignore
+
 from io import BytesIO
 
 
 def token_count(doc_text):
+    if tiktoken is None:
+        # Best-effort fallback when optional dependency isn't installed.
+        return len(doc_text.split())
+
     tokenizer = tiktoken.get_encoding("cl100k_base")
 
     encoding = tiktoken.Encoding(

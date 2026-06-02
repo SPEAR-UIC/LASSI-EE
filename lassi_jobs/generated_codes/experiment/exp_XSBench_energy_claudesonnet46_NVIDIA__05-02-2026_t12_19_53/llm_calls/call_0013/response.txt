@@ -1,0 +1,34 @@
+Looking at both codes and their outputs, I need to evaluate whether the REFACTORED CODE preserves all intended functionality and produces nearly equivalent standard output.
+
+## Functional Analysis
+
+### Core Logic Preservation
+1. **All kernels present**: The refactored code contains all 7 kernel variants (baseline, optimizations 1-6), all device functions, and all host functions.
+2. **Numerical correctness**: Both produce `Verification checksum: 952131 (Valid)` — identical verification hash.
+3. **Data structures**: All structs (`NuclideGridPoint`, `Inputs`, `SimulationData`) are identical.
+4. **CLI parsing**: Identical logic preserved.
+5. **Grid initialization**: Same initialization logic, same seed values.
+
+### Key Changes in Refactored Code
+1. **Thread count**: Changed from 32 to 256 threads for optimization kernels 1-6 (baseline already used 256). This is a valid energy optimization (better occupancy).
+2. **`__ldg()` usage**: Added read-only cache hints for global memory reads — valid optimization.
+3. **`__launch_bounds__`**: Added launch bounds hints — valid optimization.
+4. **`#pragma unroll`**: Added for small loops — valid optimization.
+5. **Shared memory in optimization 4/6**: Added `calculate_macro_xs_smem` function using shared memory for mats/concs — valid optimization that preserves correctness.
+6. **`grid_search` uses `__ldg()`**: Minor optimization, functionally equivalent.
+
+### Output Comparison
+| Field | Source | Refactored |
+|-------|--------|------------|
+| Verification checksum | 952131 (Valid) | 952131 (Valid) |
+| Runtime | 0.136 s | 0.135 s |
+| Lookups/s | 125,295,728 | 125,645,898 |
+| Energy | 209.7 J | 208.2 J |
+| Avg Power | 52.2 W | 51.8 W |
+| All other output lines | Identical | Identical |
+
+The minor differences in runtime and lookups/s are expected due to timing variability. The energy reduction (1.5 J less) is consistent with the optimizations applied. The verification checksum is identical, confirming numerical correctness.
+
+The refactored code correctly handles the `nblocks > 0` guard for optimization 5 (which the source didn't have but doesn't affect correctness for normal inputs). All functions are fully implemented.
+
+VALID

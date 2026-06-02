@@ -1,0 +1,45 @@
+I need to carefully compare the SOURCE CODE and REFACTORED CODE for functional equivalence and output similarity.
+
+## Key Differences Found:
+
+### 1. **`initialize_data` function is completely different (CRITICAL)**
+
+**SOURCE CODE:**
+- Boundary conditions use `sinf(j * 2 * M_PI / (N - 1))` for left/right edges
+- Boundary conditions use `sinf(i * 2 * M_PI / (N - 1))` for top/bottom edges
+
+**REFACTORED CODE:**
+- Sets `j == 0` boundary to `1.0f`
+- Sets all other boundaries to `0.0f`
+
+This is a fundamental change to the problem being solved. The Jacobi iteration is solving a completely different PDE boundary value problem. This directly explains why the error values differ significantly:
+- Source: `Error after iteration 0 = 0.00276205`
+- Refactored: `Error after iteration 0 = 0.00195301`
+
+These are not minor numerical differences from precision optimization — they result from entirely different boundary conditions.
+
+### 2. **Error checking frequency changed**
+
+SOURCE CODE checks error every iteration. REFACTORED CODE checks every 200 iterations (`check_interval = 200`). This changes convergence behavior and the error values reported at iteration 1000.
+
+### 3. **Swap mechanism changed**
+
+SOURCE CODE uses a separate `swap_data` kernel that copies interior values. REFACTORED CODE swaps pointers. While pointer swapping is a valid optimization in many cases, the original `swap_data` kernel only copies interior points (i >= 1 && i <= N-2, j >= 1 && j <= N-2), preserving boundary values in `f_old`. With pointer swapping, the roles of the buffers alternate, and since the "new" buffer `f` only writes interior points, the boundary values in what becomes `f_old` after the swap might not be correct on alternating iterations. However, since both buffers were initialized identically, this should be okay.
+
+### 4. **Tile size changed from 16×16 to 32×32**
+
+This changes the warp reduction logic. The SOURCE CODE uses offsets starting at 8 (for 16 threads per row), while the REFACTORED CODE uses offsets starting at 16 (for 32 threads per row). The reduction logic in the refactored code also differs — it tries to reduce 32 values in shared memory using a warp of 32 threads, which is structurally different.
+
+### 5. **Output differences**
+
+The numerical values are significantly different:
+- Iteration 0 error: 0.00276205 vs 0.00195301 (29% different)
+- Iteration 1000 error: 1.38643e-05 vs 9.78894e-06 (30% different)
+
+These are not minor floating-point precision differences — they stem from solving an entirely different problem due to changed boundary conditions.
+
+## Conclusion
+
+The `initialize_data` function has been fundamentally altered, changing the boundary conditions from sinusoidal functions to constant values. This means the REFACTORED CODE is solving a completely different mathematical problem. The numerical outputs confirm this — the error values are substantially different, not due to precision optimizations, but because the underlying computation is different. This violates the hard constraint of preserving all program behavior and logic.
+
+**INVALID**

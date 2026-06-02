@@ -1,0 +1,62 @@
+## Key CUDA Energy-Efficiency Techniques for NVIDIA A100
+
+### 1. Coalesce global memory accesses
+Arrange data and indexing so threads in a warp access consecutive addresses. Prefer struct-of-arrays over array-of-structs when each thread reads the same field from different elements. Avoid strided patterns such as `arr[threadIdx.x * N + j]`; use layouts like `arr[j * blockDim.x + threadIdx.x]`.
+
+**Most impactful when:** the kernel is memory-bound and performs large global memory reads/writes. On A100, reducing HBM2e transactions can significantly reduce both runtime and DRAM energy.
+
+---
+
+### 2. Use shared memory for reused data
+Load global-memory data cooperatively into shared memory, then reuse it within the block. This replaces repeated HBM2e accesses with much cheaper on-chip SRAM accesses. Avoid shared-memory bank conflicts by ensuring warp threads do not repeatedly access addresses mapping to the same bank.
+
+**Most impactful when:** multiple threads in a block reuse the same or nearby data, such as tiled stencil, matrix, reduction, lookup, or interpolation patterns.
+
+---
+
+### 3. Tune occupancy
+Use block sizes that are multiples of 32, typically 128–256 threads per block. Balance occupancy against register pressure and shared-memory use. Avoid register spilling, because spilled registers go to local memory backed by DRAM. Use tools such as the CUDA Occupancy Calculator, `cudaOccupancyMaxPotentialBlockSize`, and `__launch_bounds__`.
+
+**Most impactful when:** latency hiding is poor, the kernel stalls on memory, or register/shared-memory usage limits active warps per SM. On A100, target enough active warps to hide HBM latency without causing spills.
+
+---
+
+### 4. Reduce warp divergence
+Minimize branches where threads in the same warp take different paths. Use branchless expressions, predication-friendly short branches, or reorder/sort work so threads in a warp follow similar control flow. Keep divergent regions small.
+
+**Most impactful when:** branch conditions depend on per-thread data and branch bodies are nontrivial. Reducing divergence lowers instruction count and active cycles.
+
+---
+
+### 5. Fuse kernels when possible
+Combine consecutive kernels that operate on the same data so intermediate results stay in registers or shared memory instead of being written to and reread from global memory. Fusion also removes kernel launch overhead.
+
+**Most impactful when:** kernels are memory-bound, use temporary global arrays, or perform simple producer-consumer stages with compatible launch configurations and local data dependencies.
+
+---
+
+### 6. Use read-only cache paths with `__ldg` or `const __restrict__`
+Mark read-only input arrays as `const __restrict__`, and use `__ldg()` where appropriate to route loads through the read-only/texture cache path. This can reduce pressure on L1/L2 and avoid unnecessary DRAM traffic for repeated cache-line reads.
+
+**Most impactful when:** arrays are read-only within the kernel and have spatial or temporal locality. It can also help moderately for irregular read-only lookup-heavy kernels.
+
+---
+
+### 7. Choose arithmetic precision carefully
+Use the lowest precision that preserves correctness. Prefer `float` over `double` when accuracy allows, because FP32 uses less memory bandwidth, fewer registers, and much higher throughput on A100. Use FMA where possible and consider fast math intrinsics such as `__expf`, `__sinf`, or `__fdividef` only when their reduced precision is acceptable.
+
+**Most impactful when:** the kernel is compute-bound, uses double precision unnecessarily, or moves large arrays of floating-point data through memory. Always verify numerical correctness.
+
+---
+
+### 8. Minimize synchronization and atomics
+Use `__syncthreads()` only when required by true inter-thread data dependencies. Move barriers out of loops when possible. Use warp-level primitives such as `__syncwarp`, `__ballot_sync`, or warp reductions when synchronization is only needed within a warp. Reduce high-contention atomics by aggregating per-block results in shared memory and issuing fewer global atomics.
+
+**Most impactful when:** kernels contain frequent barriers, reductions, producer-consumer phases, or many threads contending for the same atomic address.
+
+---
+
+### 9. Prefetch and manage data movement explicitly
+Keep data resident on the GPU across multiple kernels. Avoid unnecessary host-device transfers. Use pinned host memory and asynchronous copies with streams when transfers are required. For Unified Memory, prefetch data to the GPU before kernel execution or use explicit `cudaMalloc`/`cudaMemcpy` to avoid expensive page migrations.
+
+**Most impactful when:** runtime includes significant CPU-GPU data transfer, Unified Memory page faults, or repeated movement of the same data between host and device.

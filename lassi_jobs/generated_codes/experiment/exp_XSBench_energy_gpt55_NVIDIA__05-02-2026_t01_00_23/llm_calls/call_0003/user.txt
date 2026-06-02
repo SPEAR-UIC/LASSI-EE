@@ -1,0 +1,3455 @@
+[CONTEXT KNOWLEDGE]
+- **Coalesce global memory accesses**
+  - Arrange data so consecutive warp lanes access consecutive addresses (`thread i -> base + i`), avoiding strided or scattered loads/stores.
+  - Prefer **Struct-of-Arrays (SoA)** over **Array-of-Structs (AoS)** when each thread reads the same field from different objects.
+  - Most impactful for **memory-bound kernels**, where HBM2e traffic dominates energy. Better coalescing reduces DRAM transactions, execution time, and DRAM power.
+
+- **Use shared memory for reused data**
+  - Tile global-memory data into shared memory when multiple threads in a block reuse the same or nearby values.
+  - Load each tile once from HBM2e, then reuse it from low-energy on-chip SRAM.
+  - Avoid shared-memory bank conflicts by ensuring warp lanes do not repeatedly map to the same bank, especially with strides that are multiples of 32.
+  - Most impactful when there is **spatial or temporal reuse within a block**, such as stencil-like access, tiled matrix operations, reductions, or repeated table lookups.
+
+- **Optimize occupancy, but do not maximize it blindly**
+  - Use block sizes that are multiples of 32; **128–256 threads per block** is often a good starting point on A100.
+  - Watch limits from registers per thread, shared memory per block, and block size.
+  - Avoid register spilling, because spilled “local” memory usually goes to DRAM and costs energy.
+  - Use tools such as the CUDA Occupancy Calculator or `cudaOccupancyMaxPotentialBlockSize`.
+  - Consider `__launch_bounds__` to guide register allocation.
+  - Most impactful when latency hiding is insufficient, especially in **memory-latency-bound kernels**. However, excessive occupancy that causes spilling or reduces cache/shared-memory effectiveness can increase energy.
+
+- **Reduce warp divergence**
+  - Keep threads within a warp on the same control-flow path whenever possible.
+  - Replace short divergent branches with predication or branchless expressions.
+  - Group or sort inputs so that warps process similar work types.
+  - Keep branch bodies short so the compiler can predicate them efficiently.
+  - Most impactful when branch decisions vary per thread and the divergent regions contain substantial computation or memory access.
+
+- **Fuse kernels when possible**
+  - Combine consecutive kernels that operate on the same data and have compatible dependencies.
+  - Keep intermediate values in registers or shared memory instead of writing them to global memory and reading them back.
+  - Also reduces kernel launch overhead.
+  - Most impactful when kernels are bandwidth-bound, launch-heavy, or communicate through temporary global-memory arrays.
+
+- **Use read-only cache paths with `__ldg()` or `const __restrict__`**
+  - Mark read-only input arrays as `const __restrict__`.
+  - Use `__ldg(&ptr[i])` for explicit read-only cache loads where appropriate.
+  - This can reduce L2 and DRAM pressure for read-only data with spatial or temporal locality.
+  - Most impactful for large read-only tables, lookup arrays, coefficients, and inputs that are reused or accessed irregularly but never modified inside the kernel.
+
+- **Choose arithmetic precision deliberately**
+  - Use `float` instead of `double` when accuracy requirements allow.
+  - FP32 uses less memory bandwidth, fewer registers, and much higher throughput than FP64 on A100.
+  - Use fast-math intrinsics such as `__expf`, `__logf`, `__sinf`, `__cosf`, or `__fdividef` only when the numerical error is acceptable.
+  - Prefer fused multiply-add (`fmaf`, `fma`, or compiler-generated FMA) for fewer instructions and better accuracy.
+  - Most impactful for **compute-bound kernels** and for memory-bound kernels where reducing data size from 64-bit to 32-bit cuts DRAM traffic.
+
+- **Minimize synchronization**
+  - Remove unnecessary `__syncthreads()`, especially inside loops.
+  - Use `__syncwarp()` or warp-level collectives when synchronization is only needed within a warp.
+  - Replace high-contention atomics with block-level reductions in shared memory, followed by one atomic operation per block.
+  - Most impactful when barriers or atomics cause frequent stalls, especially in reductions, histograms, and shared-memory algorithms.
+
+- **Use prefetching and asynchronous movement where useful**
+  - Keep data resident on the GPU across multiple kernels instead of repeatedly transferring between host and device.
+  - Use pinned host memory and `cudaMemcpyAsync` with streams to overlap transfers with computation when host-device transfers are unavoidable.
+  - For tiled kernels on A100, consider preloading upcoming tiles into shared memory so global-memory latency is hidden behind computation.
+  - Avoid unmanaged implicit page migrations; if using Unified Memory, explicitly prefetch data to the GPU before kernel execution.
+  - Most impactful when kernels are limited by data movement latency or when host-device transfers/page migrations appear in the critical path.
+[/CONTEXT KNOWLEDGE]
+
+[YOUR ANALYSIS OF THE SOURCE CODE]
+## 1. Overall Algorithm and GPU Resource Utilization Profile
+
+### Algorithm summary
+
+This is an event-based CUDA implementation of the XSBench macroscopic cross-section lookup workload. Each lookup performs the following high-level steps:
+
+1. Generate a deterministic pseudo-random particle energy and material ID using an LCG RNG.
+2. For the selected material, iterate over all nuclides present in that material.
+3. For each nuclide:
+   - Locate the bounding energy grid points using one of three lookup modes:
+     - Unionized energy grid.
+     - Per-nuclide binary search.
+     - Hash grid with local refinement.
+   - Load the two neighboring `NuclideGridPoint` records.
+   - Interpolate five microscopic cross-section values.
+4. Multiply microscopic cross sections by material concentrations and accumulate five macroscopic cross-section channels.
+5. Select the maximum channel index and store a per-lookup verification value.
+6. Reduce the verification array using Thrust.
+
+### Resource profile
+
+The workload is primarily memory-latency-bound and cache-efficiency-sensitive, not purely compute-bound.
+
+Key reasons:
+
+- Each lookup performs many irregular global-memory reads from:
+  - `nuclide_grid`
+  - `index_grid`
+  - `unionized_energy_array`
+  - `mats`
+  - `concs`
+- Accesses depend on random particle energies and random material choices.
+- Binary searches produce divergent control flow and non-sequential memory access.
+- The dominant data structure, `NuclideGridPoint`, contains six `double` values, so each grid point is 48 bytes.
+- Each microscopic lookup normally reads two adjacent `NuclideGridPoint` objects, about 96 bytes per nuclide before cache effects.
+- Fuel material contains many more nuclides than other materials, causing load imbalance and warp divergence when different materials are mixed in the same warp.
+
+### Compute-bound versus memory-bound
+
+Likely classification on NVIDIA A100:
+
+- Baseline and optimizations 1–5: mostly memory-latency-bound with substantial branch divergence.
+- Optimization 6: still memory-bandwidth/cache-bound, but much more efficient because material and energy sorting improve locality and warp coherence.
+- The use of double precision increases memory traffic and register pressure. A100 has strong FP64 capability, but the irregular memory behavior is likely the limiting factor.
+
+### Random versus sequential access
+
+The algorithm has a mix of access types:
+
+- Sequential/coalesced:
+  - Per-thread writes to `verification`.
+  - Sampling writes to `p_energy_samples` and `mat_samples`.
+  - Reads from sorted sample arrays in optimizations 4–6.
+- Random/scattered:
+  - `nuclide_grid` accesses.
+  - `index_grid` accesses.
+  - `unionized_energy_array` binary-search accesses.
+  - Material-dependent accesses to `mats` and `concs`, though these arrays are small and cache-friendly.
+
+### Main energy-efficiency opportunities
+
+1. Improve cache locality by grouping lookups by material and energy.
+   - Optimization 6 is the most energy-efficient direction because it reduces redundant memory transactions and branch divergence.
+2. Avoid repeated full-array scans in optimization 2 and optimization 3.
+   - These launch kernels that scan many inactive lookups, wasting energy on memory reads and control-flow checks.
+3. Use lower precision where validation permits.
+   - Converting grid data, concentrations, energies, and interpolation arithmetic from `double` to `float` could significantly reduce memory bandwidth, cache pressure, and register usage.
+4. Use constant memory or shared memory for small material metadata.
+   - `num_nucs`, `mats`, and `concs` are small and repeatedly reused.
+5. Increase block size for one-warp kernels if occupancy or scheduling overhead becomes limiting.
+   - The many 32-thread-block kernels are limited by the maximum resident block count per SM.
+6. Reduce synchronization and kernel launch overhead.
+   - Multiple small kernels, Thrust counts, sorts, partitions, and reductions add overhead and energy cost.
+7. Fix or avoid memory lifetime inefficiencies in repeated runs.
+   - `GSD.index_grid` is allocated on the device but not freed in `release_device_memory`, creating a device-memory leak across repeated executions.
+
+---
+
+## 2. CUDA Kernel Launch Configurations and Expected A100 Occupancy
+
+### Baseline
+
+Kernel:
+
+- `xs_lookup_kernel_baseline`
+
+Launch configuration:
+
+- Threads per block: 256
+- Blocks: `ceil(in.lookups / 256)`
+
+Occupancy expectation on A100:
+
+- 256 threads per block equals 8 warps per block.
+- This is a conventional occupancy-friendly block size.
+- If register usage is not excessive, A100 can keep multiple blocks resident per SM.
+- However, the kernel uses several local arrays, many double-precision temporaries, inlined device functions, and binary-search logic, so register pressure may reduce achieved occupancy.
+- Despite that, this configuration is more likely to achieve high nominal occupancy than the 32-thread-block variants.
+
+Energy-efficiency assessment:
+
+- Good occupancy potential for hiding memory latency.
+- Poor warp efficiency due to material imbalance, random memory accesses, and divergent binary-search paths.
+
+---
+
+### Optimization 1
+
+Kernels:
+
+- `sampling_kernel`
+- `xs_lookup_kernel_optimization_1`
+
+Launch configuration for both:
+
+- Threads per block: 32
+- Blocks: `ceil(in.lookups / 32)`
+
+Occupancy expectation on A100:
+
+- 32 threads per block equals one warp per block.
+- A100 supports up to 64 resident warps per SM, but also has a resident-block limit.
+- With one warp per block, the block limit can cap occupancy at about 32 resident warps per SM, or roughly 50% theoretical warp occupancy, before considering registers.
+- The sampling kernel is lightweight and should have low register pressure.
+- The lookup kernel has similar register and memory behavior to the baseline but lower maximum warp occupancy due to one-warp blocks.
+
+Energy-efficiency assessment:
+
+- Sampling writes are coalesced and efficient.
+- Splitting sampling and lookup adds extra global-memory traffic for `p_energy_samples` and `mat_samples`.
+- By itself, this likely costs more energy than the baseline unless later sorting or grouping is used.
+
+---
+
+### Optimization 2
+
+Kernels:
+
+- `sampling_kernel`
+- `xs_lookup_kernel_optimization_2`, launched once for each of 12 materials.
+
+Launch configuration:
+
+- Sampling:
+  - Threads per block: 32
+  - Blocks: `ceil(in.lookups / 32)`
+- Lookup:
+  - 12 kernel launches.
+  - Each launch uses:
+    - Threads per block: 32
+    - Blocks: `ceil(in.lookups / 32)`
+
+Occupancy expectation on A100:
+
+- Same one-warp-block occupancy limitation as optimization 1.
+- Each material kernel scans the full lookup array.
+- Most threads return early because their sampled material does not match the material assigned to that kernel.
+- This creates low useful occupancy even if nominal occupancy is moderate.
+
+Energy-efficiency assessment:
+
+- Potentially reduces divergence among active threads doing actual lookup work for a given material.
+- However, it performs 12 full-array scans and launches 12 lookup kernels.
+- This is energy-inefficient unless the benefit from material-specific execution outweighs the cost of inactive-thread scans.
+
+---
+
+### Optimization 3
+
+Kernels:
+
+- `sampling_kernel`
+- `xs_lookup_kernel_optimization_3`, launched twice:
+  - One launch for non-fuel lookups.
+  - One launch for fuel lookups.
+
+Launch configuration:
+
+- Sampling:
+  - Threads per block: 32
+  - Blocks: `ceil(in.lookups / 32)`
+- Lookup:
+  - 2 launches.
+  - Each launch uses:
+    - Threads per block: 32
+    - Blocks: `ceil(in.lookups / 32)`
+
+Occupancy expectation on A100:
+
+- Same one-warp-block occupancy cap as optimizations 1 and 2.
+- Better useful work ratio than optimization 2 because only two full-array scans are performed instead of twelve.
+- Fuel/non-fuel grouping reduces the worst divergence caused by fuel’s much larger nuclide count.
+
+Energy-efficiency assessment:
+
+- More energy-efficient than optimization 2 because it avoids ten of the full-array scans.
+- Still wastes energy because each of the two lookup kernels scans all lookups and many threads return without doing useful work.
+- Non-fuel material variability remains.
+
+---
+
+### Optimization 4
+
+Kernels:
+
+- `sampling_kernel`
+- `xs_lookup_kernel_optimization_4`, launched once per material after sorting by material.
+
+Launch configuration:
+
+- Sampling:
+  - Threads per block: 32
+  - Blocks: `ceil(in.lookups / 32)`
+- Lookup:
+  - For each material `m`:
+    - Threads per block: 32
+    - Blocks: `ceil(n_lookups_per_material[m] / 32)`
+
+Additional GPU operations:
+
+- 12 Thrust `count` operations.
+- One Thrust `sort_by_key` over all lookups.
+
+Occupancy expectation on A100:
+
+- One-warp-block configuration still limits nominal warp occupancy.
+- Material-specific kernels operate on compact contiguous ranges, so useful lane utilization is much better than optimizations 2 and 3.
+- Some materials may have small lookup counts, producing small kernels with poor SM occupancy and launch overhead.
+- The fuel kernel will likely dominate runtime and should have enough work for good device utilization if the total number of lookups is large.
+
+Energy-efficiency assessment:
+
+- Sorting by material improves warp coherence and reduces wasted work.
+- The cost of Thrust sorting and counting may be significant.
+- For large lookup counts, this can be more energy-efficient than repeatedly scanning inactive lookups.
+- For small lookup counts, sort and launch overhead may dominate.
+
+---
+
+### Optimization 5
+
+Kernels:
+
+- `sampling_kernel`
+- `xs_lookup_kernel_optimization_5`, launched twice:
+  - Fuel segment.
+  - Non-fuel segment.
+
+Launch configuration:
+
+- Sampling:
+  - Threads per block: 32
+  - Blocks: `ceil(in.lookups / 32)`
+- Fuel lookup:
+  - Threads per block: 32
+  - Blocks: `ceil(n_fuel_lookups / 32)`
+- Non-fuel lookup:
+  - Threads per block: 32
+  - Blocks: `ceil((in.lookups - n_fuel_lookups) / 32)`
+
+Additional GPU operations:
+
+- One Thrust `count`.
+- One Thrust `partition`.
+
+Occupancy expectation on A100:
+
+- Same one-warp-block occupancy limitation.
+- Better useful work ratio than optimization 3 because compacted segments avoid scanning the full array twice.
+- Fuel segment has uniform material and high work per thread.
+- Non-fuel segment still contains mixed materials and therefore retains some loop-count divergence.
+
+Energy-efficiency assessment:
+
+- Good tradeoff between grouping benefit and sorting overhead.
+- Partition is cheaper than full material sorting.
+- Likely more energy-efficient than optimization 3 and potentially more cost-effective than optimization 4 when full material sorting is too expensive.
+
+---
+
+### Optimization 6
+
+Kernels:
+
+- `sampling_kernel`
+- `xs_lookup_kernel_optimization_4`, reused after sorting by material and then by energy within each material.
+
+Launch configuration:
+
+- Sampling:
+  - Threads per block: 32
+  - Blocks: `ceil(in.lookups / 32)`
+- Lookup:
+  - For each material `m`:
+    - Threads per block: 32
+    - Blocks: `ceil(n_lookups_per_material[m] / 32)`
+
+Additional GPU operations:
+
+- 12 Thrust `count` operations.
+- One Thrust `sort_by_key` by material.
+- 12 Thrust `sort_by_key` operations by energy within each material segment.
+
+Occupancy expectation on A100:
+
+- Same one-warp-block nominal occupancy limitation.
+- Best warp coherence and cache locality among the provided variants.
+- Energy sorting should cause neighboring threads to traverse similar binary-search paths and access nearby grid locations.
+- Small material segments may still underutilize the GPU.
+- Sorting cost is substantial and must be amortized over large lookup counts.
+
+Energy-efficiency assessment:
+
+- Likely the most energy-efficient lookup phase due to improved cache reuse, coalescence tendencies, and lower divergence.
+- Total application energy depends heavily on whether the sorting overhead is amortized.
+- For very large batches, this is probably the best variant.
+- For small batches, sorting overhead may dominate.
+
+---
+
+## 3. Global Memory Access Patterns by Kernel
+
+### `xs_lookup_kernel_baseline`
+
+Coalesced accesses:
+
+- `GSD.verification[i]` writes are coalesced because consecutive threads write consecutive indices.
+
+Scattered or irregular accesses:
+
+- `unionized_energy_array` binary-search reads are scattered and branch-dependent.
+- `index_grid` accesses are irregular because `idx`, `nuc`, and material composition vary per thread.
+- `nuclide_grid` accesses are highly scattered because each thread uses a random energy and material.
+- `mats` and `concs` are material-dependent. They are small and cache-friendly but not generally coalesced across a warp when materials differ.
+- `num_nucs[mat]` is random but small and likely cached.
+
+Energy implication:
+
+- The baseline wastes energy on uncoalesced memory transactions, cache misses, and divergent control flow.
+
+---
+
+### `sampling_kernel`
+
+Coalesced accesses:
+
+- `GSD.p_energy_samples[i]` writes are coalesced.
+- `GSD.mat_samples[i]` writes are coalesced.
+
+Scattered or irregular accesses:
+
+- No significant global-memory reads other than kernel parameters and metadata.
+- RNG computation is per-thread.
+
+Energy implication:
+
+- This kernel is efficient from a memory-coalescing perspective.
+- The `fast_forward_LCG` computation has divergent loop behavior because each thread uses a different lookup index.
+
+---
+
+### `xs_lookup_kernel_optimization_1`
+
+Coalesced accesses:
+
+- `GSD.p_energy_samples[i]` reads are coalesced.
+- `GSD.mat_samples[i]` reads are coalesced.
+- `GSD.verification[i]` writes are coalesced.
+
+Scattered or irregular accesses:
+
+- Same lookup-side scattered access behavior as the baseline:
+  - `nuclide_grid`
+  - `index_grid`
+  - `unionized_energy_array`
+  - `mats`
+  - `concs`
+
+Energy implication:
+
+- Adds coalesced sample-array traffic but does not materially improve the expensive irregular lookup accesses.
+
+---
+
+### `xs_lookup_kernel_optimization_2`
+
+Coalesced accesses:
+
+- `GSD.mat_samples[i]` reads are coalesced.
+- For active threads, `GSD.p_energy_samples[i]` reads are also mostly coalesced.
+- Active writes to `GSD.verification[i]` are to consecutive logical positions, but because only material-matching threads write, stores may be sparse within a warp.
+
+Scattered or irregular accesses:
+
+- Lookup accesses remain scattered.
+- Material-specific execution improves uniformity among active threads, but each kernel scans all lookups.
+
+Energy implication:
+
+- The repeated full-array scans are energy-expensive.
+- Many threads perform only a coalesced material read and then return.
+- This reduces useful work per joule unless material grouping greatly reduces lookup divergence.
+
+---
+
+### `xs_lookup_kernel_optimization_3`
+
+Coalesced accesses:
+
+- `GSD.mat_samples[i]` reads are coalesced.
+- Active `GSD.p_energy_samples[i]` reads are mostly coalesced.
+- Active verification writes are sparse but indexed by `i`.
+
+Scattered or irregular accesses:
+
+- Fuel lookup is more uniform.
+- Non-fuel lookup still mixes materials, so material-dependent loop lengths remain divergent.
+- Grid accesses remain scattered.
+
+Energy implication:
+
+- Better than optimization 2 because there are only two full-array scans.
+- Still wastes energy on inactive-thread returns.
+
+---
+
+### `xs_lookup_kernel_optimization_4`
+
+Coalesced accesses:
+
+- After material sorting, each material kernel operates on a contiguous segment.
+- `GSD.p_energy_samples[i]` reads are coalesced.
+- `GSD.mat_samples[i]` reads are coalesced and mostly uniform.
+- `GSD.verification[i]` writes are coalesced within each segment.
+- `mats` and `concs` accesses are more coherent because all active threads in a kernel use the same material.
+
+Scattered or irregular accesses:
+
+- Energy values are not sorted in optimization 4, so `nuclide_grid`, `index_grid`, and binary-search accesses remain energy-random within a material.
+
+Energy implication:
+
+- Material sorting improves loop-count uniformity and reduces inactive-thread waste.
+- Still leaves substantial random energy-grid behavior.
+
+---
+
+### `xs_lookup_kernel_optimization_5`
+
+Coalesced accesses:
+
+- After partitioning, fuel and non-fuel segments are contiguous.
+- Reads from `p_energy_samples` and `mat_samples` are coalesced.
+- Verification writes are coalesced within each segment.
+
+Scattered or irregular accesses:
+
+- Fuel segment is coherent in material.
+- Non-fuel segment still contains multiple materials, so accesses and loop bounds vary.
+- Energy remains unsorted, so grid accesses remain scattered.
+
+Energy implication:
+
+- Lower sorting overhead than optimization 4.
+- Good compromise for reducing fuel/non-fuel imbalance.
+- Less locality improvement than full material and energy sorting.
+
+---
+
+### `xs_lookup_kernel_optimization_6`
+
+Coalesced accesses:
+
+- Material-sorted and energy-sorted segments improve coalescence and cache locality.
+- Sample reads and verification writes are contiguous.
+- `mats` and `concs` accesses are coherent within material-specific kernels.
+
+Scattered or irregular accesses:
+
+- `nuclide_grid` accesses are still not strictly coalesced in the consecutive-thread-to-consecutive-address sense.
+- However, energy sorting makes neighboring threads likely to access nearby or identical grid regions.
+- Binary-search paths become more similar across a warp.
+
+Energy implication:
+
+- Best global-memory efficiency among the variants.
+- Improved L1/L2 cache reuse and reduced wasted memory transactions.
+- Sorting cost is the main tradeoff.
+
+---
+
+## 4. Shared Memory Usage
+
+### Current shared memory usage
+
+There is no explicit shared memory use in any CUDA kernel.
+
+There are also no `extern __shared__` allocations and no statically declared shared arrays.
+
+### Current local memory/register-relevant data
+
+Each lookup thread uses small local arrays such as:
+
+- `macro_xs_vector[5]`
+- `xs_vector[5]`
+- `dist[12]` in `pick_mat`
+
+These are logically private per thread. Depending on compiler register allocation, some may reside in registers, but register pressure may cause spills.
+
+### Potential shared memory opportunities
+
+1. Cache material composition and concentration data per block.
+   - `mats` and `concs` are repeatedly read for each material.
+   - For material-specific kernels, one block could stage the active material’s nuclide IDs and concentrations.
+   - Fuel requires roughly 321 entries for `mats` and 321 entries for `concs`, which is small enough for shared memory per block.
+   - Non-fuel materials are much smaller.
+
+2. Use constant memory for small read-only material tables.
+   - `num_nucs`, `mats`, and perhaps `concs` are read-only during the simulation.
+   - Constant memory may be especially effective when all threads in a warp read the same material and loop index.
+
+3. Avoid staging very large grids in shared memory.
+   - `nuclide_grid`, `index_grid`, and `unionized_energy_array` are too large for full shared-memory caching.
+   - Tiling could help only if threads are grouped by energy and material, as in optimization 6.
+
+4. Shared memory plus energy sorting could improve reuse.
+   - In optimization 6, neighboring threads may need the same or nearby nuclide-grid points.
+   - A cooperative block-level cache could reduce repeated global loads, though complexity is higher.
+
+### Energy-efficiency perspective
+
+Using shared or constant memory for small, repeatedly accessed material data could reduce global-memory transactions and L1/L2 pressure. The biggest benefit would occur in material-sorted kernels where many threads access the same material metadata.
+
+---
+
+## 5. Warp Divergence
+
+### Kernel-level divergence
+
+#### `xs_lookup_kernel_baseline`
+
+Divergent branches:
+
+- Bounds check: `i >= in.lookups`.
+- Material-dependent loop count inside `calculate_macro_xs`.
+- Random material and energy cause divergent paths through lookup functions.
+- Maximum-channel selection branch inside the final loop.
+
+Major divergence source:
+
+- Threads in the same warp may select different materials with very different numbers of nuclides.
+
+---
+
+#### `sampling_kernel`
+
+Divergent branches:
+
+- Bounds check: `i >= in.lookups`.
+- `pick_mat` contains material-selection branches.
+- `fast_forward_LCG` has data-dependent loop and bit-test behavior.
+
+Major divergence source:
+
+- Different lookup IDs cause different `fast_forward_LCG` loop behavior and different RNG decisions.
+
+---
+
+#### `xs_lookup_kernel_optimization_1`
+
+Divergent branches:
+
+- Bounds check: `i >= in.lookups`.
+- Same lookup divergence as baseline.
+- Maximum-channel selection branch.
+
+Major divergence source:
+
+- Materials are still randomly mixed across warps.
+
+---
+
+#### `xs_lookup_kernel_optimization_2`
+
+Divergent branches:
+
+- Bounds check: `i >= in.lookups`.
+- Material filter: sampled material must equal the kernel’s material argument.
+- Same lookup divergence among active threads, though active threads are material-uniform.
+- Maximum-channel selection branch.
+
+Major divergence source:
+
+- Early-return material filter causes many inactive lanes.
+- Active lanes are more uniform, but sparse.
+
+---
+
+#### `xs_lookup_kernel_optimization_3`
+
+Divergent branches:
+
+- Bounds check: `i >= in.lookups`.
+- Fuel/non-fuel condition.
+- Non-fuel path still contains mixed-material divergence.
+- Maximum-channel selection branch.
+
+Major divergence source:
+
+- The fuel/non-fuel branch may split warps.
+- Non-fuel material variability remains.
+
+---
+
+#### `xs_lookup_kernel_optimization_4`
+
+Divergent branches:
+
+- Bounds check: `i >= n_lookups`.
+- Redundant material check after sorting.
+- Lookup-function branches.
+- Maximum-channel selection branch.
+
+Major divergence source:
+
+- Energy-dependent binary-search branches.
+- Material loop count is mostly uniform because kernels are material-specific.
+
+---
+
+#### `xs_lookup_kernel_optimization_5`
+
+Divergent branches:
+
+- Bounds check: `i >= n_lookups`.
+- Lookup-function branches.
+- Maximum-channel selection branch.
+
+Major divergence source:
+
+- Fuel segment is mostly uniform.
+- Non-fuel segment remains mixed and divergent.
+
+---
+
+#### Optimization 6 lookup phase
+
+Divergent branches:
+
+- Same as optimization 4.
+- Energy sorting reduces binary-search divergence but does not remove it.
+
+Major divergence source:
+
+- Remaining energy-dependent boundary cases and binary-search decisions.
+
+---
+
+### Device-function divergence
+
+#### `calculate_macro_xs`
+
+Divergent branches:
+
+- Grid-type branch:
+  - Unionized.
+  - Hash.
+  - Nuclide.
+- The grid type is uniform for the whole run, so this branch is likely not warp-divergent.
+- Loop bound `j < num_nucs[mat]` is material-dependent and highly divergent when materials are mixed.
+- Accumulation loop over five cross-section channels has fixed length and is not problematic.
+
+#### `calculate_micro_xs`
+
+Divergent branches:
+
+- Grid-type branch, likely uniform across the run.
+- Nuclide mode:
+  - Binary-search branch decisions diverge by energy.
+  - Edge check for last grid point.
+- Unionized mode:
+  - Edge check for last grid point.
+- Hash mode:
+  - Last hash-bin check.
+  - Energy lower/upper boundary checks.
+  - Local binary-search branch decisions.
+  - Last grid-point check.
+
+#### `grid_search` and `grid_search_nuclide`
+
+Divergent branches:
+
+- Binary-search comparison at each iteration.
+- The loop count is mostly deterministic for fixed search range, but branch direction varies by energy.
+- For hash-local searches, different low/high ranges can also vary iteration count.
+
+#### `pick_mat`
+
+Divergent branches:
+
+- Material-selection loop exits at different iterations.
+- The comparison against the cumulative distribution diverges by random roll.
+
+#### `fast_forward_LCG`
+
+Divergent branches:
+
+- Loop count depends on `n`.
+- The `n & 1` test diverges across threads.
+- This is compute/control-flow heavy for sampling.
+
+---
+
+## 6. Data Types and Replaceable Double-Precision Operations
+
+### Current double-precision data
+
+The code uses `double` for:
+
+- `NuclideGridPoint::energy`
+- `NuclideGridPoint::total_xs`
+- `NuclideGridPoint::elastic_xs`
+- `NuclideGridPoint::absorbtion_xs`
+- `NuclideGridPoint::fission_xs`
+- `NuclideGridPoint::nu_fission_xs`
+- `SimulationData::concs`
+- `SimulationData::unionized_energy_array`
+- `SimulationData::p_energy_samples`
+- Random particle energy values.
+- Interpolation factor `f`.
+- Microscopic and macroscopic cross-section vectors.
+- Material probability distribution in `pick_mat`.
+- Hash-bin spacing and energy comparisons.
+- Host-side timing and memory-estimate calculations.
+
+### Candidate conversions to float
+
+Potentially replaceable with `float`, if numerical validation permits:
+
+1. Cross-section grid values:
+   - All six fields of `NuclideGridPoint`.
+2. Particle energies:
+   - `p_energy`
+   - `p_energy_samples`
+   - `unionized_energy_array`
+3. Concentrations:
+   - `concs`
+4. Interpolation arithmetic:
+   - `f`
+   - `xs_vector`
+   - `macro_xs_vector`
+5. Material probability distribution:
+   - `dist`
+   - `roll`
+6. Hash-grid spacing:
+   - `du`
+   - related energy comparisons.
+
+### Energy-efficiency benefit of float
+
+Using `float` could:
+
+- Halve memory footprint for major arrays.
+- Improve cache residency.
+- Reduce global-memory bandwidth demand.
+- Reduce register pressure.
+- Increase occupancy if register pressure is currently limiting.
+- Reduce sorting bandwidth for `p_energy_samples`.
+
+### Caution
+
+Changing from `double` to `float` will likely change the verification checksum. The LCG random-number generation also currently returns `double`; converting it to `float` may alter material sampling and energy placement. Any precision change must be validated against the benchmark’s correctness requirements.
+
+A mixed-precision strategy may be safer:
+
+- Store grid values and concentrations as `float`.
+- Accumulate `macro_xs_vector` in `double` if checksum stability or numerical accuracy is important.
+- Or store energies as `float` but preserve RNG sequence generation in integer form.
+
+---
+
+## 7. Synchronization Overhead
+
+### `__syncthreads()` count
+
+There are zero explicit `__syncthreads()` calls in the source code.
+
+### Host/device synchronization
+
+Although there are no intra-block synchronizations, the code uses host-side synchronization points:
+
+- `cudaDeviceSynchronize()` after data movement.
+- `cudaDeviceSynchronize()` after simulation kernels.
+- `cudaDeviceSynchronize()` after Thrust reductions.
+- Additional sequencing through Thrust operations such as `count`, `sort_by_key`, and `partition`.
+
+### Per-run synchronization pattern
+
+Baseline:
+
+- One synchronization after the main lookup kernel.
+- One synchronization after Thrust reduction.
+- Total explicit simulation-stage synchronizations: 2.
+
+Optimization 1:
+
+- Synchronization after sampling.
+- Synchronization after lookup.
+- Synchronization after reduction.
+- Total explicit simulation-stage synchronizations: 3.
+
+Optimization 2:
+
+- Synchronization after sampling.
+- Synchronization after the 12 lookup kernel launches.
+- Synchronization after reduction.
+- Total explicit simulation-stage synchronizations: 3, plus Thrust reduction synchronization behavior.
+
+Optimization 3:
+
+- Synchronization after sampling.
+- Synchronization after the two lookup kernel launches.
+- Synchronization after reduction.
+- Total explicit simulation-stage synchronizations: 3.
+
+Optimization 4:
+
+- Synchronization after sampling.
+- Thrust count and sort operations impose ordering and synchronization behavior.
+- Synchronization after the 12 material lookup kernels.
+- Synchronization after reduction.
+- Total explicit simulation-stage synchronizations: 3, plus Thrust count/sort/reduction overhead.
+
+Optimization 5:
+
+- Synchronization after sampling.
+- Thrust count and partition operations impose ordering and synchronization behavior.
+- Synchronization after the two lookup kernels.
+- Synchronization after reduction.
+- Total explicit simulation-stage synchronizations: 3, plus Thrust count/partition/reduction overhead.
+
+Optimization 6:
+
+- Synchronization after sampling.
+- Thrust count and multiple sort operations impose ordering and synchronization behavior.
+- Synchronization after material lookup kernels.
+- Synchronization after reduction.
+- Total explicit simulation-stage synchronizations: 3, plus substantial Thrust sorting overhead.
+
+### Energy-efficiency implications
+
+- Kernel splitting increases global-memory traffic and synchronization overhead.
+- Thrust sorting and partitioning can be expensive but may reduce total energy if they substantially improve lookup efficiency.
+- For small lookup counts, synchronization and launch overhead can dominate.
+- For large lookup counts, sorting and batching may be energy-beneficial.
+
+---
+
+## 8. Unusual Loop Bounds or Comparison Operators — INTENTIONAL, Preserve Verbatim
+
+The following constructs appear unusual or non-obvious. They should be treated as INTENTIONAL and MUST be preserved verbatim unless a correctness change is explicitly intended.
+
+### Material selection in `pick_mat`
+
+The material-selection logic resets the cumulative variable inside the outer loop and sums from the current index down to 1, excluding index 0 from the cumulative sum. Material 0 is returned as the default fallback.
+
+This means fuel material probability is effectively handled by the final default return rather than by the first cumulative interval.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### `pick_mat` inner-loop bound
+
+The inner loop counts downward while the index is greater than zero, excluding zero.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### `grid_search` and `grid_search_nuclide` termination condition
+
+The binary searches terminate when the search interval length is no longer greater than one and return the lower bound.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Edge handling in `calculate_micro_xs`
+
+The code handles cases where the selected lower index is the final grid point by shifting the low pointer back by one.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Unionized-grid edge handling
+
+The unionized lookup checks whether the indexed nuclide-grid value equals the final grid point and then shifts the low index backward by one.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Hash-grid edge handling
+
+The hash-grid path contains several boundary comparisons:
+
+- Last hash-bin handling.
+- Lower-energy boundary comparison.
+- Upper-energy boundary comparison.
+- Final-grid-point correction.
+
+These comparisons protect interpolation bounds.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Unionized-grid initialization bounds
+
+During unionized-grid initialization:
+
+- `energy_high` is initialized using the second grid point of each nuclide.
+- `idx_low` is capped at `n_gridpoints - 2`.
+- Index-grid generation advances `idx_low` manually.
+
+This is non-obvious but part of the acceleration-structure construction.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Optimization 3 fuel/non-fuel launch convention
+
+The optimization 3 lookup kernel is launched once with the non-fuel selector and once with the fuel selector. The condition inside the kernel maps selector values to fuel and non-fuel behavior.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Redundant material check after sorting in optimization 4
+
+After sorting by material and launching material-specific kernels over compact ranges, the kernel still checks whether the sampled material matches the kernel material argument.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Optimization 6 second sort by energy within material segments
+
+After sorting by material, each material segment is sorted by energy while carrying `mat_samples` as the associated value. This may look redundant because material IDs are already uniform within each segment.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### XXL grid-size assignment
+
+The XXL input case assigns the grid-point count using a floating-point multiplier and stores it into an integer-like field.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+### Hash-grid index calculation
+
+The hash-grid index is computed from energy divided by hash-bin width, relying on the sampled energy being in the expected range.
+
+Status:
+
+- INTENTIONAL.
+- MUST be preserved verbatim.
+
+---
+
+## 9. Summary of Highest-Impact Energy-Efficiency Opportunities
+
+1. Prefer batching by material and energy for large lookup counts.
+   - Optimization 6 has the best lookup locality and lowest divergence.
+2. Prefer fuel/non-fuel partitioning when full sorting is too expensive.
+   - Optimization 5 is likely a good energy/performance compromise.
+3. Avoid repeated full-array material scans.
+   - Optimization 2 is likely energy-inefficient because it launches 12 full scans.
+4. Consider larger block sizes than 32 threads for lookup kernels.
+   - One-warp blocks limit theoretical occupancy on A100 due to resident-block limits.
+5. Move small read-only material data to constant memory or shared memory.
+   - Especially effective in material-specific kernels.
+6. Evaluate `float` or mixed precision.
+   - The largest memory and energy savings are available from reducing `NuclideGridPoint`, energy arrays, and concentration arrays from double to float.
+7. Reduce sorting overhead when possible.
+   - Use partitioning or indexing strategies if full particle-data sorting is too costly.
+8. Free all allocated device memory.
+   - `index_grid` should be considered in device cleanup to avoid memory leaks in repeated runs.
+[/YOUR ANALYSIS OF THE SOURCE CODE]
+
+Think carefully, using your analysis above.  Now, Optimize the following CUDA program for GPU energy efficiency while preserving its exact numerical correctness (including the XSBench verification checksum). The optimized code must compile with:  nvcc -O3 -arch=sm_80 -std=c++17 on a Polaris A100 GPU (sm_80). Apply the energy optimization strategies most likely to reduce energy for this specific workload — memory-bound kernels benefit most from coalescing and shared memory; compute-bound kernels benefit from reduced divergence and better occupancy. CRITICAL CORRECTNESS RULES (violations cause automatic rejection): (A) Do NOT alter loop bounds, comparison operators (`> vs >=`), or index arithmetic.  These determine the numerical output and checksum. (B) Do NOT hardcode any verification checksum value (e.g., return 952131ULL). The checksum MUST be computed by the GPU kernels at runtime. (C) Every simulation function MUST contain a real CUDA kernel launch — do NOT add (void)param; stubs. (D) Output a single complete .cu file — no explanation, no partial listings.
+
+[START OF CUDA CODE TO OPTIMIZE]
+// ===== HEADER: XSbench_header.cuh =====
+#ifndef __XSBENCH_HEADER_H__
+#define __XSBENCH_HEADER_H__
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<math.h>
+#include<assert.h>
+#include<cuda.h>
+#include <thrust/reduce.h>
+#include <thrust/partition.h>
+#include<stdint.h>
+#include <chrono> 
+
+// Grid types
+#define UNIONIZED 0
+#define NUCLIDE 1
+#define HASH 2
+
+// Simulation types
+#define HISTORY_BASED 1
+#define EVENT_BASED 2
+
+// Binary Mode Type
+#define NONE 0
+#define READ 1
+#define WRITE 2
+
+// Starting Seed
+#define STARTING_SEED 1070
+
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+	if (code != cudaSuccess) 
+	{
+		fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		if (abort) exit(code);
+	}
+}
+
+// Structures
+typedef struct{
+	double energy;
+	double total_xs;
+	double elastic_xs;
+	double absorbtion_xs;
+	double fission_xs;
+	double nu_fission_xs;
+} NuclideGridPoint;
+
+typedef struct{
+	int nthreads;
+	long n_isotopes;
+	long n_gridpoints;
+	int lookups;
+	char * HM;
+	int grid_type; // 0: Unionized Grid (default)    1: Nuclide Grid
+	int hash_bins;
+	int particles;
+	int simulation_method;
+	int binary_mode;
+	int kernel_id;
+} Inputs;
+
+typedef struct{
+	int * num_nucs;                     // Length = length_num_nucs;
+	double * concs;                     // Length = length_concs
+	int * mats;                         // Length = length_mats
+	double * unionized_energy_array;    // Length = length_unionized_energy_array
+	int * index_grid;                   // Length = length_index_grid
+	NuclideGridPoint * nuclide_grid;    // Length = length_nuclide_grid
+	int length_num_nucs;
+	int length_concs;
+	int length_mats;
+	int length_unionized_energy_array;
+	long length_index_grid;
+	int length_nuclide_grid;
+	int max_num_nucs;
+	unsigned long * verification;
+	int length_verification;
+	double * p_energy_samples;
+	int length_p_energy_samples;
+	int * mat_samples;
+	int length_mat_samples;
+} SimulationData;
+
+// io.cu
+void logo(int version);
+void center_print(const char *s, int width);
+void border_print(void);
+void fancy_int(long a);
+Inputs read_CLI( int argc, char * argv[] );
+void print_CLI_error(void);
+void print_inputs(Inputs in, int nprocs, int version);
+int print_results( Inputs in, int mype, double runtime, int nprocs, unsigned long long vhash );
+void binary_write( Inputs in, SimulationData SD );
+SimulationData binary_read( Inputs in );
+
+// Simulation.cu
+unsigned long long run_event_based_simulation_baseline(Inputs in, SimulationData SD, int mype);
+__global__ void xs_lookup_kernel_baseline(Inputs in, SimulationData GSD );
+__device__ void calculate_micro_xs(   double p_energy, int nuc, long n_isotopes,
+                           long n_gridpoints,
+                           double * __restrict__ egrid, int * __restrict__ index_data,
+                           NuclideGridPoint * __restrict__ nuclide_grids,
+                           long idx, double * __restrict__ xs_vector, int grid_type, int hash_bins );
+__device__ void calculate_macro_xs( double p_energy, int mat, long n_isotopes,
+                         long n_gridpoints, int * __restrict__ num_nucs,
+                         double * __restrict__ concs,
+                         double * __restrict__ egrid, int * __restrict__ index_data,
+                         NuclideGridPoint * __restrict__ nuclide_grids,
+                         int * __restrict__ mats,
+                         double * __restrict__ macro_xs_vector, int grid_type, int hash_bins, int max_num_nucs );
+__device__ long grid_search( long n, double quarry, double * __restrict__ A);
+__host__ __device__ long grid_search_nuclide( long n, double quarry, NuclideGridPoint * A, long low, long high);
+__device__ int pick_mat( uint64_t * seed );
+__host__ __device__ double LCG_random_double(uint64_t * seed);
+__device__ uint64_t fast_forward_LCG(uint64_t seed, uint64_t n);
+
+unsigned long long run_event_based_simulation_optimization_1(Inputs in, SimulationData GSD, int mype);
+__global__ void sampling_kernel(Inputs in, SimulationData GSD );
+__global__ void xs_lookup_kernel_optimization_1(Inputs in, SimulationData GSD );
+
+unsigned long long run_event_based_simulation_optimization_2(Inputs in, SimulationData GSD, int mype);
+__global__ void xs_lookup_kernel_optimization_2(Inputs in, SimulationData GSD, int m );
+
+unsigned long long run_event_based_simulation_optimization_3(Inputs in, SimulationData GSD, int mype);
+__global__ void xs_lookup_kernel_optimization_3(Inputs in, SimulationData GSD, int m );
+
+unsigned long long run_event_based_simulation_optimization_4(Inputs in, SimulationData GSD, int mype);
+__global__ void xs_lookup_kernel_optimization_4(Inputs in, SimulationData GSD, int m, int n_lookups, int offset );
+
+unsigned long long run_event_based_simulation_optimization_5(Inputs in, SimulationData GSD, int mype);
+__global__ void xs_lookup_kernel_optimization_5(Inputs in, SimulationData GSD, int n_lookups, int offset );
+
+unsigned long long run_event_based_simulation_optimization_6(Inputs in, SimulationData GSD, int mype);
+
+// GridInit.cu
+SimulationData grid_init_do_not_profile( Inputs in, int mype );
+SimulationData move_simulation_data_to_device( Inputs in, int mype, SimulationData SD );
+void release_device_memory(SimulationData GSD);
+
+// XSutils.cu
+int NGP_compare( const void * a, const void * b );
+int double_compare(const void * a, const void * b);
+double rn_v(void);
+size_t estimate_mem_usage( Inputs in );
+double get_time(void);
+
+// Materials.cu
+int * load_num_nucs(long n_isotopes);
+int * load_mats( int * num_nucs, long n_isotopes, int * max_num_nucs );
+double * load_concs( int * num_nucs, int max_num_nucs );
+#endif
+
+// ===== END HEADER: XSbench_header.cuh =====
+
+/* ************************************************************************** */
+/* ATTENTION: THIS IS A SINGLE UNIFIED FILE - NOT MULTIPLE SEPARATE FILES    */
+/* All code below is part of one continuous implementation (~2,400 lines)    */
+/* When modifying this file, ALL sections must be regenerated completely.    */
+/* ************************************************************************** */
+
+
+/*
+ * UNIFIED MINIMDOCK KERNEL - SINGLE FILE VERSION
+ * This file contains all kernel implementations merged into a single unit.
+ * IMPORTANT: This is a SINGLE, MONOLITHIC code file. All code sections are 
+ * interdependent and must be regenerated together as one complete unit.
+ * DO NOT treat sections as separate files - this is ONE continuous codebase.
+ */
+
+#include "XSbench_header.cuh"
+
+int main( int argc, char* argv[] )
+{
+	// =====================================================================
+	// Initialization & Command Line Read-In
+	// =====================================================================
+	int version = 20;
+	int mype = 0;
+	double omp_start, omp_end;
+	int nprocs = 1;
+	unsigned long long verification;
+
+	// Process CLI Fields -- store in "Inputs" structure
+	Inputs in = read_CLI( argc, argv );
+
+	// Print-out of Input Summary
+	if( mype == 0 )
+		print_inputs( in, nprocs, version );
+
+	// =====================================================================
+	// Prepare Nuclide Energy Grids, Unionized Energy Grid, & Material Data
+	// This is not reflective of a real Monte Carlo simulation workload,
+	// therefore, do not profile this region!
+	// =====================================================================
+	
+	SimulationData SD;
+
+	// If read from file mode is selected, skip initialization and load
+	// all simulation data structures from file instead
+	if( in.binary_mode == READ )
+		SD = binary_read(in);
+	else
+		SD = grid_init_do_not_profile( in, mype );
+
+	// If writing from file mode is selected, write all simulation data
+	// structures to file
+	if( in.binary_mode == WRITE && mype == 0 )
+		binary_write(in, SD);
+
+	// Move data to GPU
+	SimulationData GSD = move_simulation_data_to_device( in, mype, SD );
+
+	// =====================================================================
+	// Cross Section (XS) Parallel Lookup Simulation
+	// This is the section that should be profiled, as it reflects a 
+	// realistic continuous energy Monte Carlo macroscopic cross section
+	// lookup kernel.
+	// =====================================================================
+	if( mype == 0 )
+	{
+		printf("\n");
+		border_print();
+		center_print("SIMULATION", 79);
+		border_print();
+	}
+
+	// Start Simulation Timer
+	omp_start = get_time();
+
+	// Run simulation
+	if( in.simulation_method == EVENT_BASED )
+	{
+		if( in.kernel_id == 0 )
+			verification = run_event_based_simulation_baseline(in, GSD, mype);
+		else if( in.kernel_id == 1 )
+			verification = run_event_based_simulation_optimization_1(in, GSD, mype);
+		else if( in.kernel_id == 2 )
+			verification = run_event_based_simulation_optimization_2(in, GSD, mype);
+		else if( in.kernel_id == 3 )
+			verification = run_event_based_simulation_optimization_3(in, GSD, mype);
+		else if( in.kernel_id == 4 )
+			verification = run_event_based_simulation_optimization_4(in, GSD, mype);
+		else if( in.kernel_id == 5 )
+			verification = run_event_based_simulation_optimization_5(in, GSD, mype);
+		else if( in.kernel_id == 6 )
+			verification = run_event_based_simulation_optimization_6(in, GSD, mype);
+		else
+		{
+			printf("Error: No kernel ID %d found!\n", in.kernel_id);
+			exit(1);
+		}
+	}
+	else
+	{
+		printf("History-based simulation not implemented in CUDA code. Instead,\nuse the event-based method with \"-m event\" argument.\n");
+		exit(1);
+	}
+
+	if( mype == 0)	
+	{	
+		printf("\n" );
+		printf("Simulation complete.\n" );
+	}
+
+	// End Simulation Timer
+	omp_end = get_time();
+
+	// Release device memory
+	release_device_memory(GSD);
+
+	// Final Hash Step
+	verification = verification % 999983;
+
+	// Print / Save Results and Exit
+	int is_invalid_result = print_results( in, mype, omp_end-omp_start, nprocs, verification );
+
+	return is_invalid_result;
+}
+
+
+// Prints program logo
+void logo(int version)
+{
+	border_print();
+	printf(
+	"                   __   __ ___________                 _                        \n"
+	"                   \\ \\ / //  ___| ___ \\               | |                       \n"
+	"                    \\ V / \\ `--.| |_/ / ___ _ __   ___| |__                     \n"
+	"                    /   \\  `--. \\ ___ \\/ _ \\ '_ \\ / __| '_ \\                    \n"
+	"                   / /^\\ \\/\\__/ / |_/ /  __/ | | | (__| | | |                   \n"
+	"                   \\/   \\/\\____/\\____/ \\___|_| |_|\\___|_| |_|                   \n\n"
+    );
+	border_print();
+	center_print("Developed at Argonne National Laboratory", 79);
+	char v[100];
+	sprintf(v, "Version: %d", version);
+	center_print(v, 79);
+	border_print();
+}
+
+// Prints Section titles in center of 80 char terminal
+void center_print(const char *s, int width)
+{
+	int length = strlen(s);
+	int i;
+	for (i=0; i<=(width-length)/2; i++) {
+		fputs(" ", stdout);
+	}
+	fputs(s, stdout);
+	fputs("\n", stdout);
+}
+
+int print_results( Inputs in, int mype, double runtime, int nprocs,
+	unsigned long long vhash )
+{
+	// Calculate Lookups per sec
+	int lookups = 0;
+	if( in.simulation_method == HISTORY_BASED )
+		lookups = in.lookups * in.particles;
+	else if( in.simulation_method == EVENT_BASED )
+		lookups = in.lookups;
+	int lookups_per_sec = (int) ((double) lookups / runtime);
+	
+	// If running in MPI, reduce timing statistics and calculate average
+	#ifdef MPI
+	int total_lookups = 0;
+	MPI_Barrier(MPI_COMM_WORLD);
+	MPI_Reduce(&lookups_per_sec, &total_lookups, 1, MPI_INT,
+	           MPI_SUM, 0, MPI_COMM_WORLD);
+	#endif
+
+	int is_invalid_result = 1;
+	
+	// Print output
+	if( mype == 0 )
+	{
+		border_print();
+		center_print("RESULTS", 79);
+		border_print();
+
+		// Print the results
+    printf("NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis\n");
+		#ifdef MPI
+		printf("MPI ranks:   %d\n", nprocs);
+		#endif
+		#ifdef MPI
+		printf("Total Lookups/s:            ");
+		fancy_int(total_lookups);
+		printf("Avg Lookups/s per MPI rank: ");
+		fancy_int(total_lookups / nprocs);
+		#else
+		printf("Runtime:     %.3lf seconds\n", runtime);
+		printf("Lookups:     "); fancy_int(lookups);
+		printf("Lookups/s:   ");
+		fancy_int(lookups_per_sec);
+		#endif
+	}
+
+	unsigned long long large = 0;
+	unsigned long long small = 0; 
+	if( in.simulation_method == EVENT_BASED )
+	{
+		small = 945990;
+		large = 952131;
+	}
+	else if( in.simulation_method == HISTORY_BASED )
+	{
+		small = 941535;
+		large = 954318; 
+	}
+	if( strcmp(in.HM, "large") == 0 )
+	{
+		if( vhash == large )
+			is_invalid_result = 0;
+	}
+	else if( strcmp(in.HM, "small") == 0 )
+	{
+		if( vhash == small )
+			is_invalid_result = 0;
+	}
+
+	if(mype == 0 )
+	{
+		if( is_invalid_result )
+			printf("Verification checksum: %llu (WARNING - INAVALID CHECKSUM!)\n", vhash);
+		else
+			printf("Verification checksum: %llu (Valid)\n", vhash);
+		border_print();
+	}
+
+	return is_invalid_result;
+}
+
+void print_inputs(Inputs in, int nprocs, int version )
+{
+	// Calculate Estimate of Memory Usage
+	int mem_tot = estimate_mem_usage( in );
+	logo(version);
+	center_print("INPUT SUMMARY", 79);
+	border_print();
+	printf("Programming Model:            CUDA\n");
+	cudaDeviceProp prop;
+	int device;
+	cudaGetDevice(&device);
+	cudaGetDeviceProperties ( &prop, device );
+		printf("CUDA Device:                  %s\n", prop.name); 
+	if( in.simulation_method == EVENT_BASED )
+		printf("Simulation Method:            Event Based\n");
+	else
+		printf("Simulation Method:            History Based\n");
+	if( in.grid_type == NUCLIDE )
+		printf("Grid Type:                    Nuclide Grid\n");
+	else if( in.grid_type == UNIONIZED )
+		printf("Grid Type:                    Unionized Grid\n");
+	else
+		printf("Grid Type:                    Hash\n");
+
+	printf("Materials:                    %d\n", 12);
+	printf("H-M Benchmark Size:           %s\n", in.HM);
+	printf("Total Nuclides:               %ld\n", in.n_isotopes);
+	printf("Gridpoints (per Nuclide):     ");
+	fancy_int(in.n_gridpoints);
+	if( in.grid_type == HASH )
+	{
+		printf("Hash Bins:                    ");
+		fancy_int(in.hash_bins);
+	}
+	if( in.grid_type == UNIONIZED )
+	{
+		printf("Unionized Energy Gridpoints:  ");
+		fancy_int(in.n_isotopes*in.n_gridpoints);
+	}
+	if( in.simulation_method == HISTORY_BASED )
+	{
+		printf("Particle Histories:           "); fancy_int(in.particles);
+		printf("XS Lookups per Particle:      "); fancy_int(in.lookups);
+	}
+	printf("Total XS Lookups:             "); fancy_int(in.lookups);
+	#ifdef MPI
+	printf("MPI Ranks:                    %d\n", nprocs);
+	printf("Mem Usage per MPI Rank (MB):  "); fancy_int(mem_tot);
+	#else
+	printf("Est. Memory Usage (MB):       "); fancy_int(mem_tot);
+	#endif
+	printf("Binary File Mode:             ");
+	if( in.binary_mode == NONE )
+		printf("Off\n");
+	else if( in.binary_mode == READ)
+		printf("Read\n");
+	else
+		printf("Write\n");
+	border_print();
+	center_print("INITIALIZATION - DO NOT PROFILE", 79);
+	border_print();
+}
+
+void border_print(void)
+{
+	printf(
+	"==================================================================="
+	"=============\n");
+}
+
+// Prints comma separated integers - for ease of reading
+void fancy_int( long a )
+{
+    if( a < 1000 )
+        printf("%ld\n",a);
+
+    else if( a >= 1000 && a < 1000000 )
+        printf("%ld,%03ld\n", a / 1000, a % 1000);
+
+    else if( a >= 1000000 && a < 1000000000 )
+        printf("%ld,%03ld,%03ld\n",a / 1000000,(a % 1000000) / 1000,a % 1000 );
+
+    else if( a >= 1000000000 )
+        printf("%ld,%03ld,%03ld,%03ld\n",
+               a / 1000000000,
+               (a % 1000000000) / 1000000,
+               (a % 1000000) / 1000,
+               a % 1000 );
+    else
+        printf("%ld\n",a);
+}
+
+void print_CLI_error(void)
+{
+	printf("Usage: ./XSBench <options>\n");
+	printf("Options include:\n");
+	printf("  -m <simulation method>   Simulation method (history, event)\n");
+	printf("  -s <size>                Size of H-M Benchmark to run (small, large, XL, XXL)\n");
+	printf("  -g <gridpoints>          Number of gridpoints per nuclide (overrides -s defaults)\n");
+	printf("  -G <grid type>           Grid search type (unionized, nuclide, hash). Defaults to unionized.\n");
+	printf("  -p <particles>           Number of particle histories\n");
+	printf("  -l <lookups>             History Based: Number of Cross-section (XS) lookups per particle. Event Based: Total number of XS lookups.\n");
+	printf("  -h <hash bins>           Number of hash bins (only relevant when used with \"-G hash\")\n");
+	printf("  -b <binary mode>         Read or write all data structures to file. If reading, this will skip initialization phase. (read, write)\n");
+	printf("  -k <kernel ID>           Specifies which kernel to run. 0 is baseline, 1, 2, etc are optimized variants. (0 is default.)\n");
+	printf("Default is equivalent to: -m history -s large -l 34 -p 500000 -G unionized -k 0\n");
+	printf("See readme for full description of default run values\n");
+	exit(4);
+}
+
+Inputs read_CLI( int argc, char * argv[] )
+{
+	Inputs input;
+
+	// defaults to the history based simulation method
+	input.simulation_method = HISTORY_BASED;
+	
+	// defaults to max threads on the system	
+	input.nthreads = 1;
+	
+	// defaults to 355 (corresponding to H-M Large benchmark)
+	input.n_isotopes = 355;
+	
+	// defaults to 11303 (corresponding to H-M Large benchmark)
+	input.n_gridpoints = 11303;
+
+	// defaults to 500,000
+	input.particles = 500000;
+	
+	// defaults to 34
+	input.lookups = 34;
+	
+	// default to unionized grid
+	input.grid_type = UNIONIZED;
+
+	// default to unionized grid
+	input.hash_bins = 10000;
+
+	// default to no binary read/write
+	input.binary_mode = NONE;
+
+	// defaults to baseline kernel
+	input.kernel_id = 0;
+	
+	// defaults to H-M Large benchmark
+	input.HM = (char *) malloc( 6 * sizeof(char) );
+	input.HM[0] = 'l' ; 
+	input.HM[1] = 'a' ; 
+	input.HM[2] = 'r' ; 
+	input.HM[3] = 'g' ; 
+	input.HM[4] = 'e' ; 
+	input.HM[5] = '\0';
+	
+	// Check if user sets these
+	int user_g = 0;
+
+	int default_lookups = 1;
+	int default_particles = 1;
+	
+	// Collect Raw Input
+	for( int i = 1; i < argc; i++ )
+	{
+		char * arg = argv[i];
+
+		// n_gridpoints (-g)
+		if( strcmp(arg, "-g") == 0 )
+		{	
+			if( ++i < argc )
+			{
+				user_g = 1;
+				input.n_gridpoints = atol(argv[i]);
+			}
+			else
+				print_CLI_error();
+		}
+		// Simulation Method (-m)
+		else if( strcmp(arg, "-m") == 0 )
+		{
+			char * sim_type;
+			if( ++i < argc )
+				sim_type = argv[i];
+			else
+				print_CLI_error();
+
+			if( strcmp(sim_type, "history") == 0 )
+				input.simulation_method = HISTORY_BASED;
+			else if( strcmp(sim_type, "event") == 0 )
+			{
+				input.simulation_method = EVENT_BASED;
+				// Also resets default # of lookups
+				if( default_lookups && default_particles )
+				{
+					input.lookups =  input.lookups * input.particles;
+					input.particles = 0;
+				}
+			}
+			else
+				print_CLI_error();
+		}
+		// lookups (-l)
+		else if( strcmp(arg, "-l") == 0 )
+		{
+			if( ++i < argc )
+			{
+				input.lookups = atoi(argv[i]);
+				default_lookups = 0;
+			}
+			else
+				print_CLI_error();
+		}
+		// hash bins (-h)
+		else if( strcmp(arg, "-h") == 0 )
+		{
+			if( ++i < argc )
+				input.hash_bins = atoi(argv[i]);
+			else
+				print_CLI_error();
+		}
+		// particles (-p)
+		else if( strcmp(arg, "-p") == 0 )
+		{
+			if( ++i < argc )
+			{
+				input.particles = atoi(argv[i]);
+				default_particles = 0;
+			}
+			else
+				print_CLI_error();
+		}
+		// HM (-s)
+		else if( strcmp(arg, "-s") == 0 )
+		{	
+			if( ++i < argc )
+				input.HM = argv[i];
+			else
+				print_CLI_error();
+		}
+		// grid type (-G)
+		else if( strcmp(arg, "-G") == 0 )
+		{
+			char * grid_type;
+			if( ++i < argc )
+				grid_type = argv[i];
+			else
+				print_CLI_error();
+
+			if( strcmp(grid_type, "unionized") == 0 )
+				input.grid_type = UNIONIZED;
+			else if( strcmp(grid_type, "nuclide") == 0 )
+				input.grid_type = NUCLIDE;
+			else if( strcmp(grid_type, "hash") == 0 )
+				input.grid_type = HASH;
+			else
+				print_CLI_error();
+		}
+		// binary mode (-b)
+		else if( strcmp(arg, "-b") == 0 )
+		{
+			char * binary_mode;
+			if( ++i < argc )
+				binary_mode = argv[i];
+			else
+				print_CLI_error();
+
+			if( strcmp(binary_mode, "read") == 0 )
+				input.binary_mode = READ;
+			else if( strcmp(binary_mode, "write") == 0 )
+				input.binary_mode = WRITE;
+			else
+				print_CLI_error();
+		}
+		// kernel optimization selection (-k)
+		else if( strcmp(arg, "-k") == 0 )
+		{
+			if( ++i < argc )
+			{
+				input.kernel_id = atoi(argv[i]);
+			}
+			else
+				print_CLI_error();
+		}
+		else
+			print_CLI_error();
+	}
+
+	// Validate Input
+	
+	// Validate nthreads
+	if( input.nthreads < 1 )
+		print_CLI_error();
+	
+	// Validate n_isotopes
+	if( input.n_isotopes < 1 )
+		print_CLI_error();
+	
+	// Validate n_gridpoints
+	if( input.n_gridpoints < 1 )
+		print_CLI_error();
+
+	// Validate lookups
+	if( input.lookups < 1 )
+		print_CLI_error();
+
+	// Validate Hash Bins 
+	if( input.hash_bins < 1 )
+		print_CLI_error();
+	
+	// Validate HM size
+	if( strcasecmp(input.HM, "small") != 0 &&
+		strcasecmp(input.HM, "large") != 0 &&
+		strcasecmp(input.HM, "XL") != 0 &&
+		strcasecmp(input.HM, "XXL") != 0 )
+		print_CLI_error();
+	
+	// Set HM size specific parameters
+	// (defaults to large)
+	if( strcasecmp(input.HM, "small") == 0 )
+		input.n_isotopes = 68;
+	else if( strcasecmp(input.HM, "XL") == 0 && user_g == 0 )
+		input.n_gridpoints = 238847; // sized to make 120 GB XS data
+	else if( strcasecmp(input.HM, "XXL") == 0 && user_g == 0 )
+		input.n_gridpoints = 238847 * 2.1; // 252 GB XS data
+
+	// Return input struct
+	return input;
+}
+
+void binary_write( Inputs in, SimulationData SD )
+{
+	const char * fname = "XS_data.dat";
+	printf("Writing all data structures to binary file %s...\n", fname);
+	FILE * fp = fopen(fname, "w");
+
+	// Write SimulationData Object. Include pointers, even though we won't be using them.
+	fwrite(&SD, sizeof(SimulationData), 1, fp);
+
+	// Write heap arrays in SimulationData Object
+	fwrite(SD.num_nucs,       sizeof(int), SD.length_num_nucs, fp);
+	fwrite(SD.concs,          sizeof(double), SD.length_concs, fp);
+	fwrite(SD.mats,           sizeof(int), SD.length_mats, fp);
+	fwrite(SD.nuclide_grid,   sizeof(NuclideGridPoint), SD.length_nuclide_grid, fp); 
+	fwrite(SD.index_grid, sizeof(int), SD.length_index_grid, fp);
+	fwrite(SD.unionized_energy_array, sizeof(double), SD.length_unionized_energy_array, fp);
+
+	fclose(fp);
+}
+
+SimulationData binary_read( Inputs in )
+{
+	SimulationData SD;
+	
+	const char * fname = "XS_data.dat";
+	printf("Reading all data structures from binary file %s...\n", fname);
+
+	FILE * fp = fopen(fname, "r");
+	assert(fp != NULL);
+
+	// Read SimulationData Object. Include pointers, even though we won't be using them.
+	fread(&SD, sizeof(SimulationData), 1, fp);
+
+	// Allocate space for arrays on heap
+	SD.num_nucs = (int *) malloc(SD.length_num_nucs * sizeof(int));
+	SD.concs = (double *) malloc(SD.length_concs * sizeof(double));
+	SD.mats = (int *) malloc(SD.length_mats * sizeof(int));
+	SD.nuclide_grid = (NuclideGridPoint *) malloc(SD.length_nuclide_grid * sizeof(NuclideGridPoint));
+	SD.index_grid = (int *) malloc( SD.length_index_grid * sizeof(int));
+	SD.unionized_energy_array = (double *) malloc( SD.length_unionized_energy_array * sizeof(double));
+
+	// Read heap arrays into SimulationData Object
+	fread(SD.num_nucs,       sizeof(int), SD.length_num_nucs, fp);
+	fread(SD.concs,          sizeof(double), SD.length_concs, fp);
+	fread(SD.mats,           sizeof(int), SD.length_mats, fp);
+	fread(SD.nuclide_grid,   sizeof(NuclideGridPoint), SD.length_nuclide_grid, fp); 
+	fread(SD.index_grid, sizeof(int), SD.length_index_grid, fp);
+	fread(SD.unionized_energy_array, sizeof(double), SD.length_unionized_energy_array, fp);
+
+	fclose(fp);
+
+	return SD;
+}
+
+
+/* ============================================================================
+ * CONTINUATION OF UNIFIED FILE - This is still the same single file
+ * All sections above and below are part of one continuous implementation
+ * ============================================================================ */
+
+// Moves all required data structures to the GPU's memory space
+SimulationData move_simulation_data_to_device( Inputs in, int mype, SimulationData SD )
+{
+	if(mype == 0) printf("Allocating and moving simulation data to GPU memory space...\n");
+
+	////////////////////////////////////////////////////////////////////////////////
+	// SUMMARY: Simulation Data Structure Manifest for "SD" Object
+	// Here we list all heap arrays (and lengths) in SD that would need to be
+	// offloaded manually if using an accelerator with a seperate memory space
+	////////////////////////////////////////////////////////////////////////////////
+	// int * num_nucs;                     // Length = length_num_nucs;
+	// double * concs;                     // Length = length_concs
+	// int * mats;                         // Length = length_mats
+	// double * unionized_energy_array;    // Length = length_unionized_energy_array
+	// int * index_grid;                   // Length = length_index_grid
+	// NuclideGridPoint * nuclide_grid;    // Length = length_nuclide_grid
+	// 
+	// Note: "unionized_energy_array" and "index_grid" can be of zero length
+	//        depending on lookup method.
+	//
+	// Note: "Lengths" are given as the number of objects in the array, not the
+	//       number of bytes.
+	////////////////////////////////////////////////////////////////////////////////
+	size_t sz;
+	size_t total_sz = 0;
+
+	// Shallow copy of CPU simulation data to GPU simulation data
+	SimulationData GSD = SD;
+
+	// Move data to GPU memory space
+	sz = GSD.length_num_nucs * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.num_nucs, sz) );
+	gpuErrchk( cudaMemcpy(GSD.num_nucs, SD.num_nucs, sz, cudaMemcpyHostToDevice) );
+	total_sz += sz;
+
+	sz = GSD.length_concs * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.concs, sz) );
+	gpuErrchk( cudaMemcpy(GSD.concs, SD.concs, sz, cudaMemcpyHostToDevice) );
+	total_sz += sz;
+
+	sz = GSD.length_mats * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mats, sz) );
+	gpuErrchk( cudaMemcpy(GSD.mats, SD.mats, sz, cudaMemcpyHostToDevice) );
+	total_sz += sz;
+	
+	sz = GSD.length_unionized_energy_array * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.unionized_energy_array, sz) );
+	gpuErrchk( cudaMemcpy(GSD.unionized_energy_array, SD.unionized_energy_array, sz, cudaMemcpyHostToDevice) );
+	total_sz += sz;
+
+	sz = GSD.length_index_grid * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.index_grid, sz) );
+	gpuErrchk( cudaMemcpy(GSD.index_grid, SD.index_grid, sz, cudaMemcpyHostToDevice) );
+	total_sz += sz;
+
+	sz = GSD.length_nuclide_grid * sizeof(NuclideGridPoint);
+	gpuErrchk( cudaMalloc((void **) &GSD.nuclide_grid, sz) );
+	gpuErrchk( cudaMemcpy(GSD.nuclide_grid, SD.nuclide_grid, sz, cudaMemcpyHostToDevice) );
+	total_sz += sz;
+	
+	// Allocate verification array on device. This structure is not needed on CPU, so we don't
+	// have to copy anything over.
+	sz = in.lookups * sizeof(unsigned long);
+	gpuErrchk( cudaMalloc((void **) &GSD.verification, sz) );
+	total_sz += sz;
+	GSD.length_verification = in.lookups;
+	
+	// Synchronize
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	if(mype == 0 ) printf("GPU Intialization complete. Allocated %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0 );
+
+	return GSD;
+
+}
+
+// Release device memory
+void release_device_memory(SimulationData GSD) {
+	cudaFree(GSD.num_nucs);
+	cudaFree(GSD.concs);
+	cudaFree(GSD.mats);
+	cudaFree(GSD.unionized_energy_array);
+	cudaFree(GSD.nuclide_grid);
+	cudaFree(GSD.verification);
+}
+
+SimulationData grid_init_do_not_profile( Inputs in, int mype )
+{
+	// Structure to hold all allocated simuluation data arrays
+	SimulationData SD;
+
+	// Keep track of how much data we're allocating
+	size_t nbytes = 0;
+	
+	// Set the initial seed value
+	uint64_t seed = 42;	
+
+	////////////////////////////////////////////////////////////////////
+	// Initialize Nuclide Grids
+	////////////////////////////////////////////////////////////////////
+	
+	if(mype == 0) printf("Intializing nuclide grids...\n");
+
+	// First, we need to initialize our nuclide grid. This comes in the form
+	// of a flattened 2D array that hold all the information we need to define
+	// the cross sections for all isotopes in the simulation. 
+	// The grid is composed of "NuclideGridPoint" structures, which hold the
+	// energy level of the grid point and all associated XS data at that level.
+	// An array of structures (AOS) is used instead of
+	// a structure of arrays, as the grid points themselves are accessed in 
+	// a random order, but all cross section interaction channels and the
+	// energy level are read whenever the gridpoint is accessed, meaning the
+	// AOS is more cache efficient.
+	
+	// Initialize Nuclide Grid
+	SD.length_nuclide_grid = in.n_isotopes * in.n_gridpoints;
+	SD.nuclide_grid     = (NuclideGridPoint *) malloc( SD.length_nuclide_grid * sizeof(NuclideGridPoint));
+	assert(SD.nuclide_grid != NULL);
+	nbytes += SD.length_nuclide_grid * sizeof(NuclideGridPoint);
+	for( int i = 0; i < SD.length_nuclide_grid; i++ )
+	{
+		SD.nuclide_grid[i].energy        = LCG_random_double(&seed);
+		SD.nuclide_grid[i].total_xs      = LCG_random_double(&seed);
+		SD.nuclide_grid[i].elastic_xs    = LCG_random_double(&seed);
+		SD.nuclide_grid[i].absorbtion_xs = LCG_random_double(&seed);
+		SD.nuclide_grid[i].fission_xs    = LCG_random_double(&seed);
+		SD.nuclide_grid[i].nu_fission_xs = LCG_random_double(&seed);
+	}
+
+	// Sort so that each nuclide has data stored in ascending energy order.
+	for( int i = 0; i < in.n_isotopes; i++ )
+		qsort( &SD.nuclide_grid[i*in.n_gridpoints], in.n_gridpoints, sizeof(NuclideGridPoint), NGP_compare);
+	
+	// error debug check
+	/*
+	for( int i = 0; i < in.n_isotopes; i++ )
+	{
+		printf("NUCLIDE %d ==============================\n", i);
+		for( int j = 0; j < in.n_gridpoints; j++ )
+			printf("E%d = %lf\n", j, SD.nuclide_grid[i * in.n_gridpoints + j].energy);
+	}
+	*/
+	
+
+	////////////////////////////////////////////////////////////////////
+	// Initialize Acceleration Structure
+	////////////////////////////////////////////////////////////////////
+	
+	if( in.grid_type == NUCLIDE )
+	{
+		SD.length_unionized_energy_array = 0;
+		SD.length_index_grid = 0;
+	}
+	
+	if( in.grid_type == UNIONIZED )
+	{
+		if(mype == 0) printf("Intializing unionized grid...\n");
+
+		// Allocate space to hold the union of all nuclide energy data
+		SD.length_unionized_energy_array = in.n_isotopes * in.n_gridpoints;
+		SD.unionized_energy_array = (double *) malloc( SD.length_unionized_energy_array * sizeof(double));
+		assert(SD.unionized_energy_array != NULL );
+		nbytes += SD.length_unionized_energy_array * sizeof(double);
+
+		// Copy energy data over from the nuclide energy grid
+		for( int i = 0; i < SD.length_unionized_energy_array; i++ )
+			SD.unionized_energy_array[i] = SD.nuclide_grid[i].energy;
+
+		// Sort unionized energy array
+		qsort( SD.unionized_energy_array, SD.length_unionized_energy_array, sizeof(double), double_compare);
+
+		// Allocate space to hold the acceleration grid indices
+		SD.length_index_grid = SD.length_unionized_energy_array * in.n_isotopes;
+		SD.index_grid = (int *) malloc( SD.length_index_grid * sizeof(int));
+		assert(SD.index_grid != NULL);
+		nbytes += SD.length_index_grid * sizeof(int);
+
+		// Generates the double indexing grid
+		int * idx_low = (int *) calloc( in.n_isotopes, sizeof(int));
+		assert(idx_low != NULL );
+		double * energy_high = (double *) malloc( in.n_isotopes * sizeof(double));
+		assert(energy_high != NULL );
+
+		for( int i = 0; i < in.n_isotopes; i++ )
+			energy_high[i] = SD.nuclide_grid[i * in.n_gridpoints + 1].energy;
+
+		for( long e = 0; e < SD.length_unionized_energy_array; e++ )
+		{
+			double unionized_energy = SD.unionized_energy_array[e];
+			for( long i = 0; i < in.n_isotopes; i++ )
+			{
+				if( unionized_energy < energy_high[i]  )
+					SD.index_grid[e * in.n_isotopes + i] = idx_low[i];
+				else if( idx_low[i] == in.n_gridpoints - 2 )
+					SD.index_grid[e * in.n_isotopes + i] = idx_low[i];
+				else
+				{
+					idx_low[i]++;
+					SD.index_grid[e * in.n_isotopes + i] = idx_low[i];
+					energy_high[i] = SD.nuclide_grid[i * in.n_gridpoints + idx_low[i] + 1].energy;	
+				}
+			}
+		}
+
+		free(idx_low);
+		free(energy_high);
+	}
+
+	if( in.grid_type == HASH )
+	{
+		if(mype == 0) printf("Intializing hash grid...\n");
+		SD.length_unionized_energy_array = 0;
+		SD.length_index_grid  = in.hash_bins * in.n_isotopes;
+		SD.index_grid = (int *) malloc( SD.length_index_grid * sizeof(int)); 
+		assert(SD.index_grid != NULL);
+		nbytes += SD.length_index_grid * sizeof(int);
+
+		double du = 1.0 / in.hash_bins;
+
+		// For each energy level in the hash table
+		for( long e = 0; e < in.hash_bins; e++ )
+		{
+			double energy = e * du;
+
+			// We need to determine the bounding energy levels for all isotopes
+			for( long i = 0; i < in.n_isotopes; i++ )
+			{
+				SD.index_grid[e * in.n_isotopes + i] = grid_search_nuclide( in.n_gridpoints, energy, SD.nuclide_grid + i * in.n_gridpoints, 0, in.n_gridpoints-1);
+			}
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////
+	// Initialize Materials and Concentrations
+	////////////////////////////////////////////////////////////////////
+	if(mype == 0) printf("Intializing material data...\n");
+	
+	// Set the number of nuclides in each material
+	SD.num_nucs  = load_num_nucs(in.n_isotopes);
+	SD.length_num_nucs = 12; // There are always 12 materials in XSBench
+
+	// Intialize the flattened 2D grid of material data. The grid holds
+	// a list of nuclide indices for each of the 12 material types. The
+	// grid is allocated as a full square grid, even though not all
+	// materials have the same number of nuclides.
+	SD.mats = load_mats(SD.num_nucs, in.n_isotopes, &SD.max_num_nucs);
+	SD.length_mats = SD.length_num_nucs * SD.max_num_nucs;
+
+	// Intialize the flattened 2D grid of nuclide concentration data. The grid holds
+	// a list of nuclide concentrations for each of the 12 material types. The
+	// grid is allocated as a full square grid, even though not all
+	// materials have the same number of nuclides.
+	SD.concs = load_concs(SD.num_nucs, SD.max_num_nucs);
+	SD.length_concs = SD.length_mats;
+
+	if(mype == 0) printf("Intialization complete. Allocated %.0lf MB of data on CPU.\n", nbytes/1024.0/1024.0 );
+
+	return SD;
+}
+
+
+/* ============================================================================
+ * CONTINUATION OF UNIFIED FILE - This is still the same single file
+ * All sections above and below are part of one continuous implementation
+ * ============================================================================ */
+
+// Material data is hard coded into the functions in this file.
+// Note that there are 12 materials present in H-M (large or small)
+
+// num_nucs represents the number of nuclides that each material contains
+int * load_num_nucs(long n_isotopes)
+{
+	int * num_nucs = (int*)malloc(12*sizeof(int));
+	
+	// Material 0 is a special case (fuel). The H-M small reactor uses
+	// 34 nuclides, while H-M larges uses 300.
+	if( n_isotopes == 68 )
+		num_nucs[0]  = 34; // HM Small is 34, H-M Large is 321
+	else
+		num_nucs[0]  = 321; // HM Small is 34, H-M Large is 321
+
+	num_nucs[1]  = 5;
+	num_nucs[2]  = 4;
+	num_nucs[3]  = 4;
+	num_nucs[4]  = 27;
+	num_nucs[5]  = 21;
+	num_nucs[6]  = 21;
+	num_nucs[7]  = 21;
+	num_nucs[8]  = 21;
+	num_nucs[9]  = 21;
+	num_nucs[10] = 9;
+	num_nucs[11] = 9;
+
+	return num_nucs;
+}
+
+// Assigns an array of nuclide ID's to each material
+int * load_mats( int * num_nucs, long n_isotopes, int * max_num_nucs )
+{
+	*max_num_nucs = 0;
+	int num_mats = 12;
+	for( int m = 0; m < num_mats; m++ )
+	{
+		if( num_nucs[m] > *max_num_nucs )
+			*max_num_nucs = num_nucs[m];
+	}
+	int * mats = (int *) malloc( num_mats * (*max_num_nucs) * sizeof(int) );
+
+	// Small H-M has 34 fuel nuclides
+	int mats0_Sml[] =  { 58, 59, 60, 61, 40, 42, 43, 44, 45, 46, 1, 2, 3, 7,
+	                 8, 9, 10, 29, 57, 47, 48, 0, 62, 15, 33, 34, 52, 53, 
+	                 54, 55, 56, 18, 23, 41 }; //fuel
+	// Large H-M has 300 fuel nuclides
+	int mats0_Lrg[321] =  { 58, 59, 60, 61, 40, 42, 43, 44, 45, 46, 1, 2, 3, 7,
+	                 8, 9, 10, 29, 57, 47, 48, 0, 62, 15, 33, 34, 52, 53,
+	                 54, 55, 56, 18, 23, 41 }; //fuel
+	for( int i = 0; i < 321-34; i++ )
+		mats0_Lrg[34+i] = 68 + i; // H-M large adds nuclides to fuel only
+	
+	// These are the non-fuel materials	
+	int mats1[] =  { 63, 64, 65, 66, 67 }; // cladding
+	int mats2[] =  { 24, 41, 4, 5 }; // cold borated water
+	int mats3[] =  { 24, 41, 4, 5 }; // hot borated water
+	int mats4[] =  { 19, 20, 21, 22, 35, 36, 37, 38, 39, 25, 27, 28, 29,
+	                 30, 31, 32, 26, 49, 50, 51, 11, 12, 13, 14, 6, 16,
+	                 17 }; // RPV
+	int mats5[] =  { 24, 41, 4, 5, 19, 20, 21, 22, 35, 36, 37, 38, 39, 25,
+	                 49, 50, 51, 11, 12, 13, 14 }; // lower radial reflector
+	int mats6[] =  { 24, 41, 4, 5, 19, 20, 21, 22, 35, 36, 37, 38, 39, 25,
+	                 49, 50, 51, 11, 12, 13, 14 }; // top reflector / plate
+	int mats7[] =  { 24, 41, 4, 5, 19, 20, 21, 22, 35, 36, 37, 38, 39, 25,
+	                 49, 50, 51, 11, 12, 13, 14 }; // bottom plate
+	int mats8[] =  { 24, 41, 4, 5, 19, 20, 21, 22, 35, 36, 37, 38, 39, 25,
+	                 49, 50, 51, 11, 12, 13, 14 }; // bottom nozzle
+	int mats9[] =  { 24, 41, 4, 5, 19, 20, 21, 22, 35, 36, 37, 38, 39, 25,
+	                 49, 50, 51, 11, 12, 13, 14 }; // top nozzle
+	int mats10[] = { 24, 41, 4, 5, 63, 64, 65, 66, 67 }; // top of FA's
+	int mats11[] = { 24, 41, 4, 5, 63, 64, 65, 66, 67 }; // bottom FA's
+	
+	// H-M large v small dependency
+	if( n_isotopes == 68 )
+		memcpy( mats,  mats0_Sml,  num_nucs[0]  * sizeof(int) );	
+	else
+		memcpy( mats,  mats0_Lrg,  num_nucs[0]  * sizeof(int) );
+	
+	// Copy other materials
+	memcpy( mats + *max_num_nucs * 1,  mats1,  num_nucs[1]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 2,  mats2,  num_nucs[2]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 3,  mats3,  num_nucs[3]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 4,  mats4,  num_nucs[4]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 5,  mats5,  num_nucs[5]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 6,  mats6,  num_nucs[6]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 7,  mats7,  num_nucs[7]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 8,  mats8,  num_nucs[8]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 9,  mats9,  num_nucs[9]  * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 10, mats10, num_nucs[10] * sizeof(int) );	
+	memcpy( mats + *max_num_nucs * 11, mats11, num_nucs[11] * sizeof(int) );	
+
+	return mats;
+}
+
+// Randomizes the concentrations of all nuclides in a variety of materials
+double * load_concs( int * num_nucs, int max_num_nucs )
+{
+	uint64_t seed = STARTING_SEED * STARTING_SEED;
+	double * concs = (double *) malloc( 12 * max_num_nucs * sizeof( double ) );
+	
+	for( int i = 0; i < 12; i++ )
+		for( int j = 0; j < num_nucs[i]; j++ )
+			concs[i * max_num_nucs + j] = LCG_random_double(&seed);
+
+	// test
+	/*
+	for( int i = 0; i < 12; i++ )
+		for( int j = 0; j < num_nucs[i]; j++ )
+			printf("concs[%d][%d] = %lf\n", i, j, concs[i][j] );
+	*/
+
+	return concs;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////
+// BASELINE FUNCTIONS
+////////////////////////////////////////////////////////////////////////////////////
+// All "baseline" code is at the top of this file. The baseline code is a simple
+// port of the original CPU OpenMP code to CUDA with few significant changes or
+// optimizations made. Following these functions are a number of optimized variants,
+// which each deploy a different combination of optimizations strategies. By
+// default, XSBench will only run the baseline implementation. Optimized variants
+// must be specifically selected using the "-k <optimized variant ID>" command
+// line argument.
+////////////////////////////////////////////////////////////////////////////////////
+
+unsigned long long run_event_based_simulation_baseline(Inputs in, SimulationData GSD, int mype)
+{
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Running baseline event-based simulation...\n");
+
+	int nthreads = 256;
+	int nblocks = ceil( (double) in.lookups / (double) nthreads);
+
+	xs_lookup_kernel_baseline<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+// In this kernel, we perform a single lookup with each thread. Threads within a warp
+// do not really have any relation to each other, and divergence due to high nuclide count fuel
+// material lookups are costly. This kernel constitutes baseline performance.
+__global__ void xs_lookup_kernel_baseline(Inputs in, SimulationData GSD )
+{
+	// The lookup ID. Used to set the seed, and to store the verification value
+	const int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= in.lookups )
+		return;
+
+	// Set the initial seed value
+	uint64_t seed = STARTING_SEED;	
+
+	// Forward seed to lookup index (we need 2 samples per lookup)
+	seed = fast_forward_LCG(seed, 2*i);
+
+	// Randomly pick an energy and material for the particle
+	double p_energy = LCG_random_double(&seed);
+	int mat         = pick_mat(&seed); 
+		
+	double macro_xs_vector[5] = {0};
+		
+	// Perform macroscopic Cross Section Lookup
+	calculate_macro_xs(
+			p_energy,        // Sampled neutron energy (in lethargy)
+			mat,             // Sampled material type index neutron is in
+			in.n_isotopes,   // Total number of isotopes in simulation
+			in.n_gridpoints, // Number of gridpoints per isotope in simulation
+			GSD.num_nucs,     // 1-D array with number of nuclides per material
+			GSD.concs,        // Flattened 2-D array with concentration of each nuclide in each material
+			GSD.unionized_energy_array, // 1-D Unionized energy array
+			GSD.index_grid,   // Flattened 2-D grid holding indices into nuclide grid for each unionized energy level
+			GSD.nuclide_grid, // Flattened 2-D grid holding energy levels and XS_data for all nuclides in simulation
+			GSD.mats,         // Flattened 2-D array with nuclide indices defining composition of each type of material
+			macro_xs_vector, // 1-D array with result of the macroscopic cross section (5 different reaction channels)
+			in.grid_type,    // Lookup type (nuclide, hash, or unionized)
+			in.hash_bins,    // Number of hash bins used (if using hash lookup type)
+			GSD.max_num_nucs  // Maximum number of nuclides present in any material
+			);
+
+	// For verification, and to prevent the compiler from optimizing
+	// all work out, we interrogate the returned macro_xs_vector array
+	// to find its maximum value index, then increment the verification
+	// value by that index. In this implementation, we have each thread
+	// write to its thread_id index in an array, which we will reduce
+	// with a thrust reduction kernel after the main simulation kernel.
+	double max = -1.0;
+	int max_idx = 0;
+	for(int j = 0; j < 5; j++ )
+	{
+		if( macro_xs_vector[j] > max )
+		{
+			max = macro_xs_vector[j];
+			max_idx = j;
+		}
+	}
+	GSD.verification[i] = max_idx+1;
+}
+
+// Calculates the microscopic cross section for a given nuclide & energy
+__device__ void calculate_micro_xs(   double p_energy, int nuc, long n_isotopes,
+                           long n_gridpoints,
+                           double * __restrict__ egrid, int * __restrict__ index_data,
+                           NuclideGridPoint * __restrict__ nuclide_grids,
+                           long idx, double * __restrict__ xs_vector, int grid_type, int hash_bins ){
+	// Variables
+	double f;
+	NuclideGridPoint * low, * high;
+
+	// If using only the nuclide grid, we must perform a binary search
+	// to find the energy location in this particular nuclide's grid.
+	if( grid_type == NUCLIDE )
+	{
+		// Perform binary search on the Nuclide Grid to find the index
+		idx = grid_search_nuclide( n_gridpoints, p_energy, &nuclide_grids[nuc*n_gridpoints], 0, n_gridpoints-1);
+
+		// pull ptr from nuclide grid and check to ensure that
+		// we're not reading off the end of the nuclide's grid
+		if( idx == n_gridpoints - 1 )
+			low = &nuclide_grids[nuc*n_gridpoints + idx - 1];
+		else
+			low = &nuclide_grids[nuc*n_gridpoints + idx];
+	}
+	else if( grid_type == UNIONIZED) // Unionized Energy Grid - we already know the index, no binary search needed.
+	{
+		// pull ptr from energy grid and check to ensure that
+		// we're not reading off the end of the nuclide's grid
+		if( index_data[idx * n_isotopes + nuc] == n_gridpoints - 1 )
+			low = &nuclide_grids[nuc*n_gridpoints + index_data[idx * n_isotopes + nuc] - 1];
+		else
+			low = &nuclide_grids[nuc*n_gridpoints + index_data[idx * n_isotopes + nuc]];
+	}
+	else // Hash grid
+	{
+		// load lower bounding index
+		int u_low = index_data[idx * n_isotopes + nuc];
+
+		// Determine higher bounding index
+		int u_high;
+		if( idx == hash_bins - 1 )
+			u_high = n_gridpoints - 1;
+		else
+			u_high = index_data[(idx+1)*n_isotopes + nuc] + 1;
+
+		// Check edge cases to make sure energy is actually between these
+		// Then, if things look good, search for gridpoint in the nuclide grid
+		// within the lower and higher limits we've calculated.
+		double e_low  = nuclide_grids[nuc*n_gridpoints + u_low].energy;
+		double e_high = nuclide_grids[nuc*n_gridpoints + u_high].energy;
+		int lower;
+		if( p_energy <= e_low )
+			lower = 0;
+		else if( p_energy >= e_high )
+			lower = n_gridpoints - 1;
+		else
+			lower = grid_search_nuclide( n_gridpoints, p_energy, &nuclide_grids[nuc*n_gridpoints], u_low, u_high);
+
+		if( lower == n_gridpoints - 1 )
+			low = &nuclide_grids[nuc*n_gridpoints + lower - 1];
+		else
+			low = &nuclide_grids[nuc*n_gridpoints + lower];
+	}
+	
+	high = low + 1;
+	
+	// calculate the re-useable interpolation factor
+	f = (high->energy - p_energy) / (high->energy - low->energy);
+
+	// Total XS
+	xs_vector[0] = high->total_xs - f * (high->total_xs - low->total_xs);
+	
+	// Elastic XS
+	xs_vector[1] = high->elastic_xs - f * (high->elastic_xs - low->elastic_xs);
+	
+	// Absorbtion XS
+	xs_vector[2] = high->absorbtion_xs - f * (high->absorbtion_xs - low->absorbtion_xs);
+	
+	// Fission XS
+	xs_vector[3] = high->fission_xs - f * (high->fission_xs - low->fission_xs);
+	
+	// Nu Fission XS
+	xs_vector[4] = high->nu_fission_xs - f * (high->nu_fission_xs - low->nu_fission_xs);
+}
+
+// Calculates macroscopic cross section based on a given material & energy 
+__device__ void calculate_macro_xs( double p_energy, int mat, long n_isotopes,
+                         long n_gridpoints, int * __restrict__ num_nucs,
+                         double * __restrict__ concs,
+                         double * __restrict__ egrid, int * __restrict__ index_data,
+                         NuclideGridPoint * __restrict__ nuclide_grids,
+                         int * __restrict__ mats,
+                         double * __restrict__ macro_xs_vector, int grid_type, int hash_bins, int max_num_nucs ){
+	int p_nuc; // the nuclide we are looking up
+	long idx = -1;	
+	double conc; // the concentration of the nuclide in the material
+
+	// cleans out macro_xs_vector
+	for( int k = 0; k < 5; k++ )
+		macro_xs_vector[k] = 0;
+
+	// If we are using the unionized energy grid (UEG), we only
+	// need to perform 1 binary search per macroscopic lookup.
+	// If we are using the nuclide grid search, it will have to be
+	// done inside of the "calculate_micro_xs" function for each different
+	// nuclide in the material.
+	if( grid_type == UNIONIZED )
+		idx = grid_search( n_isotopes * n_gridpoints, p_energy, egrid);	
+	else if( grid_type == HASH )
+	{
+		double du = 1.0 / hash_bins;
+		idx = p_energy / du;
+	}
+	
+	// Once we find the pointer array on the UEG, we can pull the data
+	// from the respective nuclide grids, as well as the nuclide
+	// concentration data for the material
+	// Each nuclide from the material needs to have its micro-XS array
+	// looked up & interpolatied (via calculate_micro_xs). Then, the
+	// micro XS is multiplied by the concentration of that nuclide
+	// in the material, and added to the total macro XS array.
+	// (Independent -- though if parallelizing, must use atomic operations
+	//  or otherwise control access to the xs_vector and macro_xs_vector to
+	//  avoid simulataneous writing to the same data structure)
+	for( int j = 0; j < num_nucs[mat]; j++ )
+	{
+		double xs_vector[5];
+		p_nuc = mats[mat*max_num_nucs + j];
+		conc = concs[mat*max_num_nucs + j];
+		calculate_micro_xs( p_energy, p_nuc, n_isotopes,
+		                    n_gridpoints, egrid, index_data,
+		                    nuclide_grids, idx, xs_vector, grid_type, hash_bins );
+		for( int k = 0; k < 5; k++ )
+			macro_xs_vector[k] += xs_vector[k] * conc;
+	}
+}
+
+
+// binary search for energy on unionized energy grid
+// returns lower index
+__device__ long grid_search( long n, double quarry, double * __restrict__ A)
+{
+	long lowerLimit = 0;
+	long upperLimit = n-1;
+	long examinationPoint;
+	long length = upperLimit - lowerLimit;
+
+	while( length > 1 )
+	{
+		examinationPoint = lowerLimit + ( length / 2 );
+		
+		if( A[examinationPoint] > quarry )
+			upperLimit = examinationPoint;
+		else
+			lowerLimit = examinationPoint;
+		
+		length = upperLimit - lowerLimit;
+	}
+	
+	return lowerLimit;
+}
+
+// binary search for energy on nuclide energy grid
+__host__ __device__ long grid_search_nuclide( long n, double quarry, NuclideGridPoint * A, long low, long high)
+{
+	long lowerLimit = low;
+	long upperLimit = high;
+	long examinationPoint;
+	long length = upperLimit - lowerLimit;
+
+	while( length > 1 )
+	{
+		examinationPoint = lowerLimit + ( length / 2 );
+		
+		if( A[examinationPoint].energy > quarry )
+			upperLimit = examinationPoint;
+		else
+			lowerLimit = examinationPoint;
+		
+		length = upperLimit - lowerLimit;
+	}
+	
+	return lowerLimit;
+}
+
+// picks a material based on a probabilistic distribution
+__device__ int pick_mat( uint64_t * seed )
+{
+	// I have a nice spreadsheet supporting these numbers. They are
+	// the fractions (by volume) of material in the core. Not a 
+	// *perfect* approximation of where XS lookups are going to occur,
+	// but this will do a good job of biasing the system nonetheless.
+
+	// Also could be argued that doing fractions by weight would be 
+	// a better approximation, but volume does a good enough job for now.
+
+	double dist[12];
+	dist[0]  = 0.140;	// fuel
+	dist[1]  = 0.052;	// cladding
+	dist[2]  = 0.275;	// cold, borated water
+	dist[3]  = 0.134;	// hot, borated water
+	dist[4]  = 0.154;	// RPV
+	dist[5]  = 0.064;	// Lower, radial reflector
+	dist[6]  = 0.066;	// Upper reflector / top plate
+	dist[7]  = 0.055;	// bottom plate
+	dist[8]  = 0.008;	// bottom nozzle
+	dist[9]  = 0.015;	// top nozzle
+	dist[10] = 0.025;	// top of fuel assemblies
+	dist[11] = 0.013;	// bottom of fuel assemblies
+	
+	double roll = LCG_random_double(seed);
+
+	// makes a pick based on the distro
+	for( int i = 0; i < 12; i++ )
+	{
+		double running = 0;
+		for( int j = i; j > 0; j-- )
+			running += dist[j];
+		if( roll < running )
+			return i;
+	}
+
+	return 0;
+}
+
+__host__ __device__ double LCG_random_double(uint64_t * seed)
+{
+	// LCG parameters
+	const uint64_t m = 9223372036854775808ULL; // 2^63
+	const uint64_t a = 2806196910506780709ULL;
+	const uint64_t c = 1ULL;
+	*seed = (a * (*seed) + c) % m;
+	return (double) (*seed) / (double) m;
+}	
+
+__device__ uint64_t fast_forward_LCG(uint64_t seed, uint64_t n)
+{
+	// LCG parameters
+	const uint64_t m = 9223372036854775808ULL; // 2^63
+	uint64_t a = 2806196910506780709ULL;
+	uint64_t c = 1ULL;
+
+	n = n % m;
+
+	uint64_t a_new = 1;
+	uint64_t c_new = 0;
+
+	while(n > 0) 
+	{
+		if(n & 1)
+		{
+			a_new *= a;
+			c_new = c_new * a + c;
+		}
+		c *= (a + 1);
+		a *= a;
+
+		n >>= 1;
+	}
+
+	return (a_new * seed + c_new) % m;
+}
+
+
+/* ============================================================================
+ * CONTINUATION OF UNIFIED FILE - This is still the same single file
+ * All sections above and below are part of one continuous implementation
+ * ============================================================================ */
+
+
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+// OPTIMIZED VARIANT FUNCTIONS
+////////////////////////////////////////////////////////////////////////////////////
+// This section contains a number of optimized variants of some of the above
+// functions, which each deploy a different combination of optimizations strategies
+// specific to GPU. By default, XSBench will not run any of these variants. They
+// must be specifically selected using the "-k <optimized variant ID>" command
+// line argument.
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////
+// Optimization 1 -- Basic kernel splitting of sampling & lookup routines
+////////////////////////////////////////////////////////////////////////////////////
+// This optimization requires a little extra data to store all material IDs and 
+// energies for the sampled particles between kernel calls. By itself, this
+// optimization is likely actually a bit of a slowdown compared to the baseline
+// kernel. However, it will be used by better optimization kernels down the line.
+////////////////////////////////////////////////////////////////////////////////////
+unsigned long long run_event_based_simulation_optimization_1(Inputs in, SimulationData GSD, int mype)
+{
+	const char * optimization_name = "Optimization 1 - basic sample/lookup kernel splitting";
+	
+	if( mype == 0)	printf("Simulation Kernel:\"%s\"\n", optimization_name);
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Allocate Additional Data Structures Needed by Optimized Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Allocating additional device data required by kernel...\n");
+	size_t sz;
+	size_t total_sz = 0;
+
+	sz = in.lookups * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.p_energy_samples, sz) );
+	total_sz += sz;
+	GSD.length_p_energy_samples = in.lookups;
+
+	sz = in.lookups * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mat_samples, sz) );
+	total_sz += sz;
+	GSD.length_mat_samples = in.lookups;
+	
+	if( mype == 0)	printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0);
+
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Beginning optimized simulation...\n");
+
+	int nthreads = 32;
+	int nblocks = ceil( (double) in.lookups / 32.0);
+	
+	sampling_kernel<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	xs_lookup_kernel_optimization_1<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+__global__ void sampling_kernel(Inputs in, SimulationData GSD )
+{
+	// The lookup ID.
+	const int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= in.lookups )
+		return;
+
+	// Set the initial seed value
+	uint64_t seed = STARTING_SEED;	
+
+	// Forward seed to lookup index (we need 2 samples per lookup)
+	seed = fast_forward_LCG(seed, 2*i);
+
+	// Randomly pick an energy and material for the particle
+	double p_energy = LCG_random_double(&seed);
+	int mat         = pick_mat(&seed); 
+
+	// Store sample data in state array
+	GSD.p_energy_samples[i] = p_energy;
+	GSD.mat_samples[i] = mat;
+}
+
+__global__ void xs_lookup_kernel_optimization_1(Inputs in, SimulationData GSD )
+{
+	// The lookup ID. Used to set the seed, and to store the verification value
+	const int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= in.lookups )
+		return;
+		
+	double macro_xs_vector[5] = {0};
+		
+	// Perform macroscopic Cross Section Lookup
+	calculate_macro_xs(
+			GSD.p_energy_samples[i],        // Sampled neutron energy (in lethargy)
+			GSD.mat_samples[i],             // Sampled material type index neutron is in
+			in.n_isotopes,   // Total number of isotopes in simulation
+			in.n_gridpoints, // Number of gridpoints per isotope in simulation
+			GSD.num_nucs,     // 1-D array with number of nuclides per material
+			GSD.concs,        // Flattened 2-D array with concentration of each nuclide in each material
+			GSD.unionized_energy_array, // 1-D Unionized energy array
+			GSD.index_grid,   // Flattened 2-D grid holding indices into nuclide grid for each unionized energy level
+			GSD.nuclide_grid, // Flattened 2-D grid holding energy levels and XS_data for all nuclides in simulation
+			GSD.mats,         // Flattened 2-D array with nuclide indices defining composition of each type of material
+			macro_xs_vector, // 1-D array with result of the macroscopic cross section (5 different reaction channels)
+			in.grid_type,    // Lookup type (nuclide, hash, or unionized)
+			in.hash_bins,    // Number of hash bins used (if using hash lookup type)
+			GSD.max_num_nucs  // Maximum number of nuclides present in any material
+			);
+
+	// For verification, and to prevent the compiler from optimizing
+	// all work out, we interrogate the returned macro_xs_vector array
+	// to find its maximum value index, then increment the verification
+	// value by that index. In this implementation, we have each thread
+	// write to its thread_id index in an array, which we will reduce
+	// with a thrust reduction kernel after the main simulation kernel.
+	double max = -1.0;
+	int max_idx = 0;
+	for(int j = 0; j < 5; j++ )
+	{
+		if( macro_xs_vector[j] > max )
+		{
+			max = macro_xs_vector[j];
+			max_idx = j;
+		}
+	}
+	GSD.verification[i] = max_idx+1;
+}
+
+////////////////////////////////////////////////////////////////////////////////////
+// Optimization 2 -- Kernel Splitting + Material-Specific Lookup Kernels
+////////////////////////////////////////////////////////////////////////////////////
+// This one builds on the first optimization. It uses multiple kernels, one
+// for each material type, to better balance the workload across threads within
+// a warp. This works because each material will have a different number of 
+// isotopes, with some having a ton, meaning that SIMD efficiency can be rather
+// low by default. Better efficiency may be gained in further optimizations by
+// sorting the lookups first.
+////////////////////////////////////////////////////////////////////////////////////
+unsigned long long run_event_based_simulation_optimization_2(Inputs in, SimulationData GSD, int mype)
+{
+	const char * optimization_name = "Optimization 2 - Material Lookup Kernels";
+	
+	if( mype == 0)	printf("Simulation Kernel:\"%s\"\n", optimization_name);
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Allocate Additional Data Structures Needed by Optimized Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Allocating additional device data required by kernel...\n");
+	size_t sz;
+	size_t total_sz = 0;
+
+	sz = in.lookups * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.p_energy_samples, sz) );
+	total_sz += sz;
+	GSD.length_p_energy_samples = in.lookups;
+
+	sz = in.lookups * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mat_samples, sz) );
+	total_sz += sz;
+	GSD.length_mat_samples = in.lookups;
+	
+	if( mype == 0)	printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0);
+
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Beginning optimized simulation...\n");
+
+	int nthreads = 32;
+	int nblocks = ceil( (double) in.lookups / 32.0);
+	
+	sampling_kernel<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	// Launch all material kernels individually
+	for( int m = 0; m < 12; m++ )
+		xs_lookup_kernel_optimization_2<<<nblocks, nthreads>>>( in, GSD, m );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+__global__ void xs_lookup_kernel_optimization_2(Inputs in, SimulationData GSD, int m )
+{
+	// The lookup ID. Used to set the seed, and to store the verification value
+	const int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= in.lookups )
+		return;
+	
+	// Check that our material type matches the kernel material
+	int mat = GSD.mat_samples[i];
+	if( mat != m )
+		return;
+
+	double macro_xs_vector[5] = {0};
+		
+	// Perform macroscopic Cross Section Lookup
+	calculate_macro_xs(
+			GSD.p_energy_samples[i],        // Sampled neutron energy (in lethargy)
+			mat,             // Sampled material type index neutron is in
+			in.n_isotopes,   // Total number of isotopes in simulation
+			in.n_gridpoints, // Number of gridpoints per isotope in simulation
+			GSD.num_nucs,     // 1-D array with number of nuclides per material
+			GSD.concs,        // Flattened 2-D array with concentration of each nuclide in each material
+			GSD.unionized_energy_array, // 1-D Unionized energy array
+			GSD.index_grid,   // Flattened 2-D grid holding indices into nuclide grid for each unionized energy level
+			GSD.nuclide_grid, // Flattened 2-D grid holding energy levels and XS_data for all nuclides in simulation
+			GSD.mats,         // Flattened 2-D array with nuclide indices defining composition of each type of material
+			macro_xs_vector, // 1-D array with result of the macroscopic cross section (5 different reaction channels)
+			in.grid_type,    // Lookup type (nuclide, hash, or unionized)
+			in.hash_bins,    // Number of hash bins used (if using hash lookup type)
+			GSD.max_num_nucs  // Maximum number of nuclides present in any material
+			);
+
+	// For verification, and to prevent the compiler from optimizing
+	// all work out, we interrogate the returned macro_xs_vector array
+	// to find its maximum value index, then increment the verification
+	// value by that index. In this implementation, we have each thread
+	// write to its thread_id index in an array, which we will reduce
+	// with a thrust reduction kernel after the main simulation kernel.
+	double max = -1.0;
+	int max_idx = 0;
+	for(int j = 0; j < 5; j++ )
+	{
+		if( macro_xs_vector[j] > max )
+		{
+			max = macro_xs_vector[j];
+			max_idx = j;
+		}
+	}
+	GSD.verification[i] = max_idx+1;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////
+// Optimization 3 -- Kernel Splitting + Fuel or Not-Fuel Lookups
+////////////////////////////////////////////////////////////////////////////////////
+// This optimization alters Optimization 2. Instead of executing a kernel call for
+// ALL different material types, only two different calls are made. One for fuel,
+// and one for all the other materials. As the fuel material has by far the most
+// isotopes, it takes much longer than the rest.
+////////////////////////////////////////////////////////////////////////////////////
+unsigned long long run_event_based_simulation_optimization_3(Inputs in, SimulationData GSD, int mype)
+{
+	const char * optimization_name = "Optimization 3 - Fuel or Other Lookup Kernels";
+	
+	if( mype == 0)	printf("Simulation Kernel:\"%s\"\n", optimization_name);
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Allocate Additional Data Structures Needed by Optimized Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Allocating additional device data required by kernel...\n");
+	size_t sz;
+	size_t total_sz = 0;
+
+	sz = in.lookups * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.p_energy_samples, sz) );
+	total_sz += sz;
+	GSD.length_p_energy_samples = in.lookups;
+
+	sz = in.lookups * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mat_samples, sz) );
+	total_sz += sz;
+	GSD.length_mat_samples = in.lookups;
+	
+	if( mype == 0)	printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0);
+
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Beginning optimized simulation...\n");
+
+	int nthreads = 32;
+	int nblocks = ceil( (double) in.lookups / 32.0);
+	
+	sampling_kernel<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	// Launch all material kernels individually
+	xs_lookup_kernel_optimization_3<<<nblocks, nthreads>>>( in, GSD, 0 );
+	xs_lookup_kernel_optimization_3<<<nblocks, nthreads>>>( in, GSD, 1 );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+__global__ void xs_lookup_kernel_optimization_3(Inputs in, SimulationData GSD, int is_fuel )
+{
+	// The lookup ID. Used to set the seed, and to store the verification value
+	const int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= in.lookups )
+		return;
+	
+	int mat = GSD.mat_samples[i];
+
+	// If this is the fuel kernel, AND this is a fuel lookup, then perform a lookup
+	// OR if this is not the fuel kernel, AND this is not a fuel lookup, then perform the lookup
+	if( ((is_fuel == 1) && (mat == 0)) || ((is_fuel == 0) && (mat != 0 ) ))
+	{
+		double macro_xs_vector[5] = {0};
+			
+		// Perform macroscopic Cross Section Lookup
+		calculate_macro_xs(
+				GSD.p_energy_samples[i],        // Sampled neutron energy (in lethargy)
+				mat,             // Sampled material type index neutron is in
+				in.n_isotopes,   // Total number of isotopes in simulation
+				in.n_gridpoints, // Number of gridpoints per isotope in simulation
+				GSD.num_nucs,     // 1-D array with number of nuclides per material
+				GSD.concs,        // Flattened 2-D array with concentration of each nuclide in each material
+				GSD.unionized_energy_array, // 1-D Unionized energy array
+				GSD.index_grid,   // Flattened 2-D grid holding indices into nuclide grid for each unionized energy level
+				GSD.nuclide_grid, // Flattened 2-D grid holding energy levels and XS_data for all nuclides in simulation
+				GSD.mats,         // Flattened 2-D array with nuclide indices defining composition of each type of material
+				macro_xs_vector, // 1-D array with result of the macroscopic cross section (5 different reaction channels)
+				in.grid_type,    // Lookup type (nuclide, hash, or unionized)
+				in.hash_bins,    // Number of hash bins used (if using hash lookup type)
+				GSD.max_num_nucs  // Maximum number of nuclides present in any material
+				);
+
+		// For verification, and to prevent the compiler from optimizing
+		// all work out, we interrogate the returned macro_xs_vector array
+		// to find its maximum value index, then increment the verification
+		// value by that index. In this implementation, we have each thread
+		// write to its thread_id index in an array, which we will reduce
+		// with a thrust reduction kernel after the main simulation kernel.
+		double max = -1.0;
+		int max_idx = 0;
+		for(int j = 0; j < 5; j++ )
+		{
+			if( macro_xs_vector[j] > max )
+			{
+				max = macro_xs_vector[j];
+				max_idx = j;
+			}
+		}
+		GSD.verification[i] = max_idx+1;
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////
+// Optimization 4 -- Kernel Splitting + All Material Lookups + Full Sort
+////////////////////////////////////////////////////////////////////////////////////
+// This optimization builds on optimization 2, adding in a full sort before
+// hand so that the warps should be densely packed together. This should maximize
+// SIMD efficiency of the kernel, but may incur an added cost for the sort.
+////////////////////////////////////////////////////////////////////////////////////
+unsigned long long run_event_based_simulation_optimization_4(Inputs in, SimulationData GSD, int mype)
+{
+	const char * optimization_name = "Optimization 4 - All Material Lookup Kernels + Material Sort";
+	
+	if( mype == 0)	printf("Simulation Kernel:\"%s\"\n", optimization_name);
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Allocate Additional Data Structures Needed by Optimized Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Allocating additional device data required by kernel...\n");
+	size_t sz;
+	size_t total_sz = 0;
+
+	sz = in.lookups * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.p_energy_samples, sz) );
+	total_sz += sz;
+	GSD.length_p_energy_samples = in.lookups;
+
+	sz = in.lookups * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mat_samples, sz) );
+	total_sz += sz;
+	GSD.length_mat_samples = in.lookups;
+	
+	if( mype == 0)	printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0);
+
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Beginning optimized simulation...\n");
+
+	int nthreads = 32;
+	int nblocks = ceil( (double) in.lookups / 32.0);
+	
+	sampling_kernel<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	// Count the number of fuel material lookups that need to be performed (fuel id = 0)
+	int n_lookups_per_material[12];
+	for( int m = 0; m < 12; m++ )
+		n_lookups_per_material[m] = thrust::count(thrust::device, GSD.mat_samples, GSD.mat_samples + in.lookups, m);
+
+	// Sort materials
+	thrust::sort_by_key(thrust::device, GSD.mat_samples, GSD.mat_samples + in.lookups, GSD.p_energy_samples);
+	
+	// Launch all material kernels individually
+	int offset = 0;
+	for( int m = 0; m < 12; m++ )
+	{
+		nthreads = 32;
+		nblocks = ceil((double) n_lookups_per_material[m] / (double) nthreads);
+		xs_lookup_kernel_optimization_4<<<nblocks, nthreads>>>( in, GSD, m, n_lookups_per_material[m], offset );
+		offset += n_lookups_per_material[m];
+	}
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+__global__ void xs_lookup_kernel_optimization_4(Inputs in, SimulationData GSD, int m, int n_lookups, int offset )
+{
+	// The lookup ID. Used to set the seed, and to store the verification value
+	int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= n_lookups )
+		return;
+
+	i += offset;
+
+	// Check that our material type matches the kernel material
+	int mat = GSD.mat_samples[i];
+	if( mat != m )
+		return;
+
+	double macro_xs_vector[5] = {0};
+		
+	// Perform macroscopic Cross Section Lookup
+	calculate_macro_xs(
+			GSD.p_energy_samples[i],        // Sampled neutron energy (in lethargy)
+			mat,             // Sampled material type index neutron is in
+			in.n_isotopes,   // Total number of isotopes in simulation
+			in.n_gridpoints, // Number of gridpoints per isotope in simulation
+			GSD.num_nucs,     // 1-D array with number of nuclides per material
+			GSD.concs,        // Flattened 2-D array with concentration of each nuclide in each material
+			GSD.unionized_energy_array, // 1-D Unionized energy array
+			GSD.index_grid,   // Flattened 2-D grid holding indices into nuclide grid for each unionized energy level
+			GSD.nuclide_grid, // Flattened 2-D grid holding energy levels and XS_data for all nuclides in simulation
+			GSD.mats,         // Flattened 2-D array with nuclide indices defining composition of each type of material
+			macro_xs_vector, // 1-D array with result of the macroscopic cross section (5 different reaction channels)
+			in.grid_type,    // Lookup type (nuclide, hash, or unionized)
+			in.hash_bins,    // Number of hash bins used (if using hash lookup type)
+			GSD.max_num_nucs  // Maximum number of nuclides present in any material
+			);
+
+	// For verification, and to prevent the compiler from optimizing
+	// all work out, we interrogate the returned macro_xs_vector array
+	// to find its maximum value index, then increment the verification
+	// value by that index. In this implementation, we have each thread
+	// write to its thread_id index in an array, which we will reduce
+	// with a thrust reduction kernel after the main simulation kernel.
+	double max = -1.0;
+	int max_idx = 0;
+	for(int j = 0; j < 5; j++ )
+	{
+		if( macro_xs_vector[j] > max )
+		{
+			max = macro_xs_vector[j];
+			max_idx = j;
+		}
+	}
+	GSD.verification[i] = max_idx+1;
+}
+
+////////////////////////////////////////////////////////////////////////////////////
+// Optimization 5 -- Kernel Splitting + Fuel/Other Lookups + Fuel/Other Partition
+////////////////////////////////////////////////////////////////////////////////////
+// This optimization is similar to optimization 4, but instead of sorting
+// fully by material, we just sort by fuel or not fuel. Similarly, instead of
+// launching kernels for all materials, similar to optimization 3 we only launch
+// kernels for the fuel and other mateirals.
+////////////////////////////////////////////////////////////////////////////////////
+
+// Comparator for partitioning stage
+struct is_mat_fuel{
+	__host__ __device__
+		bool operator()(const int & a)
+		{
+			return a == 0;
+		}
+};
+
+unsigned long long run_event_based_simulation_optimization_5(Inputs in, SimulationData GSD, int mype)
+{
+	const char * optimization_name = "Optimization 5 - Fuel/No Fuel Lookup Kernels + Fuel/No Fuel Sort";
+	
+	if( mype == 0)	printf("Simulation Kernel:\"%s\"\n", optimization_name);
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Allocate Additional Data Structures Needed by Optimized Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Allocating additional device data required by kernel...\n");
+	size_t sz;
+	size_t total_sz = 0;
+
+	sz = in.lookups * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.p_energy_samples, sz) );
+	total_sz += sz;
+	GSD.length_p_energy_samples = in.lookups;
+
+	sz = in.lookups * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mat_samples, sz) );
+	total_sz += sz;
+	GSD.length_mat_samples = in.lookups;
+	
+	if( mype == 0)	printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0);
+
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Beginning optimized simulation...\n");
+
+	int nthreads = 32;
+	int nblocks = ceil( (double) in.lookups / 32.0);
+	
+	sampling_kernel<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	// Count the number of fuel material lookups that need to be performed (fuel id = 0)
+	int n_fuel_lookups = thrust::count(thrust::device, GSD.mat_samples, GSD.mat_samples + in.lookups, 0);
+
+	// Partition fuel into the first part of the array
+	thrust::partition(thrust::device, GSD.mat_samples, GSD.mat_samples + in.lookups, GSD.p_energy_samples, is_mat_fuel());
+
+	// Launch all material kernels individually (asynchronous is allowed)
+	nblocks = ceil( (double) n_fuel_lookups / (double) nthreads);
+	xs_lookup_kernel_optimization_5<<<nblocks, nthreads>>>( in, GSD, n_fuel_lookups, 0 );
+
+	nblocks = ceil( (double) (in.lookups - n_fuel_lookups) / (double) nthreads);
+	xs_lookup_kernel_optimization_5<<<nblocks, nthreads>>>( in, GSD, in.lookups-n_fuel_lookups, n_fuel_lookups );
+
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+__global__ void xs_lookup_kernel_optimization_5(Inputs in, SimulationData GSD, int n_lookups, int offset )
+{
+	// The lookup ID. Used to set the seed, and to store the verification value
+	int i = blockIdx.x *blockDim.x + threadIdx.x;
+
+	if( i >= n_lookups )
+		return;
+	
+	i += offset;
+
+	double macro_xs_vector[5] = {0};
+		
+	// Perform macroscopic Cross Section Lookup
+	calculate_macro_xs(
+			GSD.p_energy_samples[i],        // Sampled neutron energy (in lethargy)
+			GSD.mat_samples[i],             // Sampled material type index neutron is in
+			in.n_isotopes,   // Total number of isotopes in simulation
+			in.n_gridpoints, // Number of gridpoints per isotope in simulation
+			GSD.num_nucs,     // 1-D array with number of nuclides per material
+			GSD.concs,        // Flattened 2-D array with concentration of each nuclide in each material
+			GSD.unionized_energy_array, // 1-D Unionized energy array
+			GSD.index_grid,   // Flattened 2-D grid holding indices into nuclide grid for each unionized energy level
+			GSD.nuclide_grid, // Flattened 2-D grid holding energy levels and XS_data for all nuclides in simulation
+			GSD.mats,         // Flattened 2-D array with nuclide indices defining composition of each type of material
+			macro_xs_vector, // 1-D array with result of the macroscopic cross section (5 different reaction channels)
+			in.grid_type,    // Lookup type (nuclide, hash, or unionized)
+			in.hash_bins,    // Number of hash bins used (if using hash lookup type)
+			GSD.max_num_nucs  // Maximum number of nuclides present in any material
+			);
+
+	// For verification, and to prevent the compiler from optimizing
+	// all work out, we interrogate the returned macro_xs_vector array
+	// to find its maximum value index, then increment the verification
+	// value by that index. In this implementation, we have each thread
+	// write to its thread_id index in an array, which we will reduce
+	// with a thrust reduction kernel after the main simulation kernel.
+	double max = -1.0;
+	int max_idx = 0;
+	for(int j = 0; j < 5; j++ )
+	{
+		if( macro_xs_vector[j] > max )
+		{
+			max = macro_xs_vector[j];
+			max_idx = j;
+		}
+	}
+	GSD.verification[i] = max_idx+1;
+}
+
+////////////////////////////////////////////////////////////////////////////////////
+// Optimization 6 -- Kernel Splitting + All Material Lookups + Full Sort
+//                   + Energy Sort
+////////////////////////////////////////////////////////////////////////////////////
+// This optimization builds on optimization 4, adding in a second sort by energy.
+// It is extremely fast, as now most of the threads within a warp will be hitting
+// the same indices in the lookup grids. This greatly reduces thread divergence and
+// greatly improves cache efficiency and re-use.
+//
+// However, it is unlikely that this exact optimization would be possible in a real
+// application like OpenMC. One major difference is that particle objects are quite
+// large, often having 50+ variable fields, such that sorting them in memory becomes
+// rather expensive. Instead, the best possible option would probably be to create
+// intermediate indexing (per Hamilton et. al 2019), and run the kernels indirectly.
+////////////////////////////////////////////////////////////////////////////////////
+unsigned long long run_event_based_simulation_optimization_6(Inputs in, SimulationData GSD, int mype)
+{
+	const char * optimization_name = "Optimization 6 - Material & Energy Sorts + Material-specific Kernels";
+	
+	if( mype == 0)	printf("Simulation Kernel:\"%s\"\n", optimization_name);
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Allocate Additional Data Structures Needed by Optimized Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Allocating additional device data required by kernel...\n");
+	size_t sz;
+	size_t total_sz = 0;
+
+	sz = in.lookups * sizeof(double);
+	gpuErrchk( cudaMalloc((void **) &GSD.p_energy_samples, sz) );
+	total_sz += sz;
+	GSD.length_p_energy_samples = in.lookups;
+
+	sz = in.lookups * sizeof(int);
+	gpuErrchk( cudaMalloc((void **) &GSD.mat_samples, sz) );
+	total_sz += sz;
+	GSD.length_mat_samples = in.lookups;
+	
+	if( mype == 0)	printf("Allocated an additional %.0lf MB of data on GPU.\n", total_sz/1024.0/1024.0);
+
+	////////////////////////////////////////////////////////////////////////////////
+	// Configure & Launch Simulation Kernel
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Beginning optimized simulation...\n");
+
+	int nthreads = 32;
+	int nblocks = ceil( (double) in.lookups / 32.0);
+	
+	sampling_kernel<<<nblocks, nthreads>>>( in, GSD );
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	// Count the number of fuel material lookups that need to be performed (fuel id = 0)
+	int n_lookups_per_material[12];
+	for( int m = 0; m < 12; m++ )
+		n_lookups_per_material[m] = thrust::count(thrust::device, GSD.mat_samples, GSD.mat_samples + in.lookups, m);
+
+	// Sort by material first
+	thrust::sort_by_key(thrust::device, GSD.mat_samples, GSD.mat_samples + in.lookups, GSD.p_energy_samples);
+
+	// Now, sort each material by energy
+	int offset = 0;
+	for( int m = 0; m < 12; m++ )
+	{
+		thrust::sort_by_key(thrust::device, GSD.p_energy_samples + offset, GSD.p_energy_samples + offset + n_lookups_per_material[m], GSD.mat_samples + offset);
+		offset += n_lookups_per_material[m];
+	}
+	
+	// Launch all material kernels individually
+	offset = 0;
+	for( int m = 0; m < 12; m++ )
+	{
+		nthreads = 32;
+		nblocks = ceil((double) n_lookups_per_material[m] / (double) nthreads);
+		xs_lookup_kernel_optimization_4<<<nblocks, nthreads>>>( in, GSD, m, n_lookups_per_material[m], offset );
+		offset += n_lookups_per_material[m];
+	}
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+	
+	////////////////////////////////////////////////////////////////////////////////
+	// Reduce Verification Results
+	////////////////////////////////////////////////////////////////////////////////
+	if( mype == 0)	printf("Reducing verification results...\n");
+
+	unsigned long verification_scalar = thrust::reduce(thrust::device, GSD.verification, GSD.verification + in.lookups, 0);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
+
+	return verification_scalar;
+}
+
+//XSutils.cu
+
+int double_compare(const void * a, const void * b)
+{
+	double A = *((double *) a);
+	double B = *((double *) b);
+
+	if( A > B )
+		return 1;
+	else if( A < B )
+		return -1;
+	else
+		return 0;
+}
+
+int NGP_compare(const void * a, const void * b)
+{
+	NuclideGridPoint A = *((NuclideGridPoint *) a);
+	NuclideGridPoint B = *((NuclideGridPoint *) b);
+
+	if( A.energy > B.energy )
+		return 1;
+	else if( A.energy < B.energy )
+		return -1;
+	else
+		return 0;
+}
+
+
+// RNG Used for Verification Option.
+// This one has a static seed (must be set manually in source).
+// Park & Miller Multiplicative Conguential Algorithm
+// From "Numerical Recipes" Second Edition
+double rn_v(void)
+{
+	static unsigned long seed = 1337;
+	double ret;
+	unsigned long n1;
+	unsigned long a = 16807;
+	unsigned long m = 2147483647;
+	n1 = ( a * (seed) ) % m;
+	seed = n1;
+	ret = (double) n1 / m;
+	return ret;
+}
+
+
+size_t estimate_mem_usage( Inputs in )
+{
+	size_t single_nuclide_grid = in.n_gridpoints * sizeof( NuclideGridPoint );
+	size_t all_nuclide_grids   = in.n_isotopes * single_nuclide_grid;
+	size_t size_UEG            = in.n_isotopes*in.n_gridpoints*sizeof(double) + in.n_isotopes*in.n_gridpoints*in.n_isotopes*sizeof(int);
+	size_t size_hash_grid      = in.hash_bins * in.n_isotopes * sizeof(int);
+	size_t memtotal;
+
+	if( in.grid_type == UNIONIZED )
+		memtotal          = all_nuclide_grids + size_UEG;
+	else if( in.grid_type == NUCLIDE )
+		memtotal          = all_nuclide_grids;
+	else
+		memtotal          = all_nuclide_grids + size_hash_grid;
+
+	memtotal          = ceil(memtotal / (1024.0*1024.0));
+	return memtotal;
+}
+
+double get_time(void)
+{
+	#ifdef MPI
+	return MPI_Wtime();
+	#endif
+
+	#ifdef OPENMP
+	return omp_get_wtime();
+	#endif
+
+	// If using C++, we can do this:
+	unsigned long us_since_epoch = std::chrono::high_resolution_clock::now().time_since_epoch() / std::chrono::microseconds(1);
+	return (double) us_since_epoch / 1.0e6;
+}
+
+/* ============================================================================
+ * END OF UNIFIED MINIMDOCK KERNEL FILE
+ * This entire file is one continuous implementation that must be regenerated
+ * completely when making any modifications. All kernel implementations above
+ * are interdependent parts of a single codebase.
+ * ============================================================================ */
+[/END OF CUDA CODE TO OPTIMIZE]
+
+For reference, the CUDA CODE TO OPTIMIZE provided above was executed on this system and consumed a total energy of 213.06 Joules at an average power of 52.75 Watts, which includes the idle system energy consumption and average power.

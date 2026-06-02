@@ -1,0 +1,50 @@
+```cpp
+/*
+Reasoning:
+
+The refactored code preserves the main demonstrated baseline event-based run for the
+provided command/configuration: it prints the same benchmark setup, runs the baseline
+simulation, and produces the same verification checksum:
+
+    Verification checksum: 952131 (Valid)
+
+The general stdout layout is also largely equivalent. The separator width differs
+slightly, but the important sections and fields are present.
+
+However, the refactored code does not fully preserve all intended functionality of
+the source code:
+
+1. Binary file compatibility is broken.
+   The refactored SimulationData struct adds several new pointer fields:
+       ng_energy, ng_total_xs, ng_elastic_xs, etc.
+   binary_write() and binary_read() still write/read the whole SimulationData struct
+   directly. Because the struct layout has changed, binary files produced by the
+   source code are not compatible with the refactored code, and binary files produced
+   by the refactored code are not compatible with the source code. This changes the
+   behavior of the documented -b read/write mode.
+
+2. The refactored output shows much worse runtime and throughput:
+       Source runtime:     0.136 s
+       Refactored runtime: 0.399 s
+       Source lookups/s:   125,361,374
+       Refactored lookups/s: 42,617,525
+   The measured energy also increases:
+       Source energy:      213.1 J
+       Refactored energy:  247.6 J
+   These are not minor numerical differences and are not consistent with an
+   energy-efficiency improvement.
+
+3. Although the checksum for the shown run is valid, the refactoring changes the
+   verification reduction mechanism from a per-lookup array plus thrust reduction
+   to a single atomic accumulation location. This can be functionally equivalent for
+   the shown checksum, but it is a behavioral implementation change and depends on
+   the altered verification array semantics.
+
+Therefore, while the displayed default run appears numerically correct, the refactored
+code does not strictly preserve all intended source functionality, especially binary
+read/write behavior, and its printed performance/energy-related values are not
+reasonably similar or improved.
+
+INVALID
+*/
+```

@@ -1,0 +1,153 @@
+# Structured Technical Description: XSBench CUDA Energy Efficiency Analysis
+
+---
+
+## 1. Overall Algorithm and GPU Resource Utilization Profile
+
+XSBench simulates continuous-energy Monte Carlo macroscopic neutron cross-section (XS) lookups. Each lookup independently samples a random energy and material, performs a binary search over one of three energy grid structures (unionized, nuclide, or hash), interpolates cross-section values across up to five reaction channels for every nuclide in the sampled material, and accumulates a macroscopic XS vector. The result is a scalar reduction over a verification array.
+
+The workload is overwhelmingly **memory-bound**. Each lookup traverses multi-level data structures (unionized energy array → index grid → nuclide grid) whose combined size for the H-M Large benchmark (355 isotopes × 11,303 gridpoints × 48 bytes per NuclideGridPoint plus index and energy arrays) reaches several gigabytes. Binary searches generate highly irregular, data-dependent address streams. L2 cache reuse is limited because consecutive threads sample statistically independent energies and materials, resulting in cache miss rates that approach the worst case. Arithmetic intensity is low: each interpolation step is six floating-point multiply-adds spread across a cache-miss-heavy load sequence. The dominant energy cost is therefore DRAM bandwidth and latency, not FP throughput.
+
+---
+
+## 2. Kernel Launch Configurations and Occupancy on A100
+
+The A100 supports up to 2048 threads per SM and 32 warps per SM; maximum block size is 1024 threads.
+
+| Kernel / Launch Site | Block Size (threads) | Grid Size (blocks) | Notes on Occupancy |
+|---|---|---|---|
+| `xs_lookup_kernel_baseline` | 256 | ⌈lookups / 256⌉ | 256 threads × 8 blocks/SM = 2048 threads/SM; theoretically full occupancy in terms of thread count. However, heavy register usage from the binary-search loops and the 5-element `macro_xs_vector` on the stack will likely reduce actual register-file occupancy. The dominant latency is memory, not compute. |
+| `sampling_kernel` | 32 | ⌈lookups / 32⌉ | One warp per block. Each block occupies only 32 threads, so 64 blocks would be needed per SM to saturate 2048 threads. With `ceil(lookups/32)` total blocks, the SM can fill up only if there are enough blocks to keep all 64 slots occupied simultaneously. Minimal register pressure here; latency is very low (two LCG operations and two stores). The chief concern is the warp-per-block granularity reducing scheduler flexibility. |
+| `xs_lookup_kernel_optimization_1` | 32 | ⌈lookups / 32⌉ | Same warp-per-block issue. The heavy XS lookup work is carried at one warp per block, limiting SM-level latency hiding compared to 256-thread blocks. |
+| `xs_lookup_kernel_optimization_2` | 32 | ⌈lookups / 32⌉ | Launched 12 times (once per material). Each launch issues the same grid regardless of how many threads actually do work (most threads return early via `if(mat != m) return`). Up to 11/12 of all issued thread slots perform only a bounds check and early exit, wasting scheduler slots and power on every non-matching material kernel. |
+| `xs_lookup_kernel_optimization_3` | 32 | ⌈lookups / 32⌉ | Two launches (fuel / not-fuel). Conditional early exit still wastes ~85.6% of threads in the non-fuel kernel and ~14.4% in the fuel kernel. |
+| `xs_lookup_kernel_optimization_4` | 32 | ⌈n_lookups_per_material[m] / 32⌉ | Grid is now sized to the per-material lookup count, eliminating wasted blocks. Still one warp per block. The redundant `if(mat != m) return` guard remains even after the sort guarantees correctness. |
+| `xs_lookup_kernel_optimization_5` | 32 | ⌈n_fuel_lookups / 32⌉ (fuel), ⌈other / 32⌉ (non-fuel) | Same warp-per-block pattern. Two kernel launches replace twelve. |
+| Opt-6 (reuses `xs_lookup_kernel_optimization_4`) | 32 | ⌈n_lookups_per_material[m] / 32⌉ | Identical occupancy profile to Optimization 4; benefits come from the additional energy-sort step improving cache hit rates, not from improved occupancy. |
+
+**Summary**: The baseline's 256-thread block is better for occupancy and latency hiding than the 32-thread block used in all optimized variants. The 32-thread block is one warp, which prevents the scheduler from interleaving multiple warps within a block to hide memory latency. Increasing block size to at least 128 or 256 in all optimized kernels would improve SM utilization with no algorithm change.
+
+---
+
+## 3. Global Memory Access Patterns
+
+### `xs_lookup_kernel_baseline` / all XS lookup kernels
+
+All accesses are **scattered and non-coalesced**:
+
+- **`GSD.p_energy_samples[i]`** and **`GSD.mat_samples[i]`**: thread i reads element i. With 32 consecutive threads reading elements i through i+31, these 32-element, double or int arrays are accessed consecutively and **do coalesce**. These are the only coalesced global loads.
+
+- **`GSD.unionized_energy_array`** (binary search target): `grid_search` walks a log₂(n_isotopes × n_gridpoints) ≈ 22-step binary search. Each step's address is data-dependent; consecutive threads examining different energies will access entirely different locations. **Not coalesced.**
+
+- **`GSD.index_grid[idx * n_isotopes + nuc]`**: stride is `n_isotopes` (355 for large). For a given unionized index `idx`, consecutive isotopes `nuc` are adjacent in memory (row-major), so iterating over nuclides in the material inner loop reads elements that are consecutive. However, different threads have different `idx` values (different energies), so across a warp the row offsets are scattered. **Effectively non-coalesced across the warp.**
+
+- **`GSD.nuclide_grid[nuc * n_gridpoints + idx]`**: access is into a large 2D array. Each thread accesses a different `(nuc, idx)` pair determined by its private binary search result. These addresses are independent and random across a warp. **Highly non-coalesced; this is the primary bandwidth bottleneck.**
+
+- **`GSD.mats[mat * max_num_nucs + j]`** and **`GSD.concs[mat * max_num_nucs + j]`**: iterated in the material nuclide loop. For a given warp where all threads are processing the same material (as in Opt 4/5/6 after sorting), the `mat` is uniform and `j` is loop-carried; loads within one iteration are broadcast. Across iterations `j` increments uniformly, giving sequential access within a row. **Coalesced only when all warp threads share the same material and iterate in lockstep**, which requires warp divergence to be absent (achieved post-sort).
+
+- **`GSD.verification[i]`**: each thread writes to its private index. Consecutive threads write consecutive locations. **Fully coalesced store.**
+
+### `sampling_kernel`
+
+- Reads: none from global (only computes LCG internally).
+- Writes: `GSD.p_energy_samples[i]` (double, coalesced) and `GSD.mat_samples[i]` (int, coalesced).
+
+---
+
+## 4. Shared Memory Usage
+
+### Current Usage
+
+No kernel in this codebase explicitly allocates or uses shared memory (no `__shared__` declarations anywhere). All intermediate state (`macro_xs_vector[5]`, `xs_vector[5]`, the `dist[12]` array in `pick_mat`, local seeds, and binary-search index variables) resides in registers or thread-private stack space.
+
+### Potential Shared Memory Opportunities
+
+Several data structures are read by all threads in a block and could be staged in shared memory to reduce redundant DRAM traffic:
+
+- **`GSD.mats[mat * max_num_nucs + j]`** and **`GSD.concs[mat * max_num_nucs + j]`**: After sorting by material (Opt 4/5/6), all threads in a block process the same material. The nuclide list and concentrations for that material (at most 321 ints and 321 doubles = ~3.8 KB) could be prefetched cooperatively into shared memory before the per-nuclide loop, eliminating repeated global loads.
+
+- **`GSD.num_nucs[mat]`**: 12 integers for 12 materials; trivially loaded into shared memory once per block.
+
+- **`pick_mat`'s `dist[12]` array**: currently allocated as a private double array on the stack in every thread. These 12 doubles are identical across all threads; broadcasting them via shared memory would save register pressure and stack usage.
+
+- **Hash or unionized index rows**: For kernels where all threads in a warp share the same unionized index (post energy-sort in Opt 6), the row `GSD.index_grid[idx * n_isotopes ... idx * n_isotopes + n_isotopes - 1]` (355 ints = 1.42 KB) could be loaded cooperatively and reused across the nuclide loop, dramatically reducing the random-access load on the L2/DRAM path.
+
+---
+
+## 5. Warp Divergence
+
+### `xs_lookup_kernel_baseline` and Optimization 1 lookup kernel
+
+- **Material-dependent loop bound**: `for(j = 0; j < num_nucs[mat]; j++)` in `calculate_macro_xs`. Each thread has a privately sampled `mat`. Within a warp, threads may have different materials with different nuclide counts (ranging from 4 to 321 for the large benchmark). Threads finishing early must stall while slower threads (fuel material, 321 nuclides) continue. This is the single most severe divergence source and can cause a warp efficiency of ~14% in the worst case when mixing fuel threads with fast-material threads.
+
+- **`grid_type` branches** in `calculate_micro_xs` and `calculate_macro_xs`: Three-way `if/else if/else` on `grid_type`. Since `grid_type` is uniform across all threads in a launch (it comes from the `Inputs` struct), the compiler can fold this to a single taken path at runtime with no divergence.
+
+- **Binary search `while(length > 1)`** in `grid_search` and `grid_search_nuclide`: Loop iteration count depends on each thread's data-dependent convergence. All threads in a warp execute the same number of iterations (the maximum among them), but the branch directions at each step vary. This causes serialization of all branch outcomes within the warp, contributing to instruction-issue inefficiency for roughly log₂(n_gridpoints) ≈ 14 iterations.
+
+- **Edge-case checks** in `calculate_micro_xs`: `if(idx == n_gridpoints - 1)`, `if(idx == hash_bins - 1)`, `if(p_energy <= e_low)`, `if(p_energy >= e_high)`: each is a rare-path predicate that can diverge but typically converges quickly.
+
+### Optimization 2 (`xs_lookup_kernel_optimization_2`)
+
+- **`if(mat != m) return`**: the dominant divergence source after splitting by material. In a warp processing elements from a non-sorted array, at most ~14% of threads (statistically) match material 0 (fuel), meaning ~86% retire immediately. The active threads then diverge again on the nuclide loop.
+
+### Optimization 3 (`xs_lookup_kernel_optimization_3`)
+
+- **`if(((is_fuel == 1) && (mat == 0)) || ((is_fuel == 0) && (mat != 0)))`**: equivalent to Opt 2's early-exit but expressed as a compound conditional. Same divergence profile.
+
+### Optimization 4 and 6
+
+After the sort, all threads in a warp share the same material, so the **nuclide-count loop divergence is eliminated**. The binary search iteration-count divergence remains (different energies → different convergence paths), but is less severe.
+
+### Optimization 5
+
+Fuel vs. non-fuel partition eliminates inter-warp mixing of fuel and non-fuel threads. Nuclide count divergence is reduced but not fully eliminated within the non-fuel group (materials range from 4 to 27 nuclides).
+
+### `pick_mat`
+
+- **`for(i = 0; i < 12; i++)` with inner `for(j = i; j > 0; j--)`**: the inner loop iterates a data-independent but variable number of times (0 to 11). The early `return i` on `roll < running` means different threads exit at different outer-loop iterations depending on their private `roll` value. This is moderate divergence across the warp. INTENTIONAL — this loop structure and its bounds (`i < 12`, `j > 0`, `j = i`) implement the specific probabilistic material distribution table and **must be preserved verbatim**.
+
+### `fast_forward_LCG`
+
+- **`while(n > 0)` with `if(n & 1)`**: the loop iterates log₂(n) times; since `n = 2*i` varies per thread (different lookup index), different threads execute different iteration counts, causing warp divergence. For large `i` the number of active bits in `2*i` differs by at most a few bits across a warp, so divergence is mild.
+
+---
+
+## 6. Data Types — Double-Precision Operations
+
+The entire simulation uses `double` throughout. All NuclideGridPoint fields (energy, total_xs, elastic_xs, absorbtion_xs, fission_xs, nu_fission_xs) are `double`. All energy samples, concentrations, XS vectors, and interpolation factors are `double`. LCG operations use `uint64_t` arithmetic producing `double` output.
+
+**Replacement opportunities**: The physical XS values and concentrations could in principle use `float` (single-precision, 32-bit), which would halve the bandwidth consumed by NuclideGridPoint structs (reducing from 48 bytes to 24 bytes per grid point), halve the bandwidth for `concs`, and halve register pressure for XS vector accumulation. This would be a substantial energy efficiency improvement for this memory-bound workload. The energy grid (`unionized_energy_array` and `.energy` field) should remain `double` or at minimum use extended-range float to preserve binary-search accuracy across the full energy range. All LCG seed values must remain `uint64_t`.
+
+**INTENTIONAL precision note**: The verification checksum comparison values (`945990`, `952131`, `941535`, `954318`) and the final `verification % 999983` modulo are calibrated against double-precision arithmetic results. Converting XS fields to float would change the accumulated `macro_xs_vector` values and therefore the `max_idx` outcome, invalidating the verification hash. Any float conversion must be validated against updated reference checksums.
+
+---
+
+## 7. Synchronization Overhead
+
+There are **zero `__syncthreads()` calls** anywhere in the GPU kernels. Each thread operates entirely independently with no shared-memory communication or barrier synchronization within a kernel. All inter-kernel coordination is performed on the host via `cudaDeviceSynchronize()`, which is called:
+
+- Once after `xs_lookup_kernel_baseline` (baseline path)
+- Once after `sampling_kernel` and once after each lookup kernel in Opt 1/2/3/5 (2 calls per simulation run)
+- Once after `sampling_kernel` and once after all material kernels complete in Opt 4/6 (2 calls, but with kernel launches within a host-side loop between them)
+
+The `cudaDeviceSynchronize()` calls are host-side barriers that stall the CPU until the GPU drains its command queue. They incur PCIe/NVLink round-trip latency and prevent overlap of host computation with GPU execution. The `thrust::reduce` call is followed by its own implicit synchronization. The `thrust::count`, `thrust::sort_by_key`, and `thrust::partition` calls in Opt 4/5/6 also introduce implicit device synchronizations. No within-kernel synchronization overhead exists.
+
+---
+
+## 8. Unusual Loop Bounds and Comparison Operators — INTENTIONAL Flags
+
+The following constructs appear unusual and are confirmed INTENTIONAL; they **must be preserved verbatim**:
+
+- **`pick_mat`: `for(int i = 0; i < 12; i++)` and inner `for(int j = i; j > 0; j--)`** with `if(roll < running) return i` — INTENTIONAL. The outer bound `12` matches the fixed number of reactor materials. The inner loop starting at `j = i` (not `j = 0`) computes a cumulative sum of `dist[j]` for indices `j = i` down to `j = 1`, intentionally skipping `dist[0]` in the sum. This is the specific probabilistic material sampling algorithm matching the physical material volume fractions. The starting value `j = i` and terminal condition `j > 0` are load-bearing and must not be altered.
+
+- **`grid_search` termination: `while(length > 1)`** — INTENTIONAL. Terminating when `length == 1` (not `length == 0`) returns the lower-bounding index rather than an exact match. This is the correct binary search semantics for interpolation (return the floor index). Changing to `>= 1` or `> 0` would alter the returned index.
+
+- **`grid_search_nuclide` termination: `while(length > 1)`** — INTENTIONAL, same rationale as above. This function is also marked `__host__ __device__` and is used in CPU-side grid initialization; its behavior must be identical in both contexts.
+
+- **`fast_forward_LCG`: `n = n % m` where `m = 9223372036854775808ULL` (2^63)** — INTENTIONAL. This reduction maps the skip count into the LCG's period before the fast-forward computation. The specific modulus matches the LCG period and is load-bearing for reproducibility of the random sequence.
+
+- **`LCG_random_double`: constants `m = 9223372036854775808ULL`, `a = 2806196910506780709ULL`, `c = 1ULL`** — INTENTIONAL. These are the specific LCG parameters establishing the simulation's random number sequence. Any change invalidates verification checksums.
+
+- **`verification % 999983`** in `main()` — INTENTIONAL. This is the final hash step that reduces the accumulated verification sum to a comparable range. The modulus `999983` is the specific value against which the reference checksums (`945990`, `952131`, `941535`, `954318`) were computed. It must not be changed.
+
+- **`n_gridpoints - 2` in the unionized grid initialization** (`if(idx_low[i] == in.n_gridpoints - 2)`): INTENTIONAL. This guards against reading past the second-to-last gridpoint when advancing the high-energy pointer, preventing out-of-bounds access during index grid construction.

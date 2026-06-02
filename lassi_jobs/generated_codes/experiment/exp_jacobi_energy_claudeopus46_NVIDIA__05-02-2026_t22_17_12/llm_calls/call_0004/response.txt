@@ -1,0 +1,35 @@
+Looking at the two codes, I need to evaluate functional equivalence and output similarity.
+
+## Key Differences Analysis
+
+### 1. Kernel Fusion (swap elimination)
+The refactored code fuses the Jacobi step and swap into one kernel by writing `new_val` to both `f[IDX(i,j)]` and `f_old[IDX(i,j)]`. This is **functionally different** from the original.
+
+In the original code:
+- `jacobi_step` reads from `f_old`, writes new values to `f`, computes error
+- `swap_data` copies `f` interior points back to `f_old`
+
+The fused version writes `new_val` to `f_old` **within the same kernel that reads from `f_old` via shared memory**. Since shared memory was already loaded before `__syncthreads()`, the write to `f_old` in global memory doesn't affect the current tile's computation. However, **neighboring tiles that haven't yet loaded their halo data could read the updated `f_old` values instead of the old ones**, creating a race condition. This is a classic Jacobi vs. Gauss-Seidel issue — writing back to `f_old` while other blocks may still be reading halos from it introduces non-deterministic behavior.
+
+### 2. Error Checking Frequency
+The original computes error **every iteration**. The refactored code only computes error every 100 iterations (`CHECK_INTERVAL = 100`). This means:
+- The convergence check happens less frequently, potentially running extra iterations past convergence
+- The loop exit condition depends on stale error values between checks
+- The error values printed at iterations 0 and 1000 may differ because the Jacobi iteration itself produces different results (due to the race condition in point 1)
+
+### 3. Output Comparison
+- Source: `Error after iteration 0 = 0.00276205`, `Error after iteration 1000 = 1.38643e-05`
+- Refactored: `Error after iteration 0 = 0.00278616`, `Error after iteration 1000 = 1.39257e-05`
+
+The error values differ slightly. While minor numerical differences can be acceptable for energy optimization, these differences stem from the **race condition** in the fused kernel (writing to `f_old` while other blocks read from it), which fundamentally changes the algorithm from Jacobi to a non-deterministic hybrid. This is not merely a precision optimization — it's a correctness issue.
+
+### 4. Convergence Behavior
+Both codes output "PASS", suggesting convergence was achieved. However, the refactored code converges to a slightly different solution path due to the race condition, and the error checking every 100 iterations means it could overshoot or undershoot the exact convergence point.
+
+## Conclusion
+
+The fused kernel introduces a **data race**: blocks writing `new_val` back to `f_old` while other concurrently executing blocks may still be loading halo elements from `f_old`. This changes the algorithm from a proper Jacobi iteration to a non-deterministic Gauss-Seidel-like iteration, which is **not functionally equivalent**. The numerical differences in the output confirm this. Additionally, checking error only every 100 iterations changes the iteration-by-iteration behavior of the original program.
+
+While both produce "PASS" and the output format is similar, the underlying computation is altered in a way that violates the requirement to preserve all program behavior and numerical computations.
+
+**INVALID**

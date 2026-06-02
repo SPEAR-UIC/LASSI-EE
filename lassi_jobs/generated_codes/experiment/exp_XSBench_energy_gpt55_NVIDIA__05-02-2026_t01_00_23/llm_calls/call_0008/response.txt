@@ -1,0 +1,38 @@
+```cpp
+/*
+The refactored code preserves the main tested event-based large/unionized baseline result in the provided run: it prints the same benchmark identity, same lookup count, same valid verification checksum value 952131, and a substantially similar output layout.
+
+However, it is not fully equivalent to the source code.
+
+Key issues:
+
+1. Binary file compatibility is broken.
+   The refactored code changes the SimulationData struct layout by adding several SoA pointer fields:
+     ng_energy, ng_total_xs, ng_elastic_xs, ng_absorbtion_xs, ng_fission_xs, ng_nu_fission_xs
+   But binary_write() and binary_read() still serialize/deserialize sizeof(SimulationData).
+   Therefore, files written by the source code are not compatible with the refactored code, and files written by the refactored code are not compatible with the source code. Since -b read/write is part of the intended CLI functionality, this is a functional regression.
+
+2. The refactored code changes the verification storage/reduction design.
+   For the provided run this still produces the correct checksum, but the behavior no longer matches the original per-lookup verification array semantics. The source writes one verification value per lookup and reduces the whole array; the refactored code atomically accumulates into only the first element of the allocated array. This is numerically acceptable for the checksum in the shown run, but it is a significant semantic change.
+
+3. The displayed output is mostly equivalent, but not entirely exact.
+   The border width differs slightly:
+     source:      ================================================================================
+     refactored:  ===============================================================================
+   This formatting difference is minor and likely acceptable by itself.
+
+4. Runtime and energy are substantially worse in the provided measurements.
+   Source:
+     Runtime: 0.136 s
+     Energy: 213.1 J
+   Refactored:
+     Runtime: 0.399 s
+     Energy: 244.1 J
+   This does not affect numerical correctness directly, but it contradicts the stated optimization expectation and the numerical timing/energy differences are not consistent with improved energy efficiency.
+
+Conclusion:
+Although the provided standard run reaches the same valid checksum and similar output, the refactored code does not preserve all intended functionality because it breaks binary read/write compatibility and materially changes internal verification behavior.
+
+INVALID
+*/
+```

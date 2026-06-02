@@ -1,0 +1,131 @@
+
+
+----- METRICS -----
+Experiment date-time: 2026-05-02 16:33:38
+Time (sec): 2695.33
+Self-correction iteration count: 8
+Energy efficiency improvement count: 2
+
+
+----- SOURCE: EXECUTION OUTPUT -----
+================================================================================
+                   __   __ ___________                 _                        
+                   \ \ / //  ___| ___ \               | |                       
+                    \ V / \ `--.| |_/ / ___ _ __   ___| |__                     
+                    /   \  `--. \ ___ \/ _ \ '_ \ / __| '_ \                    
+                   / /^\ \/\__/ / |_/ /  __/ | | | (__| | | |                   
+                   \/   \/\____/\____/ \___|_| |_|\___|_| |_|                   
+
+================================================================================
+                    Developed at Argonne National Laboratory
+                                   Version: 20
+================================================================================
+                                  INPUT SUMMARY
+================================================================================
+Programming Model:            CUDA
+CUDA Device:                  NVIDIA A100-SXM4-40GB
+Simulation Method:            Event Based
+Grid Type:                    Unionized Grid
+Materials:                    12
+H-M Benchmark Size:           large
+Total Nuclides:               355
+Gridpoints (per Nuclide):     11,303
+Unionized Energy Gridpoints:  4,012,565
+Total XS Lookups:             17,000,000
+Est. Memory Usage (MB):       5,649
+Binary File Mode:             Off
+================================================================================
+                         INITIALIZATION - DO NOT PROFILE
+================================================================================
+Intializing nuclide grids...
+Intializing unionized grid...
+Intializing material data...
+Intialization complete. Allocated 5648 MB of data on CPU.
+Allocating and moving simulation data to GPU memory space...
+GPU Intialization complete. Allocated 5778 MB of data on GPU.
+
+================================================================================
+                                   SIMULATION
+================================================================================
+Running baseline event-based simulation...
+Reducing verification results...
+
+Simulation complete.
+================================================================================
+                                     RESULTS
+================================================================================
+NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis
+Runtime:     0.136 seconds
+Lookups:     17,000,000
+Lookups/s:   125,162,885
+Verification checksum: 952131 (Valid)
+================================================================================
+
+=== Energy results ===
+{"energy_joules": 223.19, "avg_power_w": 55.0, "duration_s": 4.058, "num_samples": 4}=== Execution OK ===
+
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+================================================================================
+                   __   __ ___________                 _                        
+                   \ \ / //  ___| ___ \               | |                       
+                    \ V / \ `--.| |_/ / ___ _ __   ___| |__                     
+                    /   \  `--. \ ___ \/ _ \ '_ \ / __| '_ \                    
+                   / /^\ \/\__/ / |_/ /  __/ | | | (__| | | |                   
+                   \/   \/\____/\____/ \___|_| |_|\___|_| |_|                   
+
+================================================================================
+                    Developed at Argonne National Laboratory
+                                   Version: 20
+================================================================================
+                                  INPUT SUMMARY
+================================================================================
+Programming Model:            CUDA
+CUDA Device:                  NVIDIA A100-SXM4-40GB
+Simulation Method:            Event Based
+Grid Type:                    Unionized Grid
+Materials:                    12
+H-M Benchmark Size:           large
+Total Nuclides:               355
+Gridpoints (per Nuclide):     11,303
+Unionized Energy Gridpoints:  4,012,565
+Total XS Lookups:             17,000,000
+Est. Memory Usage (MB):       5,649
+Binary File Mode:             Off
+================================================================================
+                         INITIALIZATION - DO NOT PROFILE
+================================================================================
+Intializing nuclide grids...
+Intializing unionized grid...
+Intializing material data...
+Intialization complete. Allocated 5648 MB of data on CPU.
+Allocating and moving simulation data to GPU memory space...
+GPU Intialization complete. Allocated 5778 MB of data on GPU.
+
+================================================================================
+                                   SIMULATION
+================================================================================
+Running baseline event-based simulation...
+Reducing verification results...
+
+Simulation complete.
+================================================================================
+                                     RESULTS
+================================================================================
+NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis
+Runtime:     0.121 seconds
+Lookups:     17,000,000
+Lookups/s:   141,054,175
+Verification checksum: 952131 (Valid)
+================================================================================
+
+=== Energy results ===
+{"energy_joules": 220.095, "avg_power_w": 54.75, "duration_s": 4.02, "num_samples": 4}=== Execution OK ===
+
+
+
+----- ENERGY EFFICIENCY METRICS -----
+Total Energy (J):  Source code: 223.19  Refactored code: 220.09
+Average Power (W):  Source code: 55.0  Refactored code: 54.75
+Runtime (s):  Source code: 4.06  Refactored code: 4.02

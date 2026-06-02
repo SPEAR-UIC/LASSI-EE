@@ -1,0 +1,30 @@
+```cpp
+/*
+The REFACTORED CODE is not functionally equivalent to the SOURCE CODE.
+
+Key differences:
+1. The SOURCE CODE solves a fixed-size 16384 x 16384 Jacobi relaxation problem with sinusoidal boundary conditions.
+   The REFACTORED CODE defaults to a 1024 x 1024 problem and initializes values using:
+       ((row + 1) * (col + 1)) * 0.000001f
+   which is completely different from the source initialization.
+
+2. The SOURCE CODE iterates until the normalized L2 error is below 1.e-5f or until 10000 iterations.
+   The REFACTORED CODE runs a fixed number of iterations, defaulting to 100, and does not compute or check convergence.
+
+3. The SOURCE CODE computes and prints periodic error values, average execution time per iteration, PASS/FAIL, and total elapsed time.
+   The REFACTORED CODE only prints a checksum:
+       Checksum: ...
+   This is not nearly equivalent output in layout or content.
+
+4. The SOURCE CODE preserves boundary conditions by only updating interior points and initializes boundaries sinusoidally.
+   The REFACTORED CODE does not implement the same boundary conditions.
+
+5. The REFACTORED CODE introduces unrelated material/isotope data-loading functions that do not exist in the SOURCE CODE and are not part of the original Jacobi solver functionality.
+
+6. The command-line interface is changed. The SOURCE CODE takes no documented arguments, while the REFACTORED CODE adds -n, --size, -i, --iterations, and help behavior.
+
+7. The numerical result and purpose are completely different: the SOURCE CODE validates convergence with PASS/FAIL, while the REFACTORED CODE computes a checksum after a fixed simulation.
+
+Conclusion: INVALID
+*/
+```

@@ -1,0 +1,46 @@
+```cpp
+/*
+Reasoning:
+
+The refactored code preserves the main visible computation for the shown run:
+- It accepts the same command line style.
+- It initializes the same benchmark data.
+- It runs the baseline event-based simulation.
+- It prints the same major sections and key fields.
+- It produces the same final verification checksum for the shown large/event/unionized case:
+  952131 (Valid).
+
+However, it is not fully equivalent to the source code.
+
+Key issues:
+
+1. Binary file compatibility is broken.
+   The refactored SimulationData struct adds several new pointer fields:
+   ng_energy, ng_total_xs, ng_elastic_xs, ng_absorbtion_xs, ng_fission_xs, ng_nu_fission_xs.
+   binary_write() and binary_read() still write/read sizeof(SimulationData), so the binary file layout is no longer compatible with the source code. A file written by the source version would be misread by the refactored version, and vice versa. Since binary read/write mode is part of the intended CLI functionality, this is a functional regression.
+
+2. The displayed timing is substantially different and worse.
+   Source runtime:     0.136 seconds
+   Refactored runtime: 0.399 seconds
+
+   This is not a minor numerical difference; it is about 3x slower. The prompt allows minor numerical output differences only when they are reasonable and consistent with energy-efficiency improvement. Here the refactored code is slower.
+
+3. Energy metrics are worse, not improved.
+   Source energy:     213.1 J
+   Refactored energy: 245.8 J
+
+   Average power also increases from 52.8 W to 56.8 W. This contradicts the expected optimization direction.
+
+4. The output layout is mostly similar, but not exactly equivalent.
+   The border line length differs slightly from the source output. This alone might be acceptable, but combined with the runtime/energy regression and binary-mode incompatibility, the refactored code does not meet equivalence expectations.
+
+5. The refactored implementation changes the verification mechanism.
+   Instead of writing one verification value per lookup and reducing with thrust::reduce, it atomically accumulates block sums into GSD.verification[0]. For the shown run this produces the same checksum, but it is a behavioral implementation change and relies on unsigned long being layout-compatible with unsigned long long for the atomic reinterpret cast. It works on the tested platform but is less directly equivalent to the original behavior.
+
+Conclusion:
+
+The shown checksum is valid and the primary printed benchmark summary is mostly preserved, but the refactored code does not fully preserve all intended functionality due to binary I/O incompatibility, and its measured runtime and energy output are significantly worse rather than reasonably similar or improved.
+
+INVALID
+*/
+```

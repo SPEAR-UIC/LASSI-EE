@@ -1,0 +1,9 @@
+{
+    "Miniapps": {
+        "XSBench": {
+            "app_folder": "XSBench/cuda",
+            "app_params": ["-m", "event"],
+            "code_lines": 2200
+        }
+    }
+}

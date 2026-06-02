@@ -1,0 +1,51 @@
+```cpp
+/*
+INVALID
+
+Reasoning:
+The refactored code does not preserve the SOURCE CODE's functionality.
+
+Key issue:
+The refactored hierarchical reduction kernels are mathematically incorrect.
+
+In reduce_partials_256() and reduce_final_256(), the reduction performs:
+
+  if (tid < 128) smem[tid] += smem[tid + 128];
+  if (tid < 64)  smem[tid] += smem[tid + 64];
+
+Then only tid < 32 participates in the warp-level reduction.
+
+This omits smem[32..63] from the final sum. Therefore each reduction kernel only sums half of the already partially reduced values. Since the refactored code applies this flawed reduction at two levels, the final accumulated squared error is approximately one quarter of the correct value, causing the reported L2 error to be approximately one half of the SOURCE CODE's value.
+
+This is confirmed by the output:
+
+SOURCE:
+  Error after iteration 0 = 0.00276205
+
+REFACTORED:
+  Error after iteration 0 = 0.00138103
+
+The refactored value is almost exactly half of the source value, which is not a minor acceptable numerical difference. It changes the convergence behavior and allows the program to reach PASS earlier than it should because the convergence error is underestimated.
+
+Output equivalence:
+The SOURCE CODE prints:
+  Error after iteration 0
+  Error after iteration 1000
+  Average execution time per iteration
+  PASS
+  Total elapsed time
+
+The REFACTORED CODE prints:
+  Error after iteration 0
+  Average execution time per iteration
+  PASS
+  Total elapsed time
+
+The missing "Error after iteration 1000" line is a consequence of the incorrect underestimated error causing earlier termination. This is a functional difference, not merely a formatting difference.
+
+Although the refactored code reduces energy consumption, it does so by changing the numerical behavior and convergence criterion. Therefore it is not functionally equivalent.
+
+Conclusion:
+INVALID
+*/
+```

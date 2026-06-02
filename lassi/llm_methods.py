@@ -1,7 +1,24 @@
-from IPython.display import display, Markdown
+"""LLM interaction helpers.
+
+This module was originally written for Jupyter notebooks and used IPython display.
+For standalone script usage, we gracefully fall back to plain printing.
+
+It also supports optional per-call logging via [`lassi.llm_call_logger.LLMCallLogger`](LASSI-EE/lassi/llm_call_logger.py:1).
+"""
+
 import re
 from lassi.llm_config import argo_llm, cerebras_llm, ollama_llm, ollama_llm_nostream
 from lassi.format_colors import color
+
+try:
+    from IPython.display import display, Markdown  # type: ignore
+except Exception:  # pragma: no cover
+    display = None  # type: ignore
+    Markdown = None  # type: ignore
+
+# Optional global logger hook (set by runner script)
+LLM_CALL_LOGGER = None
+LLM_CALL_COUNTER = 0
 
 
 def llm_code_compare(prompts, input_content_llmjudge_dict, source_duration, source_total_energy_joules, source_ave_power, refactored_duration, refactored_total_energy_joules, refactored_ave_power, llm_source, model, num_ctx, system_prompt, display_response, verifyprompt, uri):
@@ -34,6 +51,23 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
     if intent == "code analysis":
         print("\n\n" + color.GREEN + "--> ... " + color.UNDERLINE + "prompt LLM to perform code analysis." + color.END + "\n")
         
+    global LLM_CALL_COUNTER
+    LLM_CALL_COUNTER += 1
+    call_id = LLM_CALL_COUNTER
+
+    if LLM_CALL_LOGGER is not None:
+        try:
+            LLM_CALL_LOGGER.print_call_summary(
+                call_id=call_id,
+                intent=intent,
+                context_components={
+                    "system_prompt": {"chars": len(system_prompt)},
+                    "user_prompt": {"chars": len(content_prompt)},
+                },
+            )
+        except Exception:
+            pass
+
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt, 0.2, verifyprompt, uri)
     elif llm_source == "lmstudio":
@@ -43,11 +77,30 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
     else:
-        print("Invalid LLM source")
+        raise ValueError(f"Invalid LLM source: {llm_source}")
+
+    if LLM_CALL_LOGGER is not None:
+        try:
+            LLM_CALL_LOGGER.log_call(
+                call_id=call_id,
+                intent=intent,
+                llm_source=llm_source,
+                model=model,
+                num_ctx=num_ctx,
+                system_prompt=system_prompt,
+                user_prompt=content_prompt,
+                response_text=response_text,
+            )
+        except Exception:
+            pass
 
     print("\n\n----- " + color.BOLD + color.BLUE + "LLM RESPONSE: " + intent + color.END + " -----\n")
     if display_response:
-        display(Markdown(response_text))
+        if display is not None and Markdown is not None:
+            display(Markdown(response_text))
+        else:
+            # Standalone mode: avoid dumping huge responses unless explicitly requested.
+            print("(display_response requested, but IPython is unavailable; response saved to logs if enabled)")
 
     return response_text
 
@@ -293,6 +346,23 @@ def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_
     # print("  content_prompt: " + str(content_prompt))
     # print("  display_response: " + str(display_response))
     
+    global LLM_CALL_COUNTER
+    LLM_CALL_COUNTER += 1
+    call_id = LLM_CALL_COUNTER
+
+    if LLM_CALL_LOGGER is not None:
+        try:
+            LLM_CALL_LOGGER.print_call_summary(
+                call_id=call_id,
+                intent="code generation",
+                context_components={
+                    "system_prompt": {"chars": len(system_prompt)},
+                    "user_prompt": {"chars": len(content_prompt)},
+                },
+            )
+        except Exception:
+            pass
+
     if llm_source == "argo":
         response_text = argo_llm(model, system_prompt, content_prompt, temp, verifyprompt)
     elif llm_source == "lmstudio":
@@ -302,8 +372,24 @@ def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
     else:
-        print("Invalid LLM source")
-        
+        raise ValueError(f"Invalid LLM source: {llm_source}")
+
+    if LLM_CALL_LOGGER is not None:
+        try:
+            LLM_CALL_LOGGER.log_call(
+                call_id=call_id,
+                intent="code generation",
+                llm_source=llm_source,
+                model=model,
+                num_ctx=num_ctx,
+                system_prompt=system_prompt,
+                user_prompt=content_prompt,
+                response_text=response_text,
+                meta={"temperature": temp},
+            )
+        except Exception:
+            pass
+
     print("\n\n----- " + color.BOLD + color.BLUE + "THE GENERATED CODE" + color.END + " -----\n")
     if display_response:
         print("(hidden)\n\n")

@@ -1,0 +1,540 @@
+## CUDA-to-SYCL 2020 migration summary for Intel GPUs with `icpx`
+
+### 1. Overall model and terminology mapping
+
+CUDA and SYCL use very similar data-parallel execution models, but with different terminology and syntax:
+
+| CUDA | SYCL 2020 |
+|---|---|
+| kernel | kernel |
+| grid | global range / ND-range |
+| block | work-group |
+| thread | work-item |
+| warp | sub-group |
+| shared memory | local memory |
+| stream | queue |
+| `__syncthreads()` | `sycl::group_barrier()` |
+| `threadIdx`, `blockIdx`, `blockDim`, `gridDim` | `sycl::nd_item` queries |
+
+SYCL is standard C++: kernels are usually lambdas passed to `parallel_for`, not functions marked with `__global__`, and launches use normal C++ calls instead of CUDA’s `<<< >>>` syntax.
+
+For Intel GPUs, typical compilation is:
+
+```bash
+icpx -fsycl source.cpp -o app
+```
+
+Device selection can also be influenced at runtime, for example:
+
+```bash
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu ./app
+```
+
+---
+
+### 2. Memory model and USM
+
+SYCL supports buffers/accessors and Unified Shared Memory. When porting CUDA code, USM is usually the closest match to CUDA pointer-based programming.
+
+Common USM allocation types:
+
+```cpp
+int *d = sycl::malloc_device<int>(n, q);
+int *s = sycl::malloc_shared<int>(n, q);
+int *h = sycl::malloc_host<int>(n, q);
+```
+
+#### `malloc_device`
+
+Closest to `cudaMalloc`.
+
+- Pointer is accessible from device kernels.
+- Host cannot directly dereference it.
+- Use explicit copies:
+
+```cpp
+q.memcpy(d, host_ptr, n * sizeof(int)).wait();
+q.memcpy(host_ptr, d, n * sizeof(int)).wait();
+```
+
+#### `malloc_shared`
+
+Closest to CUDA managed memory / unified memory.
+
+- Pointer can be dereferenced by both host and device.
+- Simpler for migration.
+- May involve implicit migration or coherence costs.
+- Good for correctness-first ports, but explicit device memory may perform better for bandwidth-sensitive code.
+
+#### `malloc_host`
+
+Closest to pinned host memory such as `cudaMallocHost`.
+
+- Host allocation associated with the SYCL context.
+- Device can access it, but accesses may be slower than device memory.
+- Useful for staging buffers or host-device transfers.
+
+Free USM memory with:
+
+```cpp
+sycl::free(ptr, q);
+```
+
+SYCL, like CUDA, has a weakly ordered memory model. Kernel launches, copies, fills, and other queue operations are generally asynchronous. Use events, dependencies, in-order queues, or `wait()` / `wait_and_throw()` to order work.
+
+---
+
+### 3. Queue and device setup
+
+CUDA uses devices and streams. SYCL uses devices, contexts, and queues.
+
+A simple Intel GPU queue:
+
+```cpp
+sycl::queue q{sycl::gpu_selector_v};
+```
+
+An in-order queue, closer to a CUDA stream:
+
+```cpp
+sycl::queue q{
+    sycl::gpu_selector_v,
+    sycl::property::queue::in_order{}
+};
+```
+
+With asynchronous exception handling:
+
+```cpp
+sycl::queue q{
+    sycl::gpu_selector_v,
+    [](sycl::exception_list elist) {
+        for (auto &e : elist) {
+            try {
+                std::rethrow_exception(e);
+            } catch (const sycl::exception &ex) {
+                std::cerr << ex.what() << "\n";
+            }
+        }
+    },
+    sycl::property::queue::in_order{}
+};
+```
+
+CUDA streams are in-order by default. SYCL queues are out-of-order by default unless created with `property::queue::in_order`.
+
+This is an important migration point:
+
+- CUDA stream behavior maps naturally to an in-order SYCL queue.
+- For out-of-order queues, use events or explicit dependencies.
+- Multiple CUDA streams can often be translated to multiple SYCL queues.
+
+Device name query:
+
+```cpp
+std::cout << q.get_device().get_info<sycl::info::device::name>() << "\n";
+```
+
+---
+
+### 4. Kernel dispatch
+
+CUDA:
+
+```cpp
+kernel<<<grid, block>>>(args);
+cudaDeviceSynchronize();
+```
+
+SYCL:
+
+```cpp
+q.submit([&](sycl::handler &h) {
+    h.parallel_for(
+        sycl::nd_range<1>{global_size, local_size},
+        [=](sycl::nd_item<1> item) {
+            // kernel body
+        });
+}).wait();
+```
+
+Or, for simple 1D kernels without explicit work-groups:
+
+```cpp
+q.parallel_for(sycl::range<1>{n}, [=](sycl::id<1> i) {
+    data[i] = i;
+}).wait();
+```
+
+Use `wait_and_throw()` instead of `wait()` if you want asynchronous exceptions to be reported:
+
+```cpp
+q.wait_and_throw();
+```
+
+---
+
+### 5. `nd_range` and thread indexing
+
+CUDA launch:
+
+```cpp
+kernel<<<numBlocks, threadsPerBlock>>>(...);
+```
+
+Equivalent SYCL 1D launch:
+
+```cpp
+sycl::range<1> local{threadsPerBlock};
+sycl::range<1> global{numBlocks * threadsPerBlock};
+
+q.parallel_for(
+    sycl::nd_range<1>{global, local},
+    [=](sycl::nd_item<1> item) {
+        size_t tid = item.get_global_id(0);
+        size_t lid = item.get_local_id(0);
+        size_t bid = item.get_group(0);
+        size_t blockDim = item.get_local_range(0);
+        size_t gridDim = item.get_group_range(0);
+    });
+```
+
+CUDA indexing:
+
+```cpp
+int gid = blockIdx.x * blockDim.x + threadIdx.x;
+int lid = threadIdx.x;
+int bid = blockIdx.x;
+```
+
+SYCL equivalent:
+
+```cpp
+size_t gid = item.get_global_id(0);
+size_t lid = item.get_local_id(0);
+size_t bid = item.get_group(0);
+```
+
+Or explicitly:
+
+```cpp
+size_t gid = item.get_group(0) * item.get_local_range(0)
+           + item.get_local_id(0);
+```
+
+#### Multidimensional indexing pitfall
+
+CUDA treats the `x` dimension as the fastest-moving / contiguous dimension.
+
+SYCL follows C++ multidimensional convention: the last dimension is fastest-moving.
+
+So CUDA:
+
+```cpp
+dim3 block(x, y, z);
+dim3 grid(gx, gy, gz);
+```
+
+often maps conceptually to SYCL with dimensions reversed:
+
+```cpp
+sycl::range<3> local{z, y, x};
+sycl::range<3> global{gz * z, gy * y, gx * x};
+```
+
+In SYCL:
+
+```cpp
+item.get_local_id(2)   // corresponds roughly to CUDA threadIdx.x
+item.get_local_id(1)   // corresponds roughly to CUDA threadIdx.y
+item.get_local_id(0)   // corresponds roughly to CUDA threadIdx.z
+```
+
+This dimension-ordering difference is one of the most common CUDA-to-SYCL migration bugs.
+
+---
+
+### 6. Local memory / CUDA shared memory
+
+CUDA shared memory:
+
+```cpp
+__shared__ int scratch[256];
+```
+
+SYCL local memory uses `local_accessor`, created inside the command group:
+
+```cpp
+q.submit([&](sycl::handler &h) {
+    sycl::local_accessor<int, 1> scratch{sycl::range<1>{256}, h};
+
+    h.parallel_for(
+        sycl::nd_range<1>{global, local},
+        [=](sycl::nd_item<1> item) {
+            size_t lid = item.get_local_id(0);
+            scratch[lid] = ...;
+        });
+});
+```
+
+Dynamic shared memory in CUDA maps naturally to a `local_accessor` whose size is computed on the host before submission.
+
+Local memory is per work-group, just as CUDA shared memory is per block.
+
+---
+
+### 7. Synchronization
+
+CUDA:
+
+```cpp
+__syncthreads();
+```
+
+SYCL:
+
+```cpp
+sycl::group_barrier(item.get_group());
+```
+
+Or:
+
+```cpp
+item.barrier();
+```
+
+For sub-group / warp-level synchronization:
+
+```cpp
+sycl::group_barrier(item.get_sub_group());
+```
+
+By default, a work-group barrier provides the expected synchronization and memory-ordering behavior for local memory, similar to `__syncthreads()`.
+
+A key semantic difference:
+
+- CUDA `__syncthreads()` synchronizes non-exited threads in a block.
+- SYCL `group_barrier()` requires all work-items in the work-group to reach the barrier, unless control flow is uniform.
+
+This CUDA pattern is dangerous in SYCL:
+
+```cpp
+if (gid >= n) return;
+
+sycl::group_barrier(item.get_group());
+```
+
+It can deadlock because some work-items return before the barrier. Prefer:
+
+```cpp
+bool valid = gid < n;
+
+sycl::group_barrier(item.get_group());
+
+if (valid) {
+    ...
+}
+```
+
+or structure the kernel so all work-items either reach or uniformly skip the barrier.
+
+---
+
+### 8. Atomics
+
+CUDA legacy atomics:
+
+```cpp
+atomicAdd(ptr, 1);
+```
+
+are generally relaxed, device-scope atomics.
+
+SYCL uses `sycl::atomic_ref`, modeled after C++ atomics:
+
+```cpp
+sycl::atomic_ref<
+    int,
+    sycl::memory_order::relaxed,
+    sycl::memory_scope::device
+> aref(*ptr);
+
+aref.fetch_add(1);
+```
+
+This is usually the closest equivalent to CUDA `atomicAdd`.
+
+For local memory atomics, use local-space atomic references when appropriate:
+
+```cpp
+sycl::atomic_ref<
+    int,
+    sycl::memory_order::relaxed,
+    sycl::memory_scope::work_group,
+    sycl::access::address_space::local_space
+> aref(local_value);
+```
+
+Important migration points:
+
+- SYCL atomics require you to choose memory order and memory scope as part of the type.
+- CUDA legacy atomics often imply relaxed/device behavior.
+- CUDA C++ `cuda::atomic_ref` defaults can differ from SYCL.
+- Not all devices support all atomic types, operations, and scopes.
+- For Intel GPUs, check device capabilities if using unusual atomic widths, floating-point atomics, or system-scope atomics.
+
+---
+
+### 9. Sub-groups versus warps
+
+CUDA warp-level programming often assumes warp size is 32.
+
+SYCL uses sub-groups:
+
+```cpp
+auto sg = item.get_sub_group();
+```
+
+Sub-group size is device-dependent. Do not hard-code 32 unless you have explicitly required or queried it.
+
+CUDA shuffle:
+
+```cpp
+__shfl_xor_sync(mask, value, lane);
+```
+
+SYCL equivalent style:
+
+```cpp
+auto result = sycl::permute_group_by_xor(sg, value, lane);
+```
+
+Pitfall: Intel GPU sub-group sizes may differ from NVIDIA warp size. Code relying on warp size, lane masks, or implicit warp-synchronous behavior may need restructuring.
+
+---
+
+### 10. Common CUDA-to-SYCL pitfalls
+
+#### Queue ordering
+
+CUDA streams are in-order. SYCL queues are out-of-order by default.
+
+Use:
+
+```cpp
+sycl::property::queue::in_order{}
+```
+
+for CUDA-like behavior, or manage dependencies explicitly with events.
+
+#### Multidimensional dimension order
+
+CUDA `x` is fastest-moving. SYCL’s last dimension is fastest-moving.
+
+Incorrect dimension mapping can silently transpose indexing and break memory coalescing.
+
+#### Barrier control flow
+
+All SYCL work-items in a work-group must reach a work-group barrier. Avoid early returns before `group_barrier`.
+
+#### Atomics defaults
+
+CUDA legacy atomics are often relaxed/device-scope. SYCL atomics require explicit memory order and scope. Overly strong ordering, such as sequential consistency or system scope, may hurt performance.
+
+#### Warp assumptions
+
+Do not assume sub-group size is 32. Avoid CUDA warp-synchronous programming patterns unless translated carefully to SYCL sub-group collectives.
+
+#### Error handling
+
+CUDA APIs return error codes. SYCL reports synchronous and asynchronous errors using exceptions.
+
+Use:
+
+```cpp
+q.wait_and_throw();
+```
+
+and provide an async handler for robust error reporting.
+
+#### Context mixing
+
+SYCL objects such as queues, allocations, kernels, and events belong to contexts. Avoid mixing objects from different contexts unless you know it is valid.
+
+#### Global device variables
+
+CUDA supports `__device__` and some forms of global device state. Standard SYCL 2020 does not have a direct general equivalent. Pass data explicitly through kernel arguments or USM pointers.
+
+#### Shared memory globals
+
+CUDA file-scope or kernel-scope `__shared__` arrays should usually become `local_accessor` objects created in the `q.submit` command group.
+
+#### CUDA-specific features
+
+Some CUDA features do not have direct standard SYCL equivalents or may require extensions or redesign:
+
+- cooperative groups beyond standard SYCL groups/sub-groups;
+- grid-wide synchronization;
+- CUDA-specific texture/surface APIs;
+- CUDA dynamic parallelism;
+- CUDA-specific tensor core / WMMA APIs;
+- device global variables;
+- inline PTX.
+
+#### Performance portability
+
+A direct mechanical translation may be correct but not optimal on Intel GPUs. Tune:
+
+- work-group size;
+- sub-group size where appropriate;
+- memory layout;
+- USM allocation type;
+- local memory usage;
+- atomic scope/order;
+- kernel fusion and queue dependencies.
+
+---
+
+### 11. Typical CUDA-to-SYCL pattern
+
+CUDA:
+
+```cpp
+__global__ void kernel(int *a, int n) {
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < n) {
+        a[gid] = gid;
+    }
+}
+
+int *d;
+cudaMalloc(&d, n * sizeof(int));
+kernel<<<(n + 255) / 256, 256>>>(d, n);
+cudaDeviceSynchronize();
+```
+
+SYCL:
+
+```cpp
+sycl::queue q{sycl::gpu_selector_v,
+              sycl::property::queue::in_order{}};
+
+int *d = sycl::malloc_device<int>(n, q);
+
+size_t local = 256;
+size_t global = ((n + local - 1) / local) * local;
+
+q.parallel_for(
+    sycl::nd_range<1>{sycl::range<1>{global},
+                      sycl::range<1>{local}},
+    [=](sycl::nd_item<1> item) {
+        size_t gid = item.get_global_id(0);
+        if (gid < n) {
+            d[gid] = gid;
+        }
+    });
+
+q.wait_and_throw();
+
+sycl::free(d, q);
+```

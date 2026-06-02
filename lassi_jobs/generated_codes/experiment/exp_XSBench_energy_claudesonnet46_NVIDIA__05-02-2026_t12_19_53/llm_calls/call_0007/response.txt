@@ -1,0 +1,39 @@
+Looking at both codes and their outputs, I need to evaluate whether the REFACTORED CODE preserves all intended functionality and produces nearly equivalent standard output.
+
+## Functional Analysis
+
+### Key Differences in the Refactored Code:
+
+1. **Thread block sizes changed**: The refactored code uses 256 threads for sampling/lookup kernels (optimization 1+) instead of 32 in the source. This is a valid optimization for better occupancy.
+
+2. **`__ldg()` intrinsics added**: Read-only cache hints added for `index_data`, `mat_samples`, `p_energy_samples`, `num_nucs`, `mats`, `concs` arrays — valid optimization.
+
+3. **`__launch_bounds__` added**: Added to several kernels for compiler optimization hints.
+
+4. **`#pragma unroll` added**: For small inner loops (5 iterations) — valid optimization.
+
+5. **Shared memory optimization in kernel 4**: The refactored kernel 4 uses dynamic shared memory to cache `mats` and `concs` for a given material, with a new `calculate_macro_xs_shared` helper function. This is a valid optimization that preserves correctness.
+
+6. **All 7 kernel variants (0-6) are fully implemented**: No stubs or missing functions.
+
+7. **All logic preserved**: CLI parsing, binary read/write, grid initialization, material loading — all identical in logic.
+
+### Standard Output Comparison:
+
+| Field | Source | Refactored |
+|-------|--------|------------|
+| Logo/header | ✓ identical | ✓ identical |
+| Input summary | ✓ identical | ✓ identical |
+| Initialization messages | ✓ identical | ✓ identical |
+| Simulation messages | ✓ identical | ✓ identical |
+| Runtime | 0.136 s | 0.140 s (minor difference, acceptable) |
+| Lookups | 17,000,000 | 17,000,000 ✓ |
+| Lookups/s | 125,295,728 | 121,295,728 (minor, consistent with timing) |
+| **Verification checksum** | **952131 (Valid)** | **952131 (Valid)** ✓ |
+| Energy | 209.7 J | 208.7 J (slightly lower, consistent with optimization goal) |
+
+The verification checksum matches exactly (952131), confirming numerical correctness. The runtime difference is minor and consistent with measurement variability. The energy is slightly lower, consistent with the optimization goal.
+
+All functions are fully implemented, all logic is preserved, and the output format matches.
+
+VALID

@@ -1,0 +1,12 @@
+Fix the SYCL translation so it compiles and runs correctly with icpx (Intel oneAPI DPC++/C++ compiler), while preserving ALL original program behavior and stdout output. CRITICAL: Return a COMPLETE faithful translation of the entire original source — do NOT generate stubs or simplified versions. Return ONLY a single fenced code block (```cpp\n...\n```) with the full corrected source. Do not include any explanation. STRICTLY FORBIDDEN in your corrected code — these will cause automatic rejection: (A) Do NOT hardcode any verification checksum value. Statements like 'return 952131ULL', 'return 945990ULL', 'return 941535ULL', 'return 954318ULL', or any other constant returned from a simulation function are forbidden. The checksum MUST be produced by actually executing GPU kernels and reducing the per-thread verification results. (B) Every run_*_simulation_* function MUST contain a real q.submit(parallel_for(...)) kernel body that performs the full cross-section lookup computation. Do NOT stub these out with (void)GSD; (void)in; or by forwarding to another function that returns a constant. (C) load_num_nucs(), load_mats(), and load_concs() MUST faithfully reproduce the physics-accurate material data from the original CUDA source — do NOT replace them with trivial loops or placeholder values. (D) read_CLI() MUST parse argc/argv and apply all command-line options — do NOT ignore argc/argv with (void)argc; (void)argv;. (E) Do NOT alter loop bounds, comparison operators, or index arithmetic — even if they appear to be off-by-one errors. A `j > 0` loop condition in the original MUST stay `j > 0`, not become `j >= 0`. These are numerically significant algorithmic decisions, not typos.
+
+[START OF CODE TO FIX]
+{"response":"You selected: gpt-5, which is an invalid model. Consult the documentation for details: https://anl.app.box.com/notes/1444961193376?s=ubtrsefonqeo9xppdzcurezy8rzsbs96"}
+
+[/END OF CODE TO FIX]
+ -- Compile error: 
+ERROR: Compiler 'icpx' not found in PATH.
+  Loaded PATH: /bin:/usr/bin
+
+Fix: set SYCL_COMPILER to the full path of your SYCL compiler,
+     or load the appropriate module before submitting.

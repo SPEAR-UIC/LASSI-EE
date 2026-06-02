@@ -1,0 +1,543 @@
+## 1. Overall algorithm and GPU resource utilization profile
+
+### Algorithm
+- The profiled computation is an event-based XSBench-style macroscopic cross-section lookup.
+- Each lookup:
+  1. Generates or reads a sampled neutron energy.
+  2. Generates or reads a sampled material ID.
+  3. For every nuclide in that material, performs a microscopic cross-section lookup.
+  4. Interpolates five cross-section channels.
+  5. Accumulates them into a five-element macroscopic cross-section vector.
+  6. Writes a small verification value.
+- The main workload is in `calculate_macro_xs()` and `calculate_micro_xs()`, which perform repeated lookups into large nuclide/energy grids.
+
+### Resource profile
+- The dominant kernels are primarily memory-latency-bound and control-flow-bound, not pure compute-bound.
+- Although there are many double-precision operations, the expensive part is irregular access to large global-memory tables:
+  - `nuclide_grid`
+  - `index_grid`
+  - `unionized_energy_array`
+  - `mats`
+  - `concs`
+- On an A100, FP64 throughput is high, so the random global-memory behavior and branch divergence are likely more limiting than raw arithmetic throughput.
+- The workload has poor temporal locality in baseline and early optimized variants because each thread samples independent random energies and materials.
+- `NUCLIDE` grid mode is especially branch- and memory-latency-heavy because each nuclide lookup performs a binary search.
+- `UNIONIZED` mode reduces per-nuclide binary search cost but introduces very large random accesses to `index_grid`.
+- `HASH` mode reduces search range but still has random per-thread access patterns.
+
+### Energy-efficiency opportunities
+- Reduce random global-memory traffic by grouping lookups by material and energy, as done in optimizations 4–6.
+- Optimization 6 has the best energy-efficiency potential because material and energy sorting improves warp coherence, cache locality, and binary-search path similarity.
+- Avoid unnecessary kernel launches and full-array passes when the sorting or partitioning overhead exceeds the locality benefit.
+- Move small read-only tables such as material distributions, `num_nucs`, `mats`, and possibly `concs` into constant memory or shared memory to reduce repeated global loads.
+- Consider cooperative warp-level or block-level processing for fuel material lookups, where one thread currently performs hundreds of nuclide lookups serially.
+- Consider replacing many double-precision quantities with single precision if benchmark accuracy and checksum requirements allow.
+
+---
+
+## 2. CUDA kernel launch configurations and A100 occupancy assessment
+
+### Baseline
+- Kernel: `xs_lookup_kernel_baseline`
+- Launch configuration:
+  - Threads per block: 256
+  - Blocks: `ceil(in.lookups / 256)`
+- A100 occupancy assessment:
+  - 256-thread blocks correspond to 8 warps per block.
+  - Theoretical occupancy can be high on A100 if register usage is not excessive.
+  - The kernel uses several local arrays and inlined device functions, so register pressure may reduce occupancy.
+  - Even with good occupancy, memory latency and divergence are likely dominant.
+
+### Optimization 1
+- Kernels:
+  - `sampling_kernel`
+  - `xs_lookup_kernel_optimization_1`
+- Launch configuration for both:
+  - Threads per block: 32
+  - Blocks: `ceil(in.lookups / 32)`
+- A100 occupancy assessment:
+  - 32-thread blocks contain exactly one warp.
+  - A100 has a maximum block residency limit per SM; one-warp blocks can hit the block limit before reaching the maximum 64 resident warps.
+  - Maximum theoretical warp occupancy is likely around 50% if limited to 32 resident blocks per SM.
+  - Sampling is simple and likely not occupancy-sensitive.
+  - Lookup kernel may suffer because memory-latency hiding is weaker than with larger blocks.
+
+### Optimization 2
+- Kernels:
+  - `sampling_kernel`
+  - `xs_lookup_kernel_optimization_2`, launched once per material, 12 total launches.
+- Launch configuration:
+  - `sampling_kernel`: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+  - Each material lookup kernel: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+- A100 occupancy assessment:
+  - Same one-warp-block occupancy limitation as Optimization 1.
+  - Each material kernel scans the full lookup set and exits early for nonmatching material.
+  - This wastes energy because many threads only load `mat_samples[i]` and return.
+  - Occupancy may appear adequate, but useful occupancy is low for rare materials.
+
+### Optimization 3
+- Kernels:
+  - `sampling_kernel`
+  - `xs_lookup_kernel_optimization_3`, launched twice: once for non-fuel and once for fuel.
+- Launch configuration:
+  - `sampling_kernel`: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+  - Lookup kernels: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+- A100 occupancy assessment:
+  - Same one-warp-block limitation.
+  - Less launch and scan overhead than Optimization 2.
+  - Still scans the full lookup array twice.
+  - Better energy profile than Optimization 2, but still performs many inactive-thread checks.
+
+### Optimization 4
+- Kernels:
+  - `sampling_kernel`
+  - `xs_lookup_kernel_optimization_4`, launched once per material after material sorting.
+- Launch configuration:
+  - `sampling_kernel`: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+  - Each material lookup kernel:
+    - Threads per block: 32
+    - Blocks: `ceil(n_lookups_per_material[m] / 32)`
+- A100 occupancy assessment:
+  - One-warp blocks limit maximum resident warps per SM.
+  - Because each material kernel processes only the relevant compacted material range, useful occupancy is much better than Optimization 2.
+  - Rare materials may launch small grids, which can underutilize the full GPU.
+  - Sorting cost is substantial but can be worthwhile for large lookup counts.
+
+### Optimization 5
+- Kernels:
+  - `sampling_kernel`
+  - `xs_lookup_kernel_optimization_5`, launched twice after fuel/non-fuel partitioning.
+- Launch configuration:
+  - `sampling_kernel`: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+  - Fuel lookup kernel:
+    - Threads per block: 32
+    - Blocks: `ceil(n_fuel_lookups / 32)`
+  - Non-fuel lookup kernel:
+    - Threads per block: 32
+    - Blocks: `ceil((in.lookups - n_fuel_lookups) / 32)`
+- A100 occupancy assessment:
+  - Same one-warp-block occupancy limit.
+  - Better useful work density than Optimization 3 because fuel and non-fuel ranges are compacted.
+  - Non-fuel range still mixes materials, so divergence remains.
+  - Lower sorting overhead than full material sort, so this may be energy-efficient when full sorting is too expensive.
+
+### Optimization 6
+- Kernels:
+  - `sampling_kernel`
+  - `xs_lookup_kernel_optimization_4`, reused after material sort and per-material energy sort.
+- Launch configuration:
+  - `sampling_kernel`: 32 threads per block, `ceil(in.lookups / 32)` blocks.
+  - Each material lookup kernel:
+    - Threads per block: 32
+    - Blocks: `ceil(n_lookups_per_material[m] / 32)`
+- A100 occupancy assessment:
+  - One-warp-block limit remains.
+  - Despite lower theoretical occupancy than the baseline, this variant likely has much better memory efficiency and lower divergence.
+  - Energy efficiency can improve substantially because sorted energies cause nearby threads to traverse similar binary-search paths and access nearby grid locations.
+  - The main tradeoff is the cost of multiple Thrust sorting operations.
+
+### Thrust operations
+- The code also invokes Thrust reductions, counts, sorts, and partitions.
+- Their internal launch configurations are not explicitly visible in the source.
+- They introduce additional global-memory passes and synchronization points.
+- Energy efficiency depends heavily on whether improved lookup locality amortizes the sorting/partitioning cost.
+
+---
+
+## 3. Global memory access patterns by kernel
+
+### `xs_lookup_kernel_baseline`
+- Verification writes:
+  - `GSD.verification[i]` is consecutive across consecutive threads.
+  - This store is coalesced.
+- Sampling:
+  - Energy and material are generated inside the kernel; no sample-array global loads.
+- Main lookup data:
+  - `unionized_energy_array` binary-search reads are irregular across threads.
+  - `index_grid` accesses are scattered because `idx` and `nuc` vary by thread.
+  - `nuclide_grid` accesses are scattered because both sampled energy and material vary by thread.
+  - `mats` and `concs` accesses are small-table reads but are divergent because material differs by thread.
+- Overall:
+  - Poorly coalesced for the dominant data structures.
+  - Memory access is random/scattered at warp scale.
+
+### `sampling_kernel`
+- Writes:
+  - `GSD.p_energy_samples[i]` is consecutive across threads: coalesced.
+  - `GSD.mat_samples[i]` is consecutive across threads: coalesced.
+- Reads:
+  - No large global-memory reads besides structure metadata.
+- Overall:
+  - Mostly coalesced and efficient.
+  - Arithmetic includes RNG fast-forwarding, which is integer-heavy but localized.
+
+### `xs_lookup_kernel_optimization_1`
+- Sample reads:
+  - `GSD.p_energy_samples[i]` is coalesced.
+  - `GSD.mat_samples[i]` is coalesced.
+- Verification writes:
+  - `GSD.verification[i]` is coalesced.
+- Main lookup data:
+  - Same scattered behavior as baseline.
+- Overall:
+  - Adds coalesced sample-array traffic but does not improve lookup locality by itself.
+  - Likely worse energy efficiency than baseline unless later grouping is used.
+
+### `xs_lookup_kernel_optimization_2`
+- Sample reads:
+  - Coalesced across the full lookup array.
+- Material filtering:
+  - Every material kernel scans the entire lookup set.
+  - Most threads return early for most material kernels.
+- Verification writes:
+  - Only active threads write.
+  - Active lanes within a warp are often sparse, so stores are only partially coalesced.
+- Main lookup data:
+  - For active threads, material is uniform within a kernel, which helps loop trip count and material-table locality.
+  - Energies are still random, so `nuclide_grid`, `index_grid`, and `unionized_energy_array` remain scattered.
+- Overall:
+  - Reduces material divergence among active threads but wastes global-memory reads and scheduling energy on inactive threads.
+
+### `xs_lookup_kernel_optimization_3`
+- Sample reads:
+  - Coalesced.
+- Fuel/non-fuel filtering:
+  - Each of two kernels scans the full lookup set.
+  - Many inactive threads return early.
+- Verification writes:
+  - Active-thread stores may be sparse within warps, especially in the fuel kernel.
+- Main lookup data:
+  - Fuel kernel improves uniformity for the expensive fuel material.
+  - Non-fuel kernel still mixes materials and loop lengths.
+- Overall:
+  - Better than Optimization 2 in launch count and scan overhead.
+  - Still has wasted work from full-array scanning.
+
+### `xs_lookup_kernel_optimization_4`
+- Input arrays:
+  - After sorting by material, each material kernel reads a compact contiguous segment.
+  - `p_energy_samples` and `mat_samples` reads are coalesced.
+- Verification writes:
+  - `GSD.verification[i]` writes are contiguous within each material segment and generally coalesced.
+- Main lookup data:
+  - Material is uniform within the kernel, improving access to `mats`, `concs`, and `num_nucs`.
+  - Energies are not sorted in Optimization 4, so grid accesses are still largely scattered.
+- Overall:
+  - Much better useful memory traffic than Optimization 2.
+  - Still limited by random energy-dependent accesses.
+
+### `xs_lookup_kernel_optimization_5`
+- Input arrays:
+  - After fuel/non-fuel partitioning, fuel and non-fuel ranges are compact.
+  - Sample reads are coalesced.
+- Verification writes:
+  - Coalesced within each compacted range.
+- Main lookup data:
+  - Fuel segment has uniform material and good loop coherence.
+  - Non-fuel segment still mixes material IDs, causing divergent loop counts and scattered material-table access.
+- Overall:
+  - Good compromise between sorting cost and lookup coherence.
+  - Less locality improvement than full material sorting.
+
+### Optimization 6 lookup phase
+- Input arrays:
+  - Material-sorted and then energy-sorted within each material.
+  - Sample reads are coalesced.
+- Main lookup data:
+  - Threads in a warp are likely to have similar material and nearby energies.
+  - Binary-search paths become more similar.
+  - `index_grid` and `nuclide_grid` accesses become more cache-friendly.
+  - Accesses are still not perfectly coalesced because data structures are indexed indirectly, but locality is substantially improved.
+- Overall:
+  - Best global-memory behavior among the provided variants.
+  - Highest potential for energy efficiency if sort overhead is amortized.
+
+---
+
+## 4. Shared memory usage
+
+### Current shared memory usage
+- No explicit shared memory is used.
+- There are no `__shared__` allocations.
+- All main lookup tables reside in global memory.
+- Small per-thread arrays such as:
+  - `macro_xs_vector[5]`
+  - `xs_vector[5]`
+  - `dist[12]`
+  are local to each thread and may occupy registers or spill to local memory depending on compiler decisions.
+
+### Potential shared-memory or constant-memory opportunities
+- The material distribution table used in `pick_mat()` should be moved out of per-thread local storage.
+  - It is read-only and identical for all threads.
+  - Constant memory is a strong candidate.
+- `num_nucs` is tiny and read-only.
+  - Constant memory is appropriate.
+- `mats` and `concs` are small relative to the nuclide grid.
+  - For material-specific kernels, the relevant material’s `mats` and `concs` rows could be staged in shared memory once per block.
+  - This is especially useful for fuel material, which has many nuclides.
+- For sorted-by-material kernels, constant memory may perform well because all threads access the same material index and often the same loop iteration.
+- `nuclide_grid` is too large for shared memory, but energy-sorted lookups can improve cache reuse.
+- If redesigning the kernel, warp- or block-level cooperative processing of a single material lookup could use shared memory for partial reductions of the five cross-section channels.
+
+---
+
+## 5. Warp divergence
+
+### Kernel-level branches
+
+#### `xs_lookup_kernel_baseline`
+- Boundary check: thread returns if lookup index is outside `in.lookups`.
+- Verification maximum search contains a conditional update for each of five channels.
+- Divergence sources:
+  - Different materials per thread.
+  - Different numbers of nuclides per material.
+  - Different binary-search paths.
+  - Different grid-type branches, although grid type itself is uniform for a run.
+
+#### `sampling_kernel`
+- Boundary check: thread returns if lookup index is outside `in.lookups`.
+- `pick_mat()` contains divergent material-selection control flow.
+- `fast_forward_LCG()` contains a loop with a branch depending on bits of `n`.
+
+#### `xs_lookup_kernel_optimization_1`
+- Boundary check.
+- Verification maximum conditional.
+- Same lookup divergence as baseline, except sampling has been separated.
+
+#### `xs_lookup_kernel_optimization_2`
+- Boundary check.
+- Material filter branch: threads return if `mat != m`.
+- Verification maximum conditional.
+- Active threads in a material-specific kernel have uniform material, but many threads are inactive.
+
+#### `xs_lookup_kernel_optimization_3`
+- Boundary check.
+- Fuel/non-fuel conditional branch.
+- Verification maximum conditional inside active branch.
+- Fuel kernel improves coherence for expensive fuel lookups; non-fuel kernel still diverges by material.
+
+#### `xs_lookup_kernel_optimization_4`
+- Boundary check against `n_lookups`.
+- Redundant material check after sorting.
+- Verification maximum conditional.
+- Material divergence is largely removed.
+- Energy divergence remains unless using Optimization 6.
+
+#### `xs_lookup_kernel_optimization_5`
+- Boundary check against `n_lookups`.
+- Verification maximum conditional.
+- Fuel partition removes fuel/non-fuel imbalance, but non-fuel segment still has material divergence.
+
+### Device-function divergence
+- `calculate_macro_xs()`:
+  - Branches on grid type: unionized, hash, or nuclide.
+  - Loop trip count depends on `num_nucs[mat]`, causing major divergence when materials differ within a warp.
+- `calculate_micro_xs()`:
+  - Branches on grid type.
+  - Boundary checks for final grid point.
+  - Hash-grid path has multiple edge-case branches.
+- `grid_search()` and `grid_search_nuclide()`:
+  - Binary-search comparison diverges by sampled energy.
+  - Threads with different energies take different search paths.
+- `pick_mat()`:
+  - Material-selection loop diverges based on random roll.
+- `fast_forward_LCG()`:
+  - Branch on low bit of `n` can diverge across threads.
+
+### Main divergence-reduction opportunities
+- Sort or partition by material to reduce loop-trip-count divergence.
+- Sort by energy to align binary-search paths.
+- Use warp-level cooperative processing for high-nuclide-count fuel lookups.
+- Avoid launching kernels that scan full arrays and immediately return for most threads.
+
+---
+
+## 6. Data types and double-precision replacement opportunities
+
+### Current double-precision-heavy data
+The following are stored or computed in double precision:
+- `NuclideGridPoint.energy`
+- `NuclideGridPoint.total_xs`
+- `NuclideGridPoint.elastic_xs`
+- `NuclideGridPoint.absorbtion_xs`
+- `NuclideGridPoint.fission_xs`
+- `NuclideGridPoint.nu_fission_xs`
+- `concs`
+- `unionized_energy_array`
+- `p_energy_samples`
+- `p_energy`
+- `macro_xs_vector`
+- `xs_vector`
+- Interpolation factor `f`
+- Random values returned by `LCG_random_double()`
+- Material probability distribution in `pick_mat()`
+
+### Likely replaceable with float if accuracy permits
+- Cross-section values in `NuclideGridPoint`.
+- Concentrations in `concs`.
+- `macro_xs_vector` and `xs_vector`.
+- Interpolation factor `f`.
+- Sampled particle energy `p_energy`.
+- `p_energy_samples`.
+- Material probability distribution in `pick_mat()`.
+- `unionized_energy_array`, if binary-search ordering and lookup reproducibility tolerate float precision.
+
+### Caution
+- Replacing double with float may change:
+  - Binary-search results near energy boundaries.
+  - Interpolation results.
+  - Verification checksum.
+  - Material selection if RNG-to-probability comparisons change.
+- If the benchmark requires bitwise-identical verification, these substitutions are not safe.
+- If the goal is physical simulation energy efficiency with acceptable numerical tolerance, mixed precision is a major opportunity.
+- The LCG state itself uses 64-bit integer arithmetic and should not be replaced with float.
+
+---
+
+## 7. Synchronization overhead
+
+### `__syncthreads()` count
+- Total explicit `__syncthreads()` calls: 0.
+- No CUDA kernel or device function uses block-level synchronization.
+
+### Host/device synchronization
+Although there are no `__syncthreads()` calls, there are multiple host-side synchronization points:
+- Explicit `cudaDeviceSynchronize()` after major kernels.
+- Explicit synchronization after Thrust reductions.
+- Thrust algorithms such as count, sort, partition, and reduce launch internal kernels and introduce ordering dependencies.
+
+### Synchronization profile by variant
+- Baseline:
+  - Synchronize after main lookup kernel.
+  - Synchronize after Thrust reduction.
+- Optimization 1:
+  - Synchronize after sampling kernel.
+  - Synchronize after lookup kernel.
+  - Synchronize after reduction.
+- Optimization 2:
+  - Synchronize after sampling.
+  - Launch 12 material kernels.
+  - Synchronize after all material kernels.
+  - Synchronize after reduction.
+  - Additional implicit overhead from 12 kernel launches.
+- Optimization 3:
+  - Synchronize after sampling.
+  - Launch 2 lookup kernels.
+  - Synchronize after lookup kernels.
+  - Synchronize after reduction.
+- Optimization 4:
+  - Synchronize after sampling.
+  - Multiple Thrust counts.
+  - Thrust material sort.
+  - Launch 12 material kernels.
+  - Synchronize after lookup kernels.
+  - Synchronize after reduction.
+- Optimization 5:
+  - Synchronize after sampling.
+  - Thrust count.
+  - Thrust partition.
+  - Launch 2 lookup kernels.
+  - Synchronize after lookup kernels.
+  - Synchronize after reduction.
+- Optimization 6:
+  - Synchronize after sampling.
+  - Multiple Thrust counts.
+  - Thrust material sort.
+  - Per-material Thrust energy sorts.
+  - Launch 12 material kernels.
+  - Synchronize after lookup kernels.
+  - Synchronize after reduction.
+
+### Energy-efficiency implications
+- Extra synchronization and kernel launches increase overhead, especially for small lookup counts.
+- For large lookup counts, the reduced divergence and improved cache locality from sorting may dominate the synchronization cost.
+- For small or medium lookup counts, Optimization 5 may be more energy-efficient than Optimization 6 because it uses cheaper partitioning instead of full material-plus-energy sorting.
+
+---
+
+## 8. Unusual loop bounds and comparison operators — INTENTIONAL, preserve verbatim
+
+The following constructs appear unusual or easy to “correct” incorrectly. They should be treated as INTENTIONAL and MUST be preserved verbatim unless the benchmark specification is intentionally changed.
+
+### Material selection in `pick_mat()`
+- The inner accumulation loop sums from the current material index down to greater than zero, excluding index zero.
+- This means the fuel material probability is effectively handled by the final default return path rather than by the first loop iteration.
+- This is unusual but INTENTIONAL and MUST be preserved verbatim.
+- The comparison using `roll < running` is also part of the benchmark behavior and MUST be preserved verbatim.
+
+### Verification maximum comparison
+- The maximum search uses a strict greater-than comparison.
+- Equal values do not update the index.
+- This affects tie-breaking and therefore verification behavior.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### Binary-search termination condition
+- Both binary search routines terminate when the search interval length is greater than one.
+- They return the lower bounding index.
+- The comparison structure determines exact lower-index behavior.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### Binary-search comparison direction
+- The comparison checks whether the examined energy is greater than the quarry energy.
+- This determines lower/upper bound updates and must not be inverted or changed to greater-than-or-equal without changing results.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### Hash-grid edge comparisons
+- The hash-grid path checks sampled energy against lower and upper energy bounds using less-than-or-equal and greater-than-or-equal comparisons.
+- These boundary comparisons influence edge-bin behavior.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### End-of-grid handling in `calculate_micro_xs()`
+- When the located index equals the last grid point, the code uses the previous point as the low point.
+- This prevents reading past the end when `high = low + 1`.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### Optimization 3 launch parameter behavior
+- The lookup kernel parameter is named as a fuel indicator, and the two launches cover non-fuel and fuel cases.
+- The compound condition inside the kernel determines which lookups are processed.
+- The logic is easy to misread but covers both categories.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### Optimization 4 material check after sorting
+- After material sorting and per-material launch ranges, the kernel still checks whether the material matches the kernel material.
+- This may appear redundant, but it protects correctness if counts, offsets, or sorting assumptions are violated.
+- INTENTIONAL; MUST be preserved verbatim.
+
+### XXL gridpoint assignment
+- The XXL configuration multiplies an integer value by a floating-point constant before assigning to an integer-like field.
+- This is unusual because it implies truncation.
+- INTENTIONAL; MUST be preserved verbatim.
+
+---
+
+## 9. Summary of highest-impact energy-efficiency opportunities
+
+1. Prefer material and energy grouping for large workloads.
+   - Optimization 6 has the best locality and divergence profile.
+   - Optimization 5 may be a better energy/performance compromise when full sorting overhead is too high.
+
+2. Increase lookup kernel block size beyond 32 threads where appropriate.
+   - One-warp blocks limit A100 occupancy because of the maximum resident block limit.
+   - 128- or 256-thread blocks may improve latency hiding, especially for memory-bound lookup kernels.
+
+3. Use constant memory or shared memory for small read-only tables.
+   - Material distributions, `num_nucs`, `mats`, and possibly `concs` are good candidates.
+
+4. Avoid per-thread construction of the material probability table.
+   - The `dist[12]` array inside `pick_mat()` is identical for all threads and should not consume per-thread register/local storage.
+
+5. Consider mixed precision.
+   - Single precision for cross sections, concentrations, sampled energies, and interpolation can reduce memory bandwidth and FP64 energy cost.
+   - Only safe if checksum and accuracy requirements allow.
+
+6. Consider cooperative processing for fuel material.
+   - Fuel has hundreds of nuclides and dominates work.
+   - A warp or block could cooperatively process one lookup and reduce the five cross-section channels, improving SIMD utilization and reducing per-thread serial work.
+
+7. Reevaluate full-array scanning kernels.
+   - Optimization 2 and 3 launch kernels that read every lookup and return early for many threads.
+   - This wastes energy unless the divergence reduction outweighs the scanning cost.
+
+8. Improve data layout if energy sorting is used.
+   - The current `NuclideGridPoint` array-of-structures layout is reasonable for one thread reading all fields of one point.
+   - If many threads access nearby or identical indices after sorting, a structure-of-arrays layout may improve coalescing for individual fields.

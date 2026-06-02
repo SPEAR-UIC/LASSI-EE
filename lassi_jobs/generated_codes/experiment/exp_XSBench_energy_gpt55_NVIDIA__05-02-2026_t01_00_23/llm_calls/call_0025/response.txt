@@ -1,0 +1,70 @@
+```cpp
+/*
+Evaluation:
+
+The REFACTORED CODE produces a very similar standard output for the provided
+event-based large unionized-grid run, and the reported verification checksum is
+the same:
+
+    Source:     Verification checksum: 952131 (Valid)
+    Refactored: Verification checksum: 952131 (Valid)
+
+The main input summary, initialization messages, simulation section, results
+section, lookup count, and checksum status are all present and broadly equivalent.
+Minor formatting differences, such as the border line length, are not enough by
+themselves to invalidate the output.
+
+However, the refactored program does not preserve all intended functionality and
+behavior of the source code.
+
+Key issues:
+
+1. History-based mode behavior is changed.
+   In the SOURCE CODE, if the simulation method is not EVENT_BASED, the program
+   prints:
+
+       History-based simulation not implemented in CUDA code. Instead,
+       use the event-based method with "-m event" argument.
+
+   and exits with error.
+
+   In the REFACTORED CODE, history-based mode is actually executed through
+   run_history_based_simulation_baseline(). This is a functional behavior change,
+   not a formatting or performance-only change.
+
+2. Printed input summary behavior differs for history-based runs.
+   The SOURCE CODE prints:
+
+       Total XS Lookups:             in.lookups
+
+   even in history-based mode, while the REFACTORED CODE prints:
+
+       in.lookups * in.particles
+
+   for history-based mode. This changes stdout content compared with the source.
+
+3. Binary file compatibility is not preserved.
+   The REFACTORED CODE modifies the SimulationData structure by adding several
+   new pointer fields for the SoA nuclide-grid representation. Because binary
+   read/write uses fwrite/fread of the whole SimulationData struct, the binary
+   file format is changed and is not compatible with the source code's binary
+   data layout.
+
+4. The reported GPU allocation differs materially.
+   The source reports 5778 MB allocated on the GPU for the provided run, while
+   the refactored code reports 5648 MB. This may be explained by the refactored
+   checksum reduction strategy, but it is still a visible output/content change.
+   By itself this would not necessarily invalidate correctness, but combined
+   with the functional changes above it supports the conclusion that behavior is
+   not fully preserved.
+
+5. The provided event-based checksum is correct, but that is not sufficient.
+   The tested standard output is nearly equivalent for this specific run, but
+   the program as a whole does not preserve all behavior and output semantics of
+   the source.
+
+Conclusion:
+
+INVALID
+*/
+```

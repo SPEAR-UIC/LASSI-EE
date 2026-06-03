@@ -1,0 +1,508 @@
+## 1. Overall Purpose and Algorithm
+
+### Program purpose
+This is a CUDA implementation of an XSBench-style event-based Monte Carlo cross-section lookup benchmark. It models repeated macroscopic cross-section lookups for sampled neutron energies and sampled materials. The program is intended to stress memory bandwidth, cache behavior, irregular memory access, and control-flow divergence typical of continuous-energy neutron transport workloads.
+
+### High-level execution flow
+1. Parse command-line inputs into an `Inputs` structure.
+2. Initialize or read simulation data:
+   - Nuclide energy grids.
+   - Optional unionized energy grid or hash-grid acceleration structure.
+   - Material composition arrays.
+   - Nuclide concentration arrays.
+3. Copy simulation data to GPU memory.
+4. Run one of several event-based CUDA kernel implementations selected by `kernel_id`.
+5. Reduce per-lookup verification values on the GPU using Thrust.
+6. Copy/retrieve the scalar verification result, reduce it modulo `999983`, and validate it.
+7. Release device memory.
+
+### Core numerical algorithm
+For each lookup:
+1. A deterministic linear congruential generator, LCG, is advanced to a lookup-specific seed.
+2. The thread samples:
+   - A neutron energy `p_energy`.
+   - A material ID `mat`.
+3. A macroscopic cross-section vector of length 5 is computed for that material and energy.
+4. The macroscopic cross section is computed by looping over all nuclides in the material:
+   - For each nuclide, locate the two bounding energy grid points.
+   - Interpolate five microscopic cross-section channels.
+   - Multiply by the nuclide concentration.
+   - Accumulate into the macroscopic cross-section vector.
+5. The verification value for the lookup is the 1-based index of the largest macroscopic cross-section channel.
+
+### Grid-search modes
+The program supports three lookup modes:
+
+- `NUCLIDE`
+  - Each nuclide grid is searched directly with a binary search.
+  - Most expensive because a binary search is performed for each nuclide in the material.
+
+- `UNIONIZED`
+  - A unionized energy grid is searched once per lookup.
+  - The resulting index is used to access an index grid mapping into each nuclide’s grid.
+
+- `HASH`
+  - A hash bin is computed from the sampled energy.
+  - The hash grid gives a reduced search interval in the nuclide grid.
+
+### Optimization variants
+The baseline performs sampling and lookup in one kernel. Optimized variants split sampling from lookup and use material-based grouping or sorting to reduce warp divergence and improve locality.
+
+- Kernel ID 0: baseline one-kernel lookup.
+- Kernel ID 1: separate sampling and lookup kernels.
+- Kernel ID 2: separate lookup kernels for each of 12 materials.
+- Kernel ID 3: separate lookup kernels for fuel and non-fuel materials.
+- Kernel ID 4: sort by material, then launch one lookup kernel per material.
+- Kernel ID 5: partition into fuel and non-fuel regions, then launch two lookup kernels.
+- Kernel ID 6: sort by material and then by energy within each material, then launch one lookup kernel per material.
+
+---
+
+## 2. CUDA-Specific Constructs and Their Roles
+
+### CUDA runtime API
+- `cudaMalloc`
+  - Used to allocate GPU memory for all simulation arrays and verification arrays.
+  - Also used in optimized variants to allocate sampled energy and material arrays.
+
+- `cudaMemcpy`
+  - Used to copy initialized host arrays into corresponding device arrays.
+  - Copies are host-to-device only in the explicit CUDA code.
+
+- `cudaFree`
+  - Used to free selected device arrays at the end of execution.
+
+- `cudaPeekAtLastError`
+  - Used after kernel launches and Thrust calls to check for CUDA launch/runtime errors.
+
+- `cudaDeviceSynchronize`
+  - Used to force completion after memory setup, kernel launches, and Thrust operations.
+
+- `cudaGetDevice`
+  - Used in `print_inputs` to query the active CUDA device.
+
+- `cudaGetDeviceProperties`
+  - Used in `print_inputs` to print the CUDA device name.
+
+- `cudaError_t`, `cudaSuccess`, `cudaGetErrorString`
+  - Used by the `gpuAssert` helper for CUDA error checking.
+
+### CUDA kernel launch syntax
+The program launches CUDA kernels with the `<<<nblocks, nthreads>>>` syntax. All kernels use a one-dimensional grid and one-dimensional blocks.
+
+### CUDA function qualifiers
+- `__global__`
+  - Used for kernels launched from host:
+    - `xs_lookup_kernel_baseline`
+    - `sampling_kernel`
+    - `xs_lookup_kernel_optimization_1`
+    - `xs_lookup_kernel_optimization_2`
+    - `xs_lookup_kernel_optimization_3`
+    - `xs_lookup_kernel_optimization_4`
+    - `xs_lookup_kernel_optimization_5`
+
+- `__device__`
+  - Used for GPU-only helper functions:
+    - `calculate_micro_xs`
+    - `calculate_macro_xs`
+    - `grid_search`
+    - `pick_mat`
+    - `fast_forward_LCG`
+
+- `__host__ __device__`
+  - Used for functions/functors callable on both CPU and GPU:
+    - `grid_search_nuclide`
+    - `LCG_random_double`
+    - `is_mat_fuel::operator()`
+
+### Device global memory usage
+The `SimulationData` structure is shallow-copied on the host, then its pointer fields are replaced with device pointers. The structure itself is passed by value into kernels. Its pointer members refer to device memory.
+
+Device-resident arrays include:
+- `num_nucs`
+- `concs`
+- `mats`
+- `unionized_energy_array`
+- `index_grid`
+- `nuclide_grid`
+- `verification`
+- `p_energy_samples`, in optimized variants
+- `mat_samples`, in optimized variants
+
+### Thrust device algorithms
+The program uses Thrust with `thrust::device` execution policy.
+
+- `thrust::reduce`
+  - Reduces `GSD.verification` to a scalar verification checksum.
+
+- `thrust::count`
+  - Counts how many sampled lookups belong to a given material.
+
+- `thrust::sort_by_key`
+  - Used to sort sampled materials and carry sampled energies with them.
+  - Used again in optimization 6 to sort energies within each material range.
+
+- `thrust::partition`
+  - Used in optimization 5 to partition sampled data into fuel and non-fuel regions.
+
+These Thrust calls launch device work internally and must be mapped to SYCL-compatible parallel algorithms or explicit kernels.
+
+### CUDA constructs not used
+- No explicit `__shared__` memory is used.
+- No explicit atomics are used.
+- No CUDA streams are used.
+- No CUDA events are used.
+- No cooperative groups are used.
+- No texture, surface, or constant memory declarations are used.
+- No explicit warp intrinsics are used.
+
+### Local per-thread storage
+Several kernels and device functions allocate small fixed-size local arrays:
+- `double macro_xs_vector[5]`
+- `double xs_vector[5]`
+- `double dist[12]`
+
+These are private to each thread. Depending on compiler register pressure, they may reside in registers or local memory.
+
+---
+
+## 3. GPU Kernel Structure and Thread/Block Organization
+
+### Common indexing pattern
+All kernels use a one-dimensional global thread index:
+
+- Logical lookup index is computed from block index, block dimension, and thread index.
+- Each active thread handles one lookup or one sampled lookup slot.
+- Threads with indices beyond the valid lookup range return immediately.
+
+### Baseline kernel: `xs_lookup_kernel_baseline`
+Purpose:
+- Performs sampling and cross-section lookup in a single kernel.
+
+Launch configuration:
+- `nthreads = 256`
+- `nblocks = ceil(in.lookups / 256.0)`
+
+Thread behavior:
+1. Compute lookup ID `i`.
+2. Return if `i >= in.lookups`.
+3. Fast-forward the LCG seed by `2*i`.
+4. Sample energy and material.
+5. Compute macroscopic cross section.
+6. Find the maximum channel.
+7. Store `max_idx + 1` into `GSD.verification[i]`.
+
+### Sampling kernel: `sampling_kernel`
+Purpose:
+- Generates sampled energies and materials for later lookup kernels.
+
+Launch configuration in optimized variants:
+- `nthreads = 32`
+- `nblocks = ceil(in.lookups / 32.0)`
+
+Thread behavior:
+1. Compute lookup ID `i`.
+2. Return if `i >= in.lookups`.
+3. Fast-forward LCG seed by `2*i`.
+4. Sample energy and material.
+5. Store:
+   - `GSD.p_energy_samples[i]`
+   - `GSD.mat_samples[i]`
+
+### Optimization 1 lookup kernel: `xs_lookup_kernel_optimization_1`
+Purpose:
+- Performs one cross-section lookup per sampled particle.
+
+Launch configuration:
+- Same as sampling kernel:
+  - `nthreads = 32`
+  - `nblocks = ceil(in.lookups / 32.0)`
+
+Thread behavior:
+- Each thread processes sample `i` using precomputed `p_energy_samples[i]` and `mat_samples[i]`.
+
+### Optimization 2 lookup kernel: `xs_lookup_kernel_optimization_2`
+Purpose:
+- Material-specific lookup kernel.
+
+Host launch behavior:
+- The host launches this kernel 12 times, once for each material ID `m = 0..11`.
+- Each launch still covers the full lookup range.
+
+Thread behavior:
+1. Compute lookup ID `i`.
+2. Return if `i >= in.lookups`.
+3. Load `mat = GSD.mat_samples[i]`.
+4. Return if `mat != m`.
+5. Perform lookup only for matching material.
+
+This reduces intra-kernel material variation but still launches many threads that immediately return.
+
+### Optimization 3 lookup kernel: `xs_lookup_kernel_optimization_3`
+Purpose:
+- Split lookup into fuel and non-fuel kernels.
+
+Host launch behavior:
+- The host launches this kernel twice:
+  - Once with `is_fuel = 0`.
+  - Once with `is_fuel = 1`.
+
+Thread behavior:
+- If `is_fuel == 1`, the thread processes only material `0`.
+- If `is_fuel == 0`, the thread processes only materials not equal to `0`.
+
+### Optimization 4 lookup kernel: `xs_lookup_kernel_optimization_4`
+Purpose:
+- Process material-contiguous regions after sorting by material.
+
+Host-side preprocessing:
+1. Run sampling kernel.
+2. Count lookups per material using `thrust::count`.
+3. Sort samples by material using `thrust::sort_by_key`.
+4. Launch one lookup kernel per material.
+
+Launch configuration per material:
+- `nthreads = 32`
+- `nblocks = ceil(n_lookups_per_material[m] / 32.0)`
+
+Thread behavior:
+1. Compute local index `i`.
+2. Return if `i >= n_lookups`.
+3. Add material-region offset: `i += offset`.
+4. Confirm `GSD.mat_samples[i] == m`.
+5. Perform lookup and store verification at sorted index `i`.
+
+### Optimization 5 lookup kernel: `xs_lookup_kernel_optimization_5`
+Purpose:
+- Process two contiguous regions after partitioning into fuel and non-fuel groups.
+
+Host-side preprocessing:
+1. Run sampling kernel.
+2. Count fuel lookups using `thrust::count`.
+3. Partition using `thrust::partition`.
+4. Launch two kernels:
+   - First for fuel region.
+   - Second for non-fuel region.
+
+Launch configuration:
+- First launch:
+  - `n_lookups = n_fuel_lookups`
+  - `offset = 0`
+- Second launch:
+  - `n_lookups = in.lookups - n_fuel_lookups`
+  - `offset = n_fuel_lookups`
+
+Thread behavior:
+1. Compute local index `i`.
+2. Return if `i >= n_lookups`.
+3. Add offset: `i += offset`.
+4. Perform lookup with `GSD.mat_samples[i]` and `GSD.p_energy_samples[i]`.
+
+### Optimization 6
+Purpose:
+- Sort by material and then by energy within each material, improving locality and reducing divergence.
+
+Host-side preprocessing:
+1. Run sampling kernel.
+2. Count lookups per material.
+3. Sort by material using `thrust::sort_by_key`.
+4. For each material range, sort by sampled energy.
+5. Launch `xs_lookup_kernel_optimization_4` for each material range.
+
+There is no distinct optimization-6 kernel; it reuses `xs_lookup_kernel_optimization_4`.
+
+---
+
+## 4. Host Functions That Allocate Device Memory or Launch Kernels
+
+These functions require a `sycl::queue& q` parameter, or equivalent access to a SYCL queue, in a SYCL translation.
+
+### `move_simulation_data_to_device`
+Requires queue access because it:
+- Allocates device memory for:
+  - `num_nucs`
+  - `concs`
+  - `mats`
+  - `unionized_energy_array`
+  - `index_grid`
+  - `nuclide_grid`
+  - `verification`
+- Copies host data to device memory.
+- Performs device synchronization/error checking.
+
+### `release_device_memory`
+Requires queue/device allocation context because it:
+- Frees device memory.
+
+Current CUDA function frees:
+- `num_nucs`
+- `concs`
+- `mats`
+- `unionized_energy_array`
+- `nuclide_grid`
+- `verification`
+
+It does not free `index_grid`, `p_energy_samples`, or `mat_samples`. This behavior is present in the source and should be considered during translation.
+
+### `run_event_based_simulation_baseline`
+Requires queue access because it:
+- Launches `xs_lookup_kernel_baseline`.
+- Synchronizes after the kernel.
+- Runs `thrust::reduce` on device memory.
+
+### `run_event_based_simulation_optimization_1`
+Requires queue access because it:
+- Allocates `p_energy_samples`.
+- Allocates `mat_samples`.
+- Launches `sampling_kernel`.
+- Launches `xs_lookup_kernel_optimization_1`.
+- Runs `thrust::reduce`.
+
+### `run_event_based_simulation_optimization_2`
+Requires queue access because it:
+- Allocates `p_energy_samples`.
+- Allocates `mat_samples`.
+- Launches `sampling_kernel`.
+- Launches `xs_lookup_kernel_optimization_2` 12 times.
+- Runs `thrust::reduce`.
+
+### `run_event_based_simulation_optimization_3`
+Requires queue access because it:
+- Allocates `p_energy_samples`.
+- Allocates `mat_samples`.
+- Launches `sampling_kernel`.
+- Launches `xs_lookup_kernel_optimization_3` twice.
+- Runs `thrust::reduce`.
+
+### `run_event_based_simulation_optimization_4`
+Requires queue access because it:
+- Allocates `p_energy_samples`.
+- Allocates `mat_samples`.
+- Launches `sampling_kernel`.
+- Runs `thrust::count`.
+- Runs `thrust::sort_by_key`.
+- Launches `xs_lookup_kernel_optimization_4` once per material.
+- Runs `thrust::reduce`.
+
+### `run_event_based_simulation_optimization_5`
+Requires queue access because it:
+- Allocates `p_energy_samples`.
+- Allocates `mat_samples`.
+- Launches `sampling_kernel`.
+- Runs `thrust::count`.
+- Runs `thrust::partition`.
+- Launches `xs_lookup_kernel_optimization_5` twice.
+- Runs `thrust::reduce`.
+
+### `run_event_based_simulation_optimization_6`
+Requires queue access because it:
+- Allocates `p_energy_samples`.
+- Allocates `mat_samples`.
+- Launches `sampling_kernel`.
+- Runs `thrust::count`.
+- Runs `thrust::sort_by_key` multiple times.
+- Launches `xs_lookup_kernel_optimization_4` once per material.
+- Runs `thrust::reduce`.
+
+### `print_inputs`
+May require queue or device context in SYCL because it queries and prints the CUDA device name using:
+- `cudaGetDevice`
+- `cudaGetDeviceProperties`
+
+In a SYCL translation, this should query `q.get_device()` or equivalent.
+
+### `main`
+`main` does not directly call CUDA allocation APIs or launch kernels, but it orchestrates all GPU work through the functions above. In a SYCL translation, `main` should likely create and own the `sycl::queue`, then pass it into GPU-related functions.
+
+---
+
+## 5. Asymmetric, Suspicious, or Potentially Incorrect Bounds / Comparisons / Offsets That MUST Be Preserved
+
+The following items are potentially asymmetric, unusual, or suspicious. They may be intentional benchmark behavior or bugs in the original source. They MUST be preserved verbatim in translation unless explicitly directed otherwise.
+
+### `pick_mat` cumulative distribution loop omits `dist[0]`
+The material-selection function computes a running probability with an inner loop that starts at `j = i` and uses the condition `j > 0`.
+
+This means:
+- For `i = 0`, the running sum is zero.
+- `dist[0]` is never included in the cumulative sum.
+- Material `0` is selected only by the final fallback return.
+- The cumulative distribution effectively sums `dist[i]` down through `dist[1]`, excluding `dist[0]`.
+
+This is asymmetric and potentially incorrect, but it MUST be preserved verbatim.
+
+### `pick_mat` fallback returns material `0`
+After the cumulative distribution loop, the function returns `0`. Combined with the omission of `dist[0]`, this fallback is the only path selecting material `0`. This behavior MUST be preserved.
+
+### `grid_search` and `grid_search_nuclide` use `while(length > 1)`
+Both binary-search functions terminate when the search interval length is not greater than 1. They return `lowerLimit`. The comparison is strictly `> 1`, not `>= 1`. This exact termination condition MUST be preserved.
+
+### Binary-search comparison uses strict greater-than
+Both binary-search functions compare the midpoint energy using strict `>`:
+- Unionized grid search compares the array value against the quarry.
+- Nuclide grid search compares `A[examinationPoint].energy` against the quarry.
+
+The strict `>` comparison, rather than `>=`, affects tie behavior and MUST be preserved.
+
+### `calculate_micro_xs` end-of-grid handling uses `idx - 1`
+When the located index equals `n_gridpoints - 1`, the function backs up one element and uses that as the low point so that `high = low + 1` remains valid.
+
+This appears in multiple grid modes and MUST be preserved.
+
+### `calculate_micro_xs` hash-grid edge behavior
+In hash mode:
+- If `p_energy <= e_low`, the lower index is set to `0`.
+- If `p_energy >= e_high`, the lower index is set to `n_gridpoints - 1`.
+- Otherwise, a bounded binary search is used between `u_low` and `u_high`.
+
+The use of full-grid endpoints `0` and `n_gridpoints - 1`, rather than `u_low` and `u_high`, is potentially surprising and MUST be preserved.
+
+### Hash-grid high bound uses `+ 1`
+In hash mode, the upper search bound for non-final hash bins is computed from the next hash bin’s index plus one. This offset is intentional in the source and MUST be preserved.
+
+### Unionized-grid initialization starts `energy_high` at gridpoint index `1`
+During unionized index-grid construction, `energy_high[i]` is initialized from the second grid point of each nuclide, not the first. This offset is part of the original acceleration structure construction and MUST be preserved.
+
+### Unionized-grid index construction clamps at `n_gridpoints - 2`
+During unionized index-grid construction, if `idx_low[i] == in.n_gridpoints - 2`, that index is reused instead of incrementing. This avoids producing a low index whose `high = low + 1` would exceed the nuclide grid. This exact bound MUST be preserved.
+
+### Optimization 3 launch parameter ordering and condition
+The host launches `xs_lookup_kernel_optimization_3` first with `is_fuel = 0` and then with `is_fuel = 1`.
+
+Inside the kernel:
+- `is_fuel == 1` processes `mat == 0`.
+- `is_fuel == 0` processes `mat != 0`.
+
+This ordering and condition must be preserved, even though the launch order is non-fuel first and fuel second.
+
+### Optimization 4 and 5 offset handling
+In optimization 4 and optimization 5 kernels:
+1. The thread first checks the local index against `n_lookups`.
+2. Only after that does it add `offset` to the index.
+
+This order is important and MUST be preserved.
+
+### Optimization 4 material check after sorting
+Even after sorting by material and launching per-material regions, `xs_lookup_kernel_optimization_4` still checks whether `mat != m` and returns if so. This redundant-looking check MUST be preserved.
+
+### Per-material launches may compute zero blocks
+In optimization 4 and optimization 6, `nblocks` is computed from `n_lookups_per_material[m]`. If a material has zero lookups, this may produce a zero-block launch configuration. This behavior is present in the source and should be preserved unless the translation layer requires explicit guarding for legality.
+
+### Optimization 5 `thrust::partition` usage is suspicious
+Optimization 5 calls `thrust::partition` using `GSD.mat_samples` and `GSD.p_energy_samples` together with predicate `is_mat_fuel`.
+
+The stated intent is to partition fuel into the first part of the array while keeping corresponding energies aligned. However, the exact Thrust overload and argument ordering are unusual and potentially incorrect. The behavior of this call, including its argument order, MUST be preserved as closely as possible in translation.
+
+### Device memory release omits some allocated arrays
+`release_device_memory` does not free:
+- `GSD.index_grid`
+- `GSD.p_energy_samples`
+- `GSD.mat_samples`
+
+Despite being allocated elsewhere, these omissions are present in the original source. If preserving behavior exactly, this must be retained; if fixing memory leaks, it should be documented as a deliberate semantic change.
+
+### Zero-length device allocations and copies
+For some grid modes, `unionized_energy_array` or `index_grid` may have length zero. The move-to-device function still attempts allocation and copy operations using the computed size. This behavior is present in the CUDA source and must be considered carefully in SYCL translation.
+
+### Verification array type mismatch
+`SimulationData::verification` is declared as `unsigned long *`, while some host variables use `unsigned long long`. The Thrust reduction returns an `unsigned long` scalar which is then returned as `unsigned long long`. This type behavior MUST be preserved unless intentionally changed.

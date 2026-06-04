@@ -1,16 +1,6 @@
-"""ANSI color codes used for console output."""
+"""ANSI escape codes for terminal output (Bold, Green, Red, End)."""
+B, G, R, E = "\033[1m", "\033[92m", "\033[91m", "\033[0m"
 
 
 class color:
-    PURPLE    = "\033[95m"
-    CYAN      = "\033[96m"
-    DARKCYAN  = "\033[36m"
-    BLUE      = "\033[94m"
-    GREEN     = "\033[92m"
-    YELLOW    = "\033[93m"
-    RED       = "\033[91m"
-    ORANGE    = "\033[38;5;208m"
-    DARKORANGE = "\033[38;5;166m"
-    BOLD      = "\033[1m"
-    UNDERLINE = "\033[4m"
-    END       = "\033[0m"
+    BOLD, GREEN, RED, END = B, G, R, E

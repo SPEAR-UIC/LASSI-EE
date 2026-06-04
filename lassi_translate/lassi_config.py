@@ -1,14 +1,16 @@
 config = {
-    "resource":        "polaris",       # "polaris" (NVIDIA A100) | "aurora" (Intel PVC)
-    "task":            "translate",        # "energy" | "translate" (CUDA→SYCL) | "both" (translate then energy)
-    "input_framework": "cuda",          # "cuda" | "sycl" (sycl only valid for aurora energy task)
-    "alcf_username":   "vchirio",       # your ALCF username
-    "app_category":    "Miniapps",      # "Miniapps" | "HeCBench" — top-level key in source_apps.json
-    "app_name":        "XSBench",       # app key within the category, e.g. "XSBench", "miniMDock", "XSBench_hip"
-    "account":         "EE-ECP",        # PBS allocation account
-    "queue":           "debug",         # PBS queue, e.g. "debug" | "prod" | "preemptable" | "small"
-    "walltime":        3600,            # persistent worker walltime in seconds
-    "model":           "gpt41",         # Argo model: "gpt4o" | "gpt41" | "gpt55" | "claudesonnet4" | "gpto1preview"
-    "min_energy_gain": 5.0,             # minimum % energy reduction to declare success (energy tasks only)
-    "use_judge":       True,            # True | False — run LLM-as-judge after each successful compile+run
+    "resource": "polaris",
+    "task": "translate",
+    "input_framework": "cuda",
+    "alcf_username": "vchirio",
+    "app_category": "Miniapps",
+    "app_name": "XSBench",
+    "account": "EE-ECP",
+    "queue": "debug",
+    "walltime": 3600,
+    "argo_model": "gpt41",
+    "inference_model": "meta-llama/Meta-Llama-3.1-405B-Instruct",
+    "inference_cluster": "sophia",
+    "min_energy_gain": 5.0,
+    "use_judge": True,
 }

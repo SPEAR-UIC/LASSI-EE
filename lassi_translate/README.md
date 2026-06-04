@@ -1,433 +1,201 @@
 # lassi_translate
 
-LLM-driven CUDA → SYCL translation and GPU energy optimization pipeline for
-ALCF Polaris and Aurora.
+LLM-driven CUDA → SYCL translation pipeline for ALCF Polaris / Aurora.
+Given a CUDA source, an LLM proposes a SYCL translation; the pipeline
+compiles + runs it on the target GPU, verifies output, and iterates with
+the LLM on any error — up to 15 self-correction attempts.
 
-Given a CUDA source file, `lassi_translate` will:
+Three ways to run it:
 
-1. Ask an LLM to translate it to SYCL (or optimize an existing CUDA/SYCL file
-   for energy efficiency).
-2. Compile and run the generated code on the target ALCF compute resource.
-3. Verify correctness (XSBench checksum + LLM-as-judge functional equivalence).
-4. On any failure, feed the error back to the LLM and try again, up to 15
-   self-correction attempts.
-
-The pipeline runs end-to-end without human intervention. Each run produces a
-versioned source file, a metadata report, full per-attempt logs, and a CSV of
-the experiment outcome.
+| Mode | What runs where | LLM |
+|---|---|---|
+| **Remote** (default) | Workstation orchestrates; persistent PBS job handles compile+run | Argo |
+| **`--on-resource`** | Everything runs inside an interactive `qsub -I` shell on the compute node | ALCF Inference |
+| **`--submit`** | Workstation submits one PBS job that runs the whole pipeline; output streams back live | ALCF Inference |
 
 ---
 
-## Two ways to run it
+## Setup
 
-You pick one of two execution modes depending on where you're running from.
+### One-time on your workstation (all modes)
 
-### 1. Remote mode (default) — from your workstation
-
-Your workstation orchestrates everything. The pipeline opens a Globus + SSH
-connection to Polaris/Aurora, rsyncs the project to the remote `/eagle/...`
-or `/flare/...` directory, submits one long-running "persistent worker" PBS
-job, and uses it to compile + run each generated attempt. LLM calls go to
-Argo (`apps.inside.anl.gov`).
-
-```
-python lassi_translate/run_lassi.py
-```
-
-### 2. On-resource mode — from an interactive PBS shell on the compute node
-
-Run the whole pipeline directly inside a `qsub -I` session. No SSH dance, no
-PBS submission per attempt, no persistent worker — the worker scripts are
-invoked as plain subprocesses. LLM calls go to the ALCF Inference Endpoints
-API (Argo is not reachable from compute nodes).
-
-```
-python lassi_translate/run_lassi.py --on-resource
-```
-
----
-
-## Installation
-
-### Workstation (for remote mode)
-
-You need an Argonne-managed machine on-site or on VPN, plus a Python 3.11+
-environment:
-
+Argonne-managed machine, on-site or VPN, Python 3.11+:
 ```bash
 pip install amsc-client>=0.4.1 globus-sdk>=3.0
 ```
 
-The default `lassi_config.py` already points at Polaris and the EE-ECP
-allocation. Edit it if you want different defaults (model, queue, app, etc.).
-
-### Polaris/Aurora compute node (for on-resource mode)
-
-After grabbing an interactive node, you need:
-
-```bash
-module load conda
-conda activate base    # or any env with Python 3.11+
-
-pip install openai globus_sdk
-
-# One-time Globus authentication (opens a browser auth flow)
-python lassi_translate/inference_auth_token.py authenticate
-
-# Verify
-python lassi_translate/inference_auth_token.py get_time_until_token_expiration --units hours
+Set your ALCF username in `lassi_config.py`:
+```python
+"alcf_username": "your_username",
 ```
 
-Tokens are cached in `~/.globus/app/<client>/inference_app/tokens.json` and
-refreshed automatically. An internal policy forces re-authentication every
-30 days; if you hit a permission error, re-run with `--force`.
+That's it — `--submit` mode handles its own Polaris-side setup automatically.
+
+### One-time on Polaris (only for `--on-resource` mode)
+
+```bash
+ssh your_username@polaris.alcf.anl.gov
+module load conda
+conda activate base
+python ~/lassi_translate/inference_auth_token.py authenticate
+```
+(Browser flow; tokens cache for 30 days.)
 
 ---
 
-## Quick start
+## Recipe 1 — Remote mode (default)
 
-### Translate XSBench from CUDA to SYCL on Polaris (remote mode)
-
+From your workstation:
 ```bash
-# From your workstation
 python lassi_translate/run_lassi.py
 ```
+This uses the defaults in `lassi_config.py` (Polaris, translate task, XSBench,
+Argo model `gpt41`). You'll see the connect banner, a test run of the
+original CUDA, Stage 0/1/2 with a live sliding-window of the LLM stream,
+and a final side-by-side summary.
 
-This runs with the defaults in `lassi_config.py`: Polaris, translate task,
-XSBench, model `gpt41`. You'll see a test run of the original CUDA source,
-then the Stage 0/1/2 LLM loop, then a final side-by-side summary.
+---
 
-### Same thing, on-resource
+## Recipe 2 — On-resource (interactive PBS shell)
 
+Rsync the project to Polaris first:
 ```bash
-# 1. From your workstation: rsync the code over
-rsync -avzL --delete \
-  --exclude='__pycache__/' --exclude='*.pyc' \
-  --exclude='generated_codes/' --exclude='.git/' \
-  /path/to/LASSI-EE/lassi_translate/ \
-  vchirio@polaris.alcf.anl.gov:~/lassi_translate/
-rsync -avz --delete \
-  /path/to/LASSI-EE/source_codes/ \
-  vchirio@polaris.alcf.anl.gov:~/source_codes/
+# Preserves the source_codes symlink layout
+rsync -avz --delete --exclude='__pycache__/' --exclude='generated_codes/' --exclude='.git/' \
+  /path/to/LASSI-EE/lassi_translate/ your_username@polaris.alcf.anl.gov:~/lassi_translate/
+rsync -avz --delete /path/to/LASSI-EE/source_codes/ \
+  your_username@polaris.alcf.anl.gov:~/source_codes/
+```
 
-# 2. SSH in and grab a compute node
-ssh vchirio@polaris.alcf.anl.gov
+Grab a compute node:
+```bash
+ssh your_username@polaris.alcf.anl.gov
 qsub -I -A EE-ECP -q debug -l select=1 -l walltime=00:30:00 -l filesystems=home:eagle
+```
 
-# 3. On the compute node
+Run on the compute node:
+```bash
 cd ~/lassi_translate
-module load conda
+module load conda && conda activate base
 python run_lassi.py --on-resource --task translate --app-name XSBench
 ```
 
 ---
 
-## Tasks
+## Recipe 3 — Submit (fire-and-forget, recommended for real runs)
 
-Three task types, selected with `--task`:
-
-| Task | Source → Target | Resources | What it does |
-|---|---|---|---|
-| `translate` | CUDA → SYCL | Polaris, Aurora | Translate CUDA to SYCL with self-correction. Reports duration + stdout for both. |
-| `energy` | CUDA → CUDA (Polaris) or SYCL → SYCL (Aurora) | Polaris, Aurora | Iteratively optimize for GPU energy efficiency. Reports energy reduction vs baseline. |
-| `both` | CUDA → SYCL → optimized SYCL | Polaris, Aurora | Translate first, then run the energy task on the translated SYCL. |
-
-Aurora cannot compile or run CUDA. For `--task energy` on Aurora you must
-pass an existing SYCL source via `--sycl-source PATH` and
-`--input-framework sycl`, or use `--task both` to translate first.
-
-The `--task` framework compatibility matrix is encoded in
-`lassi/resources.py:FRAMEWORKS`.
-
----
-
-## Configuration
-
-### `lassi_config.py` — defaults file
-
-A plain Python file loaded at startup. Edit values here to change defaults;
-CLI flags still override anything you set:
-
-```python
-config = {
-    "resource":        "polaris",     # polaris (NVIDIA A100) | aurora (Intel PVC)
-    "task":            "translate",   # translate | energy | both
-    "input_framework": "cuda",        # cuda | sycl
-    "alcf_username":   "vchirio",
-    "app_category":    "Miniapps",    # category in source_apps.json
-    "app_name":        "XSBench",
-    "account":         "EE-ECP",      # PBS allocation
-    "queue":           "debug",       # PBS queue
-    "walltime":        3600,          # persistent worker walltime (seconds)
-    "model":           "gpt41",       # see "Models" below
-    "min_energy_gain": 5.0,           # % reduction required for energy success
-    "use_judge":       True,          # run LLM-as-judge after each attempt
-}
+From your workstation — nothing else, no manual Polaris setup:
+```bash
+python lassi_translate/run_lassi.py --submit \
+    --task translate --app-name XSBench --walltime 1800
 ```
 
-Use `--config PATH` to load a different file.
+The pipeline:
+1. Connects to Polaris over SSH (one password prompt).
+2. **First-ever run only:** a Globus auth URL prints; paste it into a browser,
+   then paste back the resulting code. Tokens cache locally.
+3. Every ~30 days, prompts you to re-auth automatically (also browser).
+4. Syncs tokens + code to Polaris, submits one PBS job, streams its stdout
+   back to your terminal.
 
-### CLI flags — full list
+**Ctrl-C** detaches without killing the job; reattach with the printed command:
+```
+ssh your_username@polaris.alcf.anl.gov \
+    'tail -F /eagle/.../submit_logs/lassi_submit_<timestamp>.log'
+```
 
-Run `python run_lassi.py --help` for the authoritative list. The flags below
-are the ones you reach for most often.
-
-**Resource and task**
-- `--resource {polaris,aurora}` — target HPC
-- `--task {translate,energy,both}` — what to do
-- `--input-framework {cuda,sycl}` — source language
-- `--app-category CATEGORY` and `--app-name APP` — pick an app from `source_apps.json`
-- `--sycl-source PATH` — explicit SYCL file (Aurora energy with pre-existing SYCL)
-
-**Identity and PBS**
-- `--alcf-username USER` (default: `$USER`)
-- `--remote-dir PATH` — override the default `/eagle/...` or `/flare/...`
-- `--skip-sync` — don't rsync; assume the remote tree is already current
-- `--account NAME` and `--queue NAME` — PBS allocation and queue
-- `--walltime SECONDS` — persistent worker walltime budget
-- `--no-persistent-worker` — submit one PBS job per attempt instead (slow; useful for debugging)
-
-**LLM and pipeline**
-- `--model NAME` — see "Models" below
-- `--no-self-prompting` — skip Stage 0 (context guide + source analysis)
-- `--no-judge` — skip LLM-as-judge after each successful attempt
-- `--min-energy-gain PCT` — minimum % reduction to declare energy success
-- `--verifyprompt` — print full prompts before each LLM call (debugging)
-- `--debug` — print prompt sizes + extra diagnostics
-
-**On-resource mode**
-- `--on-resource` — run locally on the compute node (no SSH/PBS/Globus)
-- `--inference-cluster {sophia,metis}` — which ALCF Inference cluster to call
-
-**Compiler overrides** (passed through to worker scripts)
-- `--sycl-compiler PATH`, `--sycl-flags FLAGS`, `--sycl-ldflags FLAGS`
-- `--cuda-compiler PATH`, `--cuda-flags FLAGS`, `--cuda-ldflags FLAGS`
+Kill a stranded job:
+```bash
+ssh your_username@polaris.alcf.anl.gov 'qdel <pbs_id>'
+```
 
 ---
 
-## Models
-
-### Remote mode (Argo)
-
-The model name maps directly to an Argo model ID. Common picks:
-
-| Model | When to use |
-|---|---|
-| `gpt55` | Strongest available; usually solves the translation in one shot. |
-| `gpt41` | Default. Good code generation, makes real translation mistakes that the correction loop fixes in 1-3 attempts. Best for demos. |
-| `claudesonnet46` / `claudeopus47` | Strong Anthropic models; good if GPT is struggling. |
-| `gemini25pro` | Google. 1M context. |
-| `gpt4o` | Avoid — known to produce stubbed translations of large files. |
-
-See the Argo API documentation for the full list. Some models have parameter
-restrictions (gpt55 requires `temperature=1`; Haiku/Sonnet 4.5+ reject having
-both `temperature` and `top_p` set). The pipeline only sends `temperature`,
-so the second restriction is satisfied automatically.
-
-### On-resource mode (ALCF Inference Endpoints)
-
-When `--on-resource` is set, the default model becomes
-`meta-llama/Meta-Llama-3.1-70B-Instruct` on the Sophia cluster. Override
-either piece independently:
+## Common overrides
 
 ```bash
-python run_lassi.py --on-resource \
-  --inference-cluster sophia \
-  --model meta-llama/Meta-Llama-3.1-405B-Instruct
+# Different Argo model (remote mode)
+python lassi_translate/run_lassi.py --argo-model claudesonnet46
+
+# Different ALCF Inference model (--on-resource / --submit)
+python lassi_translate/run_lassi.py --submit \
+    --inference-model meta-llama/Meta-Llama-3.1-405B-Instruct
+
+# Different ALCF Inference cluster
+python lassi_translate/run_lassi.py --submit --inference-cluster metis
+
+# Custom Python interpreter on the compute node (skips conda discovery)
+python lassi_translate/run_lassi.py --submit \
+    --remote-python ~/.conda/envs/myenv/bin/python3
 ```
 
-Available models per cluster: `curl` the discovery endpoint with your token,
-or check the ALCF docs.
-
----
-
-## How it works
-
-The pipeline runs in three stages per attempt:
-
-### Stage 0 — Self-prompting (Argo + local)
-
-Two LLM calls that don't generate code:
-
-1. Summarize the relevant context guide (SYCL programming, CUDA energy
-   efficiency, or SYCL energy efficiency).
-2. Analyze the source code structure and call out non-obvious algorithmic
-   details (loop bounds, checksums, kernel layouts) so the model preserves
-   them faithfully in Stage 1.
-
-The two summaries are prepended to every subsequent prompt. Skipped if
-`--no-self-prompting` is set.
-
-### Stage 1 — Initial generation
-
-One LLM call with the system prompt + Stage 0 context + the source code.
-Output is parsed as a fenced code block (` ```cpp ... ``` `), written locally,
-rsynced to the remote, and submitted to the persistent worker for compile +
-run.
-
-### Stage 2 — Self-correction loop (up to 15 attempts)
-
-Each attempt:
-
-1. Read `build_rc.txt` / `run_rc.txt` from the remote, parse compile and
-   runtime status, and pull the relevant stderr/stdout.
-2. Classify the failure: compile error, runtime error, XSBench checksum
-   mismatch, LLM-judge `INVALID`, or (for energy tasks) energy improvement
-   below threshold.
-3. Build a structured correction prompt using a different template per
-   classification, and call the LLM again at the same temperature (or
-   escalated for energy-insufficient cases).
-4. Submit the new code and loop.
-
-Termination:
-
-- Translate task: succeeds on the first compile-run-judge-pass attempt.
-- Energy task: succeeds when the best attempt beats baseline by at least
-  `--min-energy-gain` and stagnates (marginal gain < 1.1% for 4 consecutive
-  improvements).
-- Either: fails after 15 attempts.
-
-### Persistent worker
-
-To avoid waiting in the PBS queue once per attempt, remote mode submits a
-single long-running PBS job that opens a file-based RPC channel on the
-remote filesystem. The driver writes `trigger.json` (the work request) and
-polls for `result_ready.json` (the compile + run outcome). The worker stays
-alive for the full walltime budget, so subsequent attempts hand off in
-seconds rather than queue waits. Disable with `--no-persistent-worker` to
-fall back to per-attempt PBS submission.
-
-In on-resource mode, the worker script is invoked as a direct subprocess —
-no IPC, no PBS, no queue wait at all.
-
----
-
-## Project layout
-
-```
-lassi_translate/
-├── run_lassi.py              CLI + main dispatch (~500 lines)
-├── lassi_config.py           Runtime defaults
-├── source_apps.json          App catalog (Miniapps, HeCBench, etc.)
-├── inference_auth_token.py   ALCF Globus auth helper (vendored, on-resource mode only)
-├── source_codes              → symlink to ../source_codes (CUDA/SYCL app sources)
-├── README.md                 This file
-│
-├── lassi/
-│   ├── __init__.py
-│   ├── resources.py          ResourceConfig, RESOURCES, WORKERS, FRAMEWORKS
-│   ├── hpc_session.py        SSH + amsc filesystem wrapper (remote mode)
-│   ├── local_session.py      Local FS wrapper (on-resource mode)
-│   ├── alcf.py               Globus connect + SSH ControlMaster
-│   ├── hpc_jobs.py           PBS submission, PersistentWorker, JobRunner
-│   ├── local_runner.py       Subprocess runner (on-resource mode)
-│   ├── source_loader.py      Find + load CUDA/SYCL source code
-│   ├── results.py            Parse per-attempt result files
-│   ├── llm_client.py         Argo + ALCF Inference backends, sliding-window display
-│   ├── alcf_inference.py     ALCF Inference Endpoints client (OpenAI SDK)
-│   ├── prompt_dictionary.py  All LLM prompt templates (do not edit casually)
-│   ├── prompt_builder.py     Per-stage prompt assembly + LLM judge
-│   ├── pipeline.py           run_pipeline, run_both_pipeline, summaries
-│   ├── format_colors.py      ANSI color constants
-│   └── context/              Reference markdown for self-prompting
-│
-├── workers/                  Bash scripts that run on the compute node
-│   ├── _common.sh            Shared helpers (Lmod, oneAPI, CUDA, monitors)
-│   ├── polaris_worker.sh             one-shot job
-│   ├── polaris_persistent_worker.sh  long-running daemon
-│   ├── aurora_worker.sh              one-shot job
-│   └── aurora_persistent_worker.sh   long-running daemon
-│
-└── generated_codes/          Output directory (gitignored)
-    └── experiment/
-        └── exp_<app>_<task>_<model>_<vendor>__<timestamp>/
-            ├── Main_attemptN.cpp      generated code per attempt
-            ├── Main_v1_Trial1.cpp     final successful version
-            ├── attemptN_*.log         per-attempt build/run logs
-            ├── baseline_*.log         baseline test run logs
-            ├── baseline_energy.json   baseline metrics
-            ├── results.csv            single-row experiment summary
-            ├── metadata_<exp>.txt     full experiment report
-            └── llm_calls/             every LLM call's prompts + response
-                └── call_NNNN/
-                    ├── meta.json
-                    ├── system.txt
-                    ├── user.txt
-                    └── response.txt
-```
+Full flag list: `python lassi_translate/run_lassi.py --help`.
 
 ---
 
 ## Output
 
-Every run lands in
-`generated_codes/experiment/exp_<app>_<task>_<model>_<vendor>__<timestamp>/`.
-The most useful files:
+Every run writes to:
+```
+generated_codes/experiment/exp_<app>_<task>_<model>_<vendor>__<timestamp>/
+├── Main_v1_Trial1.cpp        ← final successful translation (on success)
+├── Main_attemptN.cpp         ← what the LLM produced on attempt N
+├── attemptN_*.log            ← build/run logs per attempt
+├── baseline_*.log            ← test run of the original source
+├── metadata_<exp>.txt        ← formatted summary
+├── results.csv               ← single-row outcome
+└── llm_calls/call_NNNN/      ← every LLM prompt + response, for debugging
+```
 
-- `Main_v1_Trial1.cpp` — the final successful translation (only on success)
-- `Main_attemptN.cpp` — what the LLM produced on attempt N (all attempts)
-- `attemptN_build_stderr.log` — compile errors per attempt
-- `attemptN_run_stdout.log` — program output per attempt
-- `metadata_<exp>.txt` — formatted summary with timings, energy metrics, LLM-generated code comparison
-- `results.csv` — single-row CSV suitable for aggregating across runs
-- `llm_calls/call_NNNN/` — exact prompt and response for every LLM call, useful for prompt debugging
+For `--submit` mode, the PBS stdout also lives at:
+```
+/eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/submit_logs/lassi_submit_<timestamp>.log
+```
 
 ---
 
 ## Troubleshooting
 
-**"Connection failed: ..." on startup**
-Check VPN / on-site network, and that your ALCF SSH keys work for plain
-`ssh polaris.alcf.anl.gov`. The pipeline opens one SSH ControlMaster — if
-that fails, rsync would prompt per call and everything stalls.
+**`[LLM ERROR]` block appears in the stream**
+The block tells you exactly what failed (backend, model, cluster, reason) and a one-line hint. Follow the hint.
 
-**Every attempt shows `compile error: [Remote FS read error ... Path must be absolute]`**
-The amsc Eagle filesystem API only accepts paths under `/eagle/` or
-`/lus/eagle/`. Make sure `--remote-dir` (or `default_dir` in
-`lassi/resources.py`) starts with `/eagle/`.
+**`30-day re-auth required`** (`--submit` mode)
+The workstation auto-runs `authenticate --force`. Visit
+https://app.globus.org/logout in a browser if it complains, then re-run.
 
-**Every attempt shows `compile error: [Remote FS read error ... Allowed base paths for filesystem Eagle are: /eagle, /lus/eagle]`**
-Same root cause as above — you pointed `remote_dir` somewhere outside Eagle.
+**`module load conda did not work`** (PBS log)
+Normal on Polaris — the script falls back to sourcing `conda.sh` directly.
 
-**The LLM keeps producing a 350-line stub instead of translating the whole file**
-You're using `gpt4o`. Switch to `gpt41` or `gpt55` in `lassi_config.py`.
+**`pip install` fails on the compute node**
+Compute nodes can't reach PyPI. The pipeline doesn't try to install anything
+there; if you've been editing the PBS script and added a pip line, remove it.
 
-**`SystemExit: ALCF Inference: not authenticated yet` (on-resource mode)**
-Run `python lassi_translate/inference_auth_token.py authenticate` once,
-follow the Globus auth flow, then retry.
-
-**A persistent worker PBS job is hanging around after a failed run**
+**Persistent worker / submit job stuck after Ctrl-C**
 ```bash
-ssh vchirio@polaris.alcf.anl.gov 'qstat -u $USER -w | grep lassi-persistent'
-ssh vchirio@polaris.alcf.anl.gov 'qdel <jobid>'
+ssh your_username@polaris.alcf.anl.gov 'qstat -u $USER -w | grep lassi'
+ssh your_username@polaris.alcf.anl.gov 'qdel <jobid>'
 ```
-
-**Job times out at 15 attempts with the same error every time**
-The correction prompt isn't giving the model new information. Inspect
-`llm_calls/call_NNNN/user.txt` to see what's actually being sent. If the
-error stays identical across attempts, the issue is likely in the worker
-script or compiler environment rather than the LLM.
 
 ---
 
 ## What's not supported
 
-- `--task energy` and `--task both` are not yet wired through `--on-resource`;
-  only `--task translate` works in on-resource mode.
-- `gpt55` requires `temperature=1`, but the pipeline sends `temperature=0.2`.
-  Other models that have hard parameter restrictions (`gpto1mini` etc.) are
-  not wrapper-compatible.
-- Aurora's Flare filesystem isn't registered in the IRI API, so file reads
-  fall back to SSH. This is slower but transparent.
-- Only XSBench has a built-in correctness check (`verification: "xsbench"` in
-  `source_apps.json`). Other apps rely on the LLM-as-judge step alone.
+- `--task energy` and `--task both` only work in **remote mode** (not `--on-resource` / `--submit`).
+- `gpt55` (Argo) requires `temperature=1`; the pipeline sends `0.2`, so it doesn't work yet.
+- Aurora's Flare filesystem isn't in IRI — file reads fall back to SSH (slower but transparent).
+- Only XSBench has a built-in checksum check; other apps rely on the LLM-as-judge step.
 
 ---
 
-## See also
+## Files
 
-- Parent project: [LASSI](../README.md)
-- Argo Gateway API: https://apps.inside.anl.gov/argoapi/docs
-- ALCF Inference Endpoints: https://inference.alcf.anl.gov/
-- Prompt templates: [`lassi/prompt_dictionary.py`](lassi/prompt_dictionary.py)
-  (read before editing — wording is empirically tuned)
+```
+lassi_translate/
+├── run_lassi.py                  CLI + dispatch (~1100 lines)
+├── lassi_config.py               runtime defaults
+├── source_apps.json              app catalog
+├── inference_auth_token.py       vendored Globus auth helper (ALCF Inference)
+├── source_codes -> ../source_codes
+├── lassi/                        pipeline library (10 small modules)
+└── workers/                      bash scripts that run on the compute node
+```

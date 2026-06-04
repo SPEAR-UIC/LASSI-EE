@@ -1,0 +1,161 @@
+**Structured Technical Description**
+
+---
+
+### 1. Overall Purpose and Algorithm
+
+**Purpose**:  
+This program implements a highly parallel event-based simulation of continuous energy macroscopic cross section (XS) lookups for nuclear materials, as used in neutron transport Monte Carlo codes (e.g., OpenMC). It is based on the XSBench benchmark, leveraging CUDA to evaluate performance and optimization strategies for XS lookups in large datasets. No real physics is performed—the grids and concentrations are randomized.
+
+**Algorithm**:  
+- **Initialization**:  
+  - Sets up input parameters from CLI (e.g., grid sizes, simulation method, etc.).
+  - Constructs data structures for nuclide energy grids, material compositions, and concentrations.
+  - Optionally reads/writes these structures from/to binary files for fast startup.
+  - Handles three grid types: *unionized*, *nuclide*, and *hash*, which affect the XS lookup algorithm and indexing.
+  - Organizes all data into a `SimulationData` structure and moves it to device (GPU) memory.
+- **Event-Based Simulation**:  
+  - For a designated number of lookups, each thread samples a random neutron energy and material, then computes its macroscopic XS via a microscopic interpolation algorithm.
+  - Several variants of the event-based simulation are implemented. The baseline kernel uses a single CUDA kernel; optimized variants split kernels (sampling/lookup), sort or partition lookups, and apply material-specific kernel launches to improve SIMD efficiency.
+  - After the simulation, thread-local verification values are reduced into an overall checksum to prevent compiler optimization out of work.
+- **Finalization**:  
+  - Device memory is released, and results including runtime and validation checksum are reported.
+
+---
+
+### 2. CUDA-specific Constructs and Their Roles
+
+#### a. **Memory Management**
+- **`cudaMalloc` / `cudaFree`**  
+  Allocates (and releases) device memory for all heap arrays in `SimulationData` and additional arrays for sample energies/materials in optimizations.
+- **`cudaMemcpy`**  
+  Copies data from host to device memory for all necessary arrays at initialization.
+
+#### b. **Error Checking**
+- **`gpuErrchk`, `cudaPeekAtLastError`, `cudaDeviceSynchronize`**  
+  Error checking macros and functions to ensure safe CUDA API calls.
+
+#### c. **Device Kernels**
+- **`__global__` functions**  
+  - Baseline kernel: `xs_lookup_kernel_baseline`
+  - Sampling kernel: `sampling_kernel`
+  - Material-specific/optimized kernels: `xs_lookup_kernel_optimization_X`, where X = 1..6
+  - These are the principal units of parallel computation, each performing one or more XS lookups per thread and writing to a verification output array.
+
+#### d. **Device Functions**
+- **`__device__` functions**  
+  - `calculate_micro_xs`
+  - `calculate_macro_xs`
+  - `pick_mat`
+  - `fast_forward_LCG`
+  - Provide XS calculation and random number routines used exclusively on the GPU.
+
+#### e. **Device/Host Unified Functions**
+- **`__host__ __device__`**  
+  - `grid_search_nuclide`, `LCG_random_double`
+  - Functions usable both from host and device (usually for simple search or RNG).
+
+#### f. **Thrust Parallel Algorithms**
+- **`thrust::reduce`**  
+  - Reduces verification array to a scalar checksum.
+- **`thrust::count`, `thrust::sort_by_key`, `thrust::partition`**  
+  - Used for optimization kernels to count, sort, or partition materials/energies, improving SIMD efficiency and kernel scheduling.
+
+#### g. **Device Memory Usage**
+- Device arrays in `SimulationData` (including `num_nucs`, `concs`, `mats`, `unionized_energy_array`, `index_grid`, `nuclide_grid`, `verification`, and, in optimizations, `p_energy_samples`, `mat_samples`) are accessed directly from kernels.
+
+#### h. **Occupancy and Thread Organization**
+- Kernels use `nblocks` and `nthreads` per block (typically 32 or 256) to map `lookups` to CUDA thread indices.
+
+#### i. **Atomic Operations / Shared Memory**
+- Not used in the baseline kernels; all thread outputs are independent and written to their own index in global memory.
+
+---
+
+### 3. Structure of GPU Kernels and Thread/Block Organization
+
+- **Thread Mapping**:  
+  Each kernel computes a thread “lookup ID” as `blockIdx.x * blockDim.x + threadIdx.x`, mapping threads to individual XS lookups.
+- **Occupancy**:  
+  - Baseline kernel: 256 threads per block.
+  - Optimization kernels: 32 threads per block (likely chosen to match warp size).
+  - Number of blocks (`nblocks`) is computed as `ceil(lookups / nthreads)`.
+- **Work Distribution**:  
+  - Baseline: Every thread performs one XS lookup, writes to verification array.
+  - Optimizations:  
+    - Split sampling from lookup; sample data arrays are written then read by subsequent kernels.
+    - Material-specific kernels: threads skip if their sampled material does not match the kernel's material.
+    - Sorted/partitioned kernels: threads operate on contiguous regions of sorted/partitioned material/energy arrays, reducing divergence.
+    - Partitioned kernels (optimization 5): offset and size are passed in, so threads work only within their assigned region (fuel or not fuel).
+- **Output**:  
+  Thread-local results (maximum XS index) are written to `GSD.verification[i]` and reduced afterward.
+
+---
+
+### 4. Host Functions Allocating Device Memory or Launching Kernels
+
+All host functions below allocate device memory and/or launch CUDA kernels. In a SYCL translation, these must accept a `sycl::queue& q` parameter to specify the compute queue.
+
+- **`move_simulation_data_to_device`**
+  - Allocates device memory for arrays in `SimulationData`, copies from host to device.
+- **`release_device_memory`**
+  - Frees device memory for all arrays in `SimulationData`.
+- **`run_event_based_simulation_baseline`**
+  - Launches `xs_lookup_kernel_baseline`; collects and reduces verification result.
+- **`run_event_based_simulation_optimization_X`**, where X = 1 to 6
+  - Allocates extra device arrays for sampled energies/materials; launches `sampling_kernel` and lookup kernels (`xs_lookup_kernel_optimization_X` variants); uses Thrust for sorting/partitioning/counting/reduction.
+- **Any code invoking Thrust device algorithms**
+  - These must be replaced by equivalent SYCL parallel algorithms and provided an explicit queue object.
+
+**Note**:  
+These functions and any device memory allocation or kernel launch sites must use a `sycl::queue` in SYCL.
+
+---
+
+### 5. Loop Bounds, Comparison Operators, and Index Offsets: Asymmetric or Potentially Incorrect Cases
+
+#### **Explicitly Asymmetric Cases That Must Be PRESERVED Verbatim**
+
+**A. In `pick_mat` (__device__)**:
+```cpp
+for (int i = 0; i < 12; i++) {
+    double running = 0;
+    for (int j = i; j > 0; j--)   // <-- NOTE: j > 0, not j >= 0
+        running += dist[j];
+    if (roll < running)
+        return i;
+}
+```
+- **Observation**: The inner loop has `for(int j = i; j > 0; j--)`, which omits j = 0 for summing, so `running` only includes `dist[1..i]` not `dist[0..i]`.  
+- **Requirement**: This asymmetric bound is intentional and must be preserved precisely in the SYCL translation.
+
+**B. Index calculation in kernels**
+- **Offset handling**: Optimized kernels (4/5) may use `i += offset;` after thread index calculation, then check for `i >= n_lookups` for early exit.
+- **Material checks**:
+  - Material-specific kernels: Only process if sampled material equals kernel material, i.e. `if (mat != m) return;` or the fuel checks in optimization 3.
+- **Boundaries in Binary Search**
+  - `grid_search_nuclide` and `grid_search` use standard `[low, high]` or `[0, n-1]` bounds, with `while(length > 1)` termination—these must be preserved.
+- **Edge Handling in Interpolation**
+  - In `calculate_micro_xs`, when index equals last element, `low = ... + idx - 1`, else `low = ... + idx`—behavior at grid edges is intentional and must be preserved.
+
+**C. Kernel Launch Parameters**
+- `nblocks = ceil((double) lookups / nthreads)`, where the kernel checks `if(i >= lookups) return;`. This prevents out-of-bound accesses.  
+- **Requirement**: The relationship between kernel launch size and bounds checks must be preserved for correctness.
+
+**D. Thrust-Specific Data Layout and Access**
+- Any sorting or partitioning of arrays must be preserved exactly to reproduce the same material/energy ordering and kernel offsets.
+
+---
+
+### 6. Additional Observations
+
+- **No Use of Shared Memory or Atomics**  
+  All thread outputs are independent (except for the rare Thrust reduction or sorting).
+- **Verification Scalar**  
+  The reduction of the per-thread `verification` values is via Thrust's `reduce`, which must be replaced with SYCL's reduction primitives.
+- **All variants of event-based simulation are implemented as distinct functions/kernels**, selectable via CLI kernel ID, and must be preserved in translation.
+
+---
+
+**Summary**:  
+The source code is a monolithic CUDA implementation of a parallel macroscopic XS benchmarking tool with both baseline and multiple optimized kernel scheduling strategies. All CUDA hardware-specific behaviors, memory allocations, and thread/block mapping must be reproduced exactly in SYCL—including loop bounds, index offsets, and asymmetric comparisons as highlighted. Host functions that perform device-side allocations, kernel launches, or device algorithms must accept a SYCL queue parameter in translation, and all CUDA device/host memory management must be replaced with SYCL equivalents and explicit queue/context specification.

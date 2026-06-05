@@ -2,8 +2,7 @@
 # aurora_persistent_worker.sh — Long-running PBS daemon on Aurora (Intel PVC).
 #
 # Usage: bash aurora_persistent_worker.sh <ipc_dir>
-# Same IPC protocol as polaris_persistent_worker.sh; handles translate and
-# sycl_energy task types.
+# Same IPC protocol as polaris_persistent_worker.sh; handles translate.
 
 set -o pipefail
 # shellcheck source=_common.sh
@@ -90,12 +89,12 @@ for a in json.loads(sys.argv[1]):
     } >> "${OUTDIR}/build_stdout.log"
 
     case "$TASK" in
-        translate|sycl_energy)
+        translate)
             COMPILER="${SYCL_COMPILER:-icpx}"
             _SYCL_DEFAULT='-O3 -std=c++17 -fsycl -fsycl-targets=spir64_gen -Xs "-device pvc"'
             FLAGS="${SYCL_FLAGS:-$_SYCL_DEFAULT}"
             LDFLAGS="${SYCL_LDFLAGS:-}"
-            MONITOR=$([ "$TASK" = sycl_energy ] && echo xpu_smi || echo none)
+            MONITOR=none
             ;;
         *)
             _log "ERROR: unknown task '$TASK'"

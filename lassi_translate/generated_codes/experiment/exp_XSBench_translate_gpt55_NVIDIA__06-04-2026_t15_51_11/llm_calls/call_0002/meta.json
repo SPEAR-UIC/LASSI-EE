@@ -1,0 +1,9 @@
+{
+  "timestamp_utc": "2026-06-04T20:55:50.827377+00:00",
+  "call_id": 2,
+  "intent": "source code analysis",
+  "model": "gpt55",
+  "system_chars": 335,
+  "user_chars": 88218,
+  "response_chars": 29177
+}

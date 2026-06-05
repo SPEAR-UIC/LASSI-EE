@@ -1,0 +1,9 @@
+{
+  "timestamp_utc": "2026-06-05T01:08:10.356280+00:00",
+  "call_id": 1,
+  "intent": "SYCL reference guide summarization",
+  "model": "openai/gpt-oss-120b",
+  "system_chars": 335,
+  "user_chars": 39826,
+  "response_chars": 9983
+}

@@ -3,7 +3,7 @@
 # (NVIDIA A100 / sm_80).
 #
 # Usage: bash polaris_worker.sh <task> <src> <outdir> [run_args...]
-#   task : translate | cuda_energy | sycl_energy
+#   task : translate | cuda_energy
 #
 # Optional env overrides:
 #   SYCL_COMPILER, SYCL_FLAGS, SYCL_LDFLAGS
@@ -58,22 +58,22 @@ _CUDA_FLAG=""
 case "$TASK" in
     cuda_energy)
         COMPILER="${CUDA_COMPILER:-nvcc}"
-        FLAGS="${CUDA_FLAGS:--O3 -arch=sm_80 -std=c++17}"
+        FLAGS="${CUDA_FLAGS:--O3 -arch=sm_80 -std=c++17 -allow-unsupported-compiler -D_Float128=__float128}"
         LDFLAGS="${CUDA_LDFLAGS:-}"
         MONITOR=nvidia_smi
         DEVICE_SELECTOR=""
         ;;
-    translate|sycl_energy)
+    translate)
         COMPILER="${SYCL_COMPILER:-icpx}"
         _SYCL_DEFAULT="-O3 -std=c++17 -fsycl -fsycl-targets=nvptx64-nvidia-cuda \
 -Xsycl-target-backend --cuda-gpu-arch=sm_80${_CUDA_FLAG:+ $_CUDA_FLAG}"
         FLAGS="${SYCL_FLAGS:-$_SYCL_DEFAULT}"
         LDFLAGS="${SYCL_LDFLAGS:-}"
-        MONITOR=$([ "$TASK" = sycl_energy ] && echo nvidia_smi || echo none)
+        MONITOR=none
         DEVICE_SELECTOR="cuda:gpu"
         ;;
     *)
-        echo "ERROR: unknown task '$TASK' (expected: translate|cuda_energy|sycl_energy)" \
+        echo "ERROR: unknown task '$TASK' (expected: translate|cuda_energy)" \
             | tee -a "$LOG" > "${OUTDIR}/build_stderr.log"
         echo -n "1" > "${OUTDIR}/build_rc.txt"
         exit 1

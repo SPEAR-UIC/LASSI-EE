@@ -1,8 +1,7 @@
 """Drop-in replacement for HPCSession when the pipeline runs directly on the
-compute node (--on-resource / --submit). Same method names; backed by stdlib
-filesystem calls instead of SSH/amsc."""
+compute node (--on-resource / --submit).  Same method names; backed by stdlib
+filesystem calls instead of amsc."""
 import shutil
-import subprocess
 from pathlib import Path
 
 
@@ -10,21 +9,47 @@ class LocalSession:
     """Same interface as HPCSession; ops touch the local filesystem."""
 
     def __init__(self):
-        self.host, self.user, self.ssh_ctl, self.fs_resource = "localhost", "", "", None
+        self.host, self.user, self.fs_resource = "localhost", "", None
 
-    def run(self, cmd): return subprocess.run(["bash", "-c", cmd]).returncode
-    def run_capture(self, cmd):
-        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
-        return r.returncode, r.stdout
+    # ── FS reads ────────────────────────────────────────────────────────────
+
+    def mkdir(self, path):       Path(path).mkdir(parents=True, exist_ok=True)
+    def mkdirs(self, *paths):    [self.mkdir(p) for p in paths]
     def file_exists(self, path): return Path(path).is_file()
-    def read_file(self, path):
-        try: return Path(path).read_text(encoding="utf-8")
-        except Exception: return ""
+    def file_size(self, path):
+        try: return Path(path).stat().st_size
+        except Exception: return 0
 
-    def resolve_abs(self, path):
-        p = Path(path)
-        try: return str(p.resolve())
-        except Exception: return str(p)
+    def read_file(self, path, max_lines=10000):
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return f"[Local FS read error {path!r}: {exc}]"
+        if max_lines and max_lines > 0:
+            lines = text.splitlines(keepends=True)
+            if len(lines) > max_lines: return "".join(lines[:max_lines])
+        return text
+
+    def read_bytes(self, path, *, offset=0, size=None):
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read() if size is None else f.read(size)
+        return data.decode("utf-8", errors="replace")
+
+    def download(self, path): return Path(path).read_text(encoding="utf-8", errors="replace")
+    def ls(self, path):
+        return [{"name": p.name, "type": "directory" if p.is_dir() else "file"}
+                for p in Path(path).iterdir()]
+
+    # ── FS writes ───────────────────────────────────────────────────────────
+
+    def rm(self, path):
+        try: Path(path).unlink()
+        except Exception: pass
+
+    def mv(self, src, dst):
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(src, dst)
 
     def rsync(self, src, dst, is_dir=False, dereference=False):
         src, dst = Path(src).resolve(), Path(dst).resolve()
@@ -46,16 +71,6 @@ class LocalSession:
             print(f"  local copy failed ({src} → {dst}): {exc}")
             return False
 
-    def mkdir(self, path): Path(path).mkdir(parents=True, exist_ok=True)
-    def mkdirs(self, *paths):
-        for p in paths: self.mkdir(p)
-
-    def read_remote_file(self, path, max_lines=10000):
-        try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:
-            return f"[Local FS read error {path!r}: {exc}]"
-        if max_lines and max_lines > 0:
-            lines = text.splitlines(keepends=True)
-            if len(lines) > max_lines: return "".join(lines[:max_lines])
-        return text
+    def resolve_abs(self, path):
+        try: return str(Path(path).resolve())
+        except Exception: return str(Path(path))

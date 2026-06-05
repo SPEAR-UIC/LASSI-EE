@@ -1,16 +1,16 @@
-"""ALCF connection setup: Globus (amsc_client) + persistent SSH ControlMaster.
+"""ALCF connection setup via Globus (amsc_client).
 
 Only used in remote mode and --submit mode (workstation side).  --on-resource
 runs entirely on the compute node and doesn't need any of this.
+
+No SSH fallbacks: if amsc can't reach the configured filesystem resource we
+raise loudly rather than silently degrade.
 """
 import os
 import socket
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
-
-from lassi.format_colors import B, E
 
 
 def apply_ipv4_patch():
@@ -27,7 +27,10 @@ def apply_ipv4_patch():
 def amsc_connect(resource_name, fs_name, script_dir: Path, quiet=True):
     """Globus-auth and return (compute_resource, fs_resource).  First call opens
     a browser; subsequent calls reuse cached credentials.  Re-execs into a
-    sibling .venv if amsc_client isn't importable in the current interpreter."""
+    sibling .venv if amsc_client isn't importable in the current interpreter.
+
+    Raises RuntimeError if the filesystem resource isn't reachable via amsc —
+    no SSH fallback."""
     apply_ipv4_patch()
     try:
         from amsc_client import Client
@@ -51,25 +54,11 @@ def amsc_connect(resource_name, fs_name, script_dir: Path, quiet=True):
     try:
         fs = alcf.resource(fs_name)
     except Exception as exc:
-        print(f"  {B}WARNING:{E} {fs_name} unavailable ({exc}) — using SSH fallback.")
-        fs = None
+        raise RuntimeError(
+            f"amsc cannot reach filesystem {fs_name!r}: {exc}.  SSH fallback "
+            f"is disabled — fix the IRI registration or use --on-resource."
+        ) from exc
     status = compute.status
     if status.lower() not in ("up", "available", "running"):
-        print(f"  {B}WARNING:{E} {resource_name} reports '{status}'")
+        print(f"  WARNING: {resource_name} reports '{status}'")
     return compute, fs
-
-
-def ssh_master_start(host, user):
-    """Open a persistent SSH ControlMaster connection; return its socket path."""
-    ctl = str(Path(tempfile.mkdtemp(prefix="lassi_ssh_")) / "ctl")
-    r = subprocess.run(["ssh", "-o", f"ControlPath={ctl}",
-                        "-o", "ControlMaster=yes", "-o", "ControlPersist=yes",
-                        "-N", "-f", f"{user}@{host}"])
-    if r.returncode != 0: raise RuntimeError(f"SSH master to {host} failed (rc={r.returncode})")
-    return ctl
-
-
-def ssh_master_stop(ctl, host, user):
-    """Cleanly shut down a ControlMaster opened by `ssh_master_start`."""
-    subprocess.run(["ssh", "-o", f"ControlPath={ctl}", "-O", "exit", f"{user}@{host}"],
-                   capture_output=True)

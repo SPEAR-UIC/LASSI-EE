@@ -1,7 +1,6 @@
 """Pipeline state machine: Stage 0 (self-prompt) → Stage 1 (initial) → Stage 2 (correct).
 
-run_pipeline    is the per-task loop (translate OR energy OR sycl_energy sub-step)
-run_both_pipeline runs translate then energy, sharing baseline metrics
+run_pipeline   is the per-task loop (translate OR energy)
 run_baseline / run_test_run measure the original source before translation
 write_metadata writes the per-experiment report on success/failure
 """
@@ -15,8 +14,8 @@ import lassi.llm_client as _llm
 from lassi.format_colors    import B, G, R, E
 from lassi.hpc_jobs         import JobRunner, JOB_DURATION_S, PersistentWorker, build_runner
 from lassi.hpc_session      import HPCSession
-from lassi.prompt_builder   import (CODE_COMPARISON_PROMPT, build_correction_prompt,
-                                    build_stage1_prompt, run_judge, run_selfprompt)
+from lassi.prompt_builder   import (build_correction_prompt, build_stage1_prompt,
+                                    run_judge, run_selfprompt)
 from lassi.prompt_dictionary import PromptDictionary
 from lassi.resources         import ResourceConfig
 from lassi.results           import (parse_attempt_results, save_attempt_logs, tail5,
@@ -105,9 +104,15 @@ def run_baseline(*, session: HPCSession, runner: JobRunner, remote_dir,
     results = parse_attempt_results(session, results_dir, has_energy=True)
     save_attempt_logs(results, experiment_dir, "baseline_")
     if not results["build_ok"]:
-        print(f"  {R}Baseline compile FAILED{E}"); return -1.0, -1.0, ""
+        print(f"  {R}Baseline compile FAILED:{E}")
+        t = tail5(results.get("build_stderr") or "")
+        if t: print(t)
+        return -1.0, -1.0, ""
     if not results["run_ok"]:
-        print(f"  {R}Baseline run FAILED{E}"); return -1.0, -1.0, ""
+        print(f"  {R}Baseline run FAILED:{E}")
+        t = tail5((results.get("run_stderr") or "") + "\n" + (results.get("run_stdout") or ""))
+        if t: print(t)
+        return -1.0, -1.0, ""
 
     stdout = results.get("run_stdout") or ""
     if verification == "xsbench":
@@ -154,10 +159,16 @@ def run_test_run(*, session, runner, remote_dir, original_src_path: Path, src_ex
     results = parse_attempt_results(session, results_dir, has_energy=True)
     save_attempt_logs(results, experiment_dir, "baseline_")
     if not results["build_ok"]:
-        print(f"  Compiling...  {B}{R}✗  compile error{E}"); return None
+        print(f"  Compiling...  {B}{R}✗  compile error:{E}")
+        t = tail5(results.get("build_stderr") or "")
+        if t: print(t)
+        return None
     print(f"  Compiling...  {B}{G}✓  OK{E}")
     if not results["run_ok"]:
-        print(f"  Running...    {B}{R}✗  runtime error{E}"); return None
+        print(f"  Running...    {B}{R}✗  runtime error:{E}")
+        t = tail5((results.get("run_stderr") or "") + "\n" + (results.get("run_stdout") or ""))
+        if t: print(t)
+        return None
     stdout = results.get("run_stdout") or ""
     dur = results.get("duration_s", -1.0)
     print(f"  Running...    {B}{G}✓  OK{E}" + (f"  ({dur:.2f}s)" if dur > 0 else ""))
@@ -209,7 +220,7 @@ def write_metadata(*, experiment_dir: Path, experiment_name, runtime_s, attempt_
 
     if energy_efficiency_success and best_code_block and baseline_energy_j > 0 and best_energy > 0:
         print(f"\n{B}----- BEGIN CODE COMPARISON -----{E}\n")
-        cp = (CODE_COMPARISON_PROMPT
+        cp = (prompts.get_code_comparison("CUDA_cpp")
               + "\n\n[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_code
               + "\n\nOUTPUT: \n\n" + baseline_stdout)
         if baseline_dur_s > 0: cp += f"\n\nCode execution duration: {round(baseline_dur_s, 2)} s"
@@ -300,7 +311,8 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
     best_power_w = best_dur_s = -1.0
     last_power_w = last_dur_s = -1.0
     code_gen_temp = 0.2
-    energy_correction_cnt = code_correction_cnt = 0
+    energy_correction_cnt = 0
+    prev_code_err_type, same_type_streak = None, 0
     energy_efficiency_iteration = 0
     energy_efficiency_success = False
     attempt = 0
@@ -308,8 +320,7 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
     for attempt in range(_MAX_ATTEMPTS + 1):
         if attempt == 0:
             label = {"translate": "CUDA→SYCL TRANSLATION",
-                     "energy": "CUDA ENERGY OPTIMIZATION" if resource == "polaris" else "SYCL ENERGY OPTIMIZATION",
-                     "sycl_energy": "SYCL ENERGY OPTIMIZATION"}.get(task, "CODE GENERATION")
+                     "energy":    "CUDA ENERGY OPTIMIZATION"}.get(task, "CODE GENERATION")
             print(f"\n{B}----- STAGE 1: {label} -----{E}\n")
             code_block = _llm.generate_code(model, system_prompt, stage1_user_prompt,
                 verifyprompt=verifyprompt, label="[LLM] Generating initial code", temperature=0.2)
@@ -323,9 +334,12 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                 best_code_block=best_code_block, opt_power_w=last_power_w, opt_dur_s=last_dur_s)
             print(f"  {B}Attempt {attempt}/{_MAX_ATTEMPTS}{E} — correcting {err_type}")
 
-            # Temperature ratchet (mirrors base LASSI-EE pipeline_v3.py):
-            # energy-insufficient → bump per attempt; code errors → bump from attempt 3+;
-            # cap at 1.0 = terminate.
+            # Temperature ratchet:
+            #   energy-insufficient → bump per attempt (unchanged)
+            #   code errors        → only bump after 3 consecutive errors of the
+            #                        SAME type (compile / runtime / verification);
+            #                        a different error type resets the streak
+            #   cap at 1.0 = terminate.
             if err_type == "energy improvement insufficient":
                 energy_correction_cnt += 1
                 call_temp, code_gen_temp = code_gen_temp, round(min(code_gen_temp + 0.2, 1.0), 1)
@@ -334,12 +348,14 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
             elif err_type == "energy keep improving":
                 call_temp = code_gen_temp
             else:
-                code_correction_cnt += 1
-                if code_correction_cnt > 2:
+                same_type_streak = same_type_streak + 1 if err_type == prev_code_err_type else 1
+                prev_code_err_type = err_type
+                if same_type_streak >= 3:
                     call_temp, code_gen_temp = code_gen_temp, round(min(code_gen_temp + 0.2, 1.0), 1)
                     if call_temp >= 1.0:
                         print(f"  {B}Max temp reached.{E}"); break
-                    print(f"  {B}Bumping temp to {code_gen_temp}.{E}")
+                    print(f"  {B}Stuck on {err_type} ×{same_type_streak} — "
+                          f"bumping temp to {code_gen_temp}.{E}")
                 else:
                     call_temp = code_gen_temp
 
@@ -445,6 +461,7 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                     best_power_w, best_dur_s = opt_pw, opt_ds
                     energy_efficiency_success, energy_correction_cnt = True, 0
                     code_gen_temp = 0.2
+                    prev_code_err_type, same_type_streak = None, 0
                     energy_efficiency_iteration += 1
                     print(f"  Reduction...  {B}{G}↓  {reduction:.1f}%  "
                           f"({baseline_energy_j:.1f} → {opt_ej:.1f} J)  "
@@ -548,78 +565,3 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
     return False, (best_code_block if best_code_block else code_block), last_metrics
 
 
-def run_both_pipeline(*, model, resource, resource_cfg: ResourceConfig,
-                     session, compute_resource, remote_dir, account, queue, run_args,
-                     cuda_input_code, original_cu_path: Path,
-                     experiment_dir: Path, experiment_name, csv_path: Path, run_id,
-                     sycl_compiler_env, sycl_energy_compiler_env,
-                     use_self_prompting, verifyprompt, verbose, min_energy_gain_pct,
-                     use_judge=True, verification="none", walltime_s=JOB_DURATION_S,
-                     persistent: PersistentWorker | None = None):
-    """--task both: translate CUDA→SYCL, then run the energy task on the SYCL output."""
-    def _runner(key, env):
-        return build_runner(session=session, compute_resource=compute_resource,
-            resource=resource, remote_dir=remote_dir, account=account, queue=queue,
-            filesystems=resource_cfg.filesystems, worker_key=key, compiler_env=env,
-            walltime_s=walltime_s, persistent=persistent)
-
-    print(f"\n{'='*72}\n  {B}BOTH TASK — Step 1 of 2: CUDA→SYCL Translation{E}\n{'='*72}")
-    t_exp = experiment_name + "_translate"
-    t_dir = experiment_dir / "translate"
-    t_dir.mkdir(parents=True, exist_ok=True)
-
-    ts = experiment_name.split("__")[-1] if "__" in experiment_name else ""
-    t_csv = t_dir / "results_translate.csv"
-    t_data = {"timestamp": ts, "app": "XSBench", "model": model,
-              "gpu_vendor": resource_cfg.gpu_vendor, "success": False, "runtime_min": 0.0}
-    with t_csv.open("w", newline="") as f:
-        csv.DictWriter(f, fieldnames=list(t_data.keys())).writeheader()
-
-    _llm.configure(log_dir=str(t_dir / "llm_calls"), debug=verbose, stream_display=True)
-
-    ok, sycl_code, _ = run_pipeline(model=model, task="translate", resource=resource,
-        input_code=cuda_input_code, session=session, runner=_runner("translate", sycl_compiler_env),
-        remote_dir=remote_dir, src_extension=".cpp", run_args=run_args,
-        experiment_name=t_exp, experiment_dir=t_dir, csv_path=t_csv, experiment_data=t_data,
-        trial_number=1, run_id=run_id, use_self_prompting=use_self_prompting,
-        verifyprompt=verifyprompt, verbose=verbose, has_energy=False)
-    if not ok:
-        print(f"\n  {R}Translation step failed.{E}"); return False
-
-    sycl_path = experiment_dir / "Main_translated.cpp"
-    sycl_path.write_text(sycl_code, encoding="utf-8")
-    print(f"\n  Translated SYCL saved: {sycl_path}")
-
-    print(f"\n{'='*72}\n  {B}BOTH TASK — Step 2 of 2: SYCL Energy Optimization{E}\n{'='*72}")
-    e_runner = _runner("energy_sycl", sycl_energy_compiler_env)
-    e_exp = experiment_name + "_sycl_energy"
-    e_dir = experiment_dir / "sycl_energy"
-    e_dir.mkdir(parents=True, exist_ok=True)
-    _llm.configure(log_dir=str(e_dir / "llm_calls"), debug=verbose, stream_display=True)
-
-    if resource == "polaris":
-        baseline_runner, baseline_src, baseline_ext = _runner("energy_cuda", {}), original_cu_path, ".cu"
-    else:
-        baseline_runner, baseline_src, baseline_ext = e_runner, sycl_path, ".cpp"
-    bej, bpw, bso = run_baseline(session=session, runner=baseline_runner, remote_dir=remote_dir,
-        original_src_path=baseline_src, src_extension=baseline_ext,
-        experiment_name=e_exp, experiment_dir=e_dir, run_args=run_args, run_id=run_id + "b",
-        verification=verification)
-
-    e_csv = e_dir / "results_energy.csv"
-    e_data = {"timestamp": ts, "app": "XSBench", "model": model,
-              "gpu_vendor": resource_cfg.gpu_vendor, "success": False, "runtime_min": 0.0,
-              "baseline_energy_j": bej, "optimized_energy_j": -1.0, "energy_reduction_pct": 0.0}
-    with e_csv.open("w", newline="") as f:
-        csv.DictWriter(f, fieldnames=list(e_data.keys())).writeheader()
-
-    eok, _, _ = run_pipeline(model=model, task="sycl_energy", resource=resource,
-        input_code=sycl_code, session=session, runner=e_runner,
-        remote_dir=remote_dir, src_extension=".cpp", run_args=run_args,
-        experiment_name=e_exp, experiment_dir=e_dir, csv_path=e_csv, experiment_data=e_data,
-        trial_number=1, run_id=run_id, use_self_prompting=use_self_prompting,
-        verifyprompt=verifyprompt, verbose=verbose,
-        baseline_energy_j=bej, baseline_power_w=bpw, baseline_stdout=bso,
-        min_energy_gain_pct=min_energy_gain_pct, has_energy=True,
-        use_judge=use_judge, verification=verification)
-    return ok and eok

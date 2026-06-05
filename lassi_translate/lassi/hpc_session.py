@@ -1,49 +1,95 @@
-"""SSH + amsc filesystem wrapper for talking to Polaris/Aurora from a workstation.
+"""amsc-client filesystem wrapper for talking to Polaris/Aurora from a workstation.
 
-Used by remote mode and by --submit's workstation half.  Methods like
-`mkdir`/`read_remote_file` prefer the amsc fs API when available, falling
-back to SSH-over-ControlMaster otherwise.
+All read-side operations (mkdir, stat, read, rm, mv) go through the amsc fs API.
+Uploads go through `rsync` over plain SSH because amsc has no upload API — that
+is the only remaining SSH usage in the pipeline.
 """
-import shlex
 import subprocess
 
 from lassi.format_colors import R, E
 
-_READ_TIMEOUT = 60
+_FS_TIMEOUT = 60
 
 
 class HPCSession:
-    """Remote-FS + remote-shell access via SSH ControlMaster (+ optional amsc fs)."""
+    """amsc fs + (upload-only) rsync wrapper.  `fs_resource` is required."""
 
-    def __init__(self, host, user, ssh_ctl, fs_resource):
-        self.host, self.user, self.ssh_ctl, self.fs_resource = host, user, ssh_ctl, fs_resource
+    def __init__(self, host, user, fs_resource):
+        if fs_resource is None:
+            raise RuntimeError(
+                "amsc filesystem resource is required.  This codebase no "
+                "longer supports SSH fallback for FS operations.")
+        self.host, self.user, self.fs_resource = host, user, fs_resource
 
-    def _ssh(self, cmd, text=False):
-        return subprocess.run(
-            ["ssh", "-o", f"ControlPath={self.ssh_ctl}",
-             f"{self.user}@{self.host}", cmd],
-            capture_output=True, text=text,
-        )
+    # ── amsc-backed FS operations ───────────────────────────────────────────
 
-    def run(self, cmd): return self._ssh(cmd).returncode
-    def run_capture(self, cmd):
-        r = self._ssh(cmd, text=True); return r.returncode, r.stdout
-    def file_exists(self, path): return self._ssh(f"test -f {shlex.quote(path)}").returncode == 0
+    def mkdir(self, path):
+        self.fs_resource.fs.mkdir(path, parents=True).wait(timeout=_FS_TIMEOUT)
 
-    def read_file(self, path):
-        r = self._ssh(f"cat {shlex.quote(path)}", text=True)
-        return r.stdout if r.returncode == 0 else ""
+    def mkdirs(self, *paths):
+        for p in paths: self.mkdir(p)
 
-    def resolve_abs(self, path):
-        """Turn a relative remote path into an absolute one (amsc fs API
-        rejects relative paths, so every call site needs absolute)."""
-        if path.startswith("/"): return path
-        rc, out = self.run_capture(f"cd {shlex.quote(path)} && pwd")
-        return out.strip() if rc == 0 and out.strip() else path
+    def file_exists(self, path):
+        try: self.fs_resource.fs.stat(path).wait(timeout=_FS_TIMEOUT); return True
+        except Exception: return False
+
+    def file_size(self, path):
+        try:
+            t = self.fs_resource.fs.stat(path); t.wait(timeout=_FS_TIMEOUT)
+            r = t.result
+            if isinstance(r, dict): return int(r.get("size", r.get("output", {}).get("size", 0)) or 0)
+            return int(getattr(r, "size", 0) or 0)
+        except Exception: return 0
+
+    def read_file(self, path, max_lines=10000):
+        try:
+            t = self.fs_resource.fs.head(path, lines=max_lines); t.wait(timeout=_FS_TIMEOUT)
+            r = t.result
+            if isinstance(r, dict):
+                return r.get("output", {}).get("content", "") or r.get("content", "") or str(r)
+            return str(r) if r else ""
+        except Exception as exc:
+            return f"[FS read error {path!r}: {exc}]"
+
+    def read_bytes(self, path, *, offset=0, size=None):
+        """Read a byte range — used for tail-following the submit log."""
+        kw = {"offset": offset}
+        if size is not None: kw["size"] = size
+        t = self.fs_resource.fs.view(path, **kw); t.wait(timeout=_FS_TIMEOUT)
+        r = t.result
+        if isinstance(r, dict):
+            return r.get("output", {}).get("content", "") or r.get("content", "") or ""
+        return str(r) if r else ""
+
+    def rm(self, path):
+        try: self.fs_resource.fs.rm(path).wait(timeout=_FS_TIMEOUT)
+        except Exception: pass  # rm of nonexistent is fine
+
+    def mv(self, src, dst):
+        self.fs_resource.fs.mv(src, dst).wait(timeout=_FS_TIMEOUT)
+
+    def ls(self, path):
+        t = self.fs_resource.fs.ls(path); t.wait(timeout=_FS_TIMEOUT)
+        r = t.result
+        if isinstance(r, dict):
+            return r.get("output", {}).get("entries", []) or r.get("entries", []) or []
+        return r or []
+
+    def download(self, path):
+        """Return the bytes of a remote file via amsc.fs.download."""
+        t = self.fs_resource.fs.download(path); t.wait(timeout=_FS_TIMEOUT)
+        r = t.result
+        if isinstance(r, dict):
+            return r.get("output", {}).get("content", "") or r.get("content", "") or ""
+        return str(r) if r else ""
+
+    # ── Upload (rsync over plain SSH — amsc has no upload API) ──────────────
 
     def rsync(self, src, dst, is_dir=False, dereference=False):
+        """Upload a file or directory via rsync.  Uses plain ssh transport with
+        `accept-new` host-key policy (no ControlMaster)."""
         target  = f"{self.user}@{self.host}:{dst}"
-        ssh_cmd = f"ssh -o ControlPath={self.ssh_ctl}" if self.ssh_ctl else "ssh"
+        ssh_cmd = "ssh -o StrictHostKeyChecking=accept-new"
         cmd = ["rsync", "-av", "--mkpath", "-e", ssh_cmd]
         if dereference: cmd.append("-L")
         if is_dir:
@@ -59,27 +105,11 @@ class HPCSession:
             return False
         return True
 
-    def mkdir(self, path):
-        if self.fs_resource is None:
-            if self.ssh_ctl: self.run(f"mkdir -p {shlex.quote(path)}")
-            return
-        try: self.fs_resource.fs.stat(path).wait(timeout=20); return
-        except Exception: pass
-        try: self.fs_resource.fs.mkdir(path).wait(timeout=30)
-        except Exception: pass
+    # ── Path helper (no shell required) ─────────────────────────────────────
 
-    def mkdirs(self, *paths):
-        for p in paths: self.mkdir(p)
-
-    def read_remote_file(self, path, max_lines=10000):
-        if self.fs_resource is None:
-            return self.read_file(path) if self.ssh_ctl else f"[FS error: no backend for {path!r}]"
-        try:
-            task = self.fs_resource.fs.head(path, lines=max_lines)
-            task.wait(timeout=_READ_TIMEOUT)
-            r = task.result
-            if isinstance(r, dict):
-                return r.get("output", {}).get("content", "") or r.get("content", "") or str(r)
-            return str(r) if r else ""
-        except Exception as exc:
-            return f"[FS read error {path!r}: {exc}]"
+    def resolve_abs(self, path):
+        """amsc requires absolute paths.  Reject relative paths with a clear error."""
+        if path.startswith("/"): return path
+        raise ValueError(
+            f"Relative remote path {path!r} not supported.  Pass an absolute "
+            f"path (e.g. /eagle/EE-ECP/LASSI-EE/lassi_jobs) via --remote-dir.")

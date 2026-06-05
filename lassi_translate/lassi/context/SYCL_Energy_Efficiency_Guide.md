@@ -1,1 +1,0 @@
-SYCL_Programming_Guide.md

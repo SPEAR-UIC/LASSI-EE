@@ -1,6 +1,0 @@
-
-
------ METRICS -----
-Experiment date-time: 2026-06-02 18:54:17
-Time (sec): 2893.93
-Self-correction iteration count: 15

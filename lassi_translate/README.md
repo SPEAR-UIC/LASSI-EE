@@ -19,10 +19,17 @@ Three ways to run it:
 
 ### One-time on your workstation (all modes)
 
-Argonne-managed machine, on-site or VPN, Python 3.11+:
+Argonne-managed machine, on-site or VPN, Python 3.11+. Create a venv at the
+project root and install the dependencies pinned in `requirements.txt`:
 ```bash
-pip install amsc-client>=0.4.1 globus-sdk>=3.0
+cd /path/to/LASSI-EE/lassi_translate
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
+
+Activate the venv (`source .venv/bin/activate`) in any new shell before running
+`run_lassi.py`. Deactivate with `deactivate`.
 
 Set your ALCF username in `lassi_config.py`:
 ```python
@@ -30,16 +37,6 @@ Set your ALCF username in `lassi_config.py`:
 ```
 
 That's it — `--submit` mode handles its own Polaris-side setup automatically.
-
-### One-time on Polaris (only for `--on-resource` mode)
-
-```bash
-ssh your_username@polaris.alcf.anl.gov
-module load conda
-conda activate base
-python ~/lassi_translate/inference_auth_token.py authenticate
-```
-(Browser flow; tokens cache for 30 days.)
 
 ---
 
@@ -58,27 +55,51 @@ and a final side-by-side summary.
 
 ## Recipe 2 — On-resource (interactive PBS shell)
 
-Rsync the project to Polaris first:
+### One-time on Polaris (only for `--on-resource` mode)
+
+**Step 1.** From your workstation, rsync the project to Eagle (`-L`
+dereferences the `source_codes` symlink so the app sources go along too):
 ```bash
-# Preserves the source_codes symlink layout
-rsync -avz --delete --exclude='__pycache__/' --exclude='generated_codes/' --exclude='.git/' \
-  /path/to/LASSI-EE/lassi_translate/ your_username@polaris.alcf.anl.gov:~/lassi_translate/
-rsync -avz --delete /path/to/LASSI-EE/source_codes/ \
-  your_username@polaris.alcf.anl.gov:~/source_codes/
+rsync -avzL --delete --exclude='__pycache__/' --exclude='generated_codes/' --exclude='.git/' \
+  /path/to/LASSI-EE/lassi_translate/ \
+  vchirio@polaris.alcf.anl.gov:/eagle/EE-ECP/LASSI-EE/lassi_translate/
 ```
+(Replace `vchirio` with your ALCF username and `/path/to/LASSI-EE/` with
+wherever the repo lives on your workstation.)
+
+**Step 2.** SSH to a Polaris login node and authenticate to ALCF Inference
+(browser flow; tokens cache for 30 days):
+```bash
+ssh vchirio@polaris.alcf.anl.gov
+module use /soft/modulefiles
+module load conda
+conda activate base
+python3 /eagle/EE-ECP/LASSI-EE/lassi_translate/inference_auth_token.py authenticate
+```
+
+(`--submit` mode does both of these from your workstation automatically and
+rsyncs the result to Polaris — no manual Polaris-side setup needed.)
 
 Grab a compute node:
 ```bash
-ssh your_username@polaris.alcf.anl.gov
+ssh vchirio@polaris.alcf.anl.gov
 qsub -I -A EE-ECP -q debug -l select=1 -l walltime=00:30:00 -l filesystems=home:eagle
 ```
 
-Run on the compute node:
+Run on the compute node (note: `module use /soft/modulefiles` is required
+on Polaris compute nodes — the conda module isn't on the default MODULEPATH;
+and the conda env exposes `python3`, not `python`):
 ```bash
-cd ~/lassi_translate
-module load conda && conda activate base
-python run_lassi.py --on-resource --task translate --app-name XSBench
+cd /eagle/EE-ECP/LASSI-EE/lassi_translate
+module use /soft/modulefiles
+module load conda
+conda activate base
+python3 run_lassi.py --on-resource --task translate --app-name XSBench
 ```
+
+(If for some reason you must keep the project in `$HOME`, redirect output
+to Eagle explicitly with `--output-dir /eagle/EE-ECP/LASSI-EE/lassi_runs`.
+But Eagle-resident is the cleaner setup.)
 
 ---
 
@@ -91,22 +112,21 @@ python lassi_translate/run_lassi.py --submit \
 ```
 
 The pipeline:
-1. Connects to Polaris over SSH (one password prompt).
-2. **First-ever run only:** a Globus auth URL prints; paste it into a browser,
-   then paste back the resulting code. Tokens cache locally.
-3. Every ~30 days, prompts you to re-auth automatically (also browser).
-4. Syncs tokens + code to Polaris, submits one PBS job, streams its stdout
-   back to your terminal.
+1. Authenticates to ALCF via Globus (amsc-client) — opens a browser the first
+   time, then caches tokens for ~24 h.
+2. **First-ever ALCF Inference run only:** a second Globus auth URL prints
+   for the inference scope; paste it into a browser, then paste back the code.
+3. Every ~30 days the inference token re-auths automatically (browser).
+4. Uploads tokens + code to the remote via `rsync` (the only remaining SSH
+   usage — amsc has no upload API), submits one PBS job via `amsc`, then
+   polls the job's stdout log via `amsc.fs.view` and streams it to your terminal.
 
-**Ctrl-C** detaches without killing the job; reattach with the printed command:
-```
-ssh your_username@polaris.alcf.anl.gov \
-    'tail -F /eagle/.../submit_logs/lassi_submit_<timestamp>.log'
-```
-
-Kill a stranded job:
-```bash
-ssh your_username@polaris.alcf.anl.gov 'qdel <pbs_id>'
+**Ctrl-C** detaches without killing the job. To cancel the running job, use
+the amsc Job API from a Python shell:
+```python
+from amsc_client import Client
+job = Client(token='not-needed').facility('alcf').resource('Polaris').jobs(['<pbs_id>'])[0]
+job.cancel()
 ```
 
 ---
@@ -127,6 +147,11 @@ python lassi_translate/run_lassi.py --submit --inference-cluster metis
 # Custom Python interpreter on the compute node (skips conda discovery)
 python lassi_translate/run_lassi.py --submit \
     --remote-python ~/.conda/envs/myenv/bin/python3
+
+# Toggle the LLM-as-judge functional-equivalence check.  Default comes from
+# lassi_config.py ("use_judge": True); --judge / --no-judge override per run.
+python lassi_translate/run_lassi.py --no-judge      # skip judge this run
+python lassi_translate/run_lassi.py --judge         # force judge on this run
 ```
 
 Full flag list: `python lassi_translate/run_lassi.py --help`.
@@ -151,6 +176,45 @@ For `--submit` mode, the PBS stdout also lives at:
 ```
 /eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/submit_logs/lassi_submit_<timestamp>.log
 ```
+
+### Retrieving results back to your workstation
+
+**Remote mode** — already on your workstation under `generated_codes/`. Nothing to fetch.
+
+**`--submit` mode** — automatic. When the PBS job finishes, the workstation
+detects completion (background `qstat` poll), then rsyncs the experiment
+directory back to `lassi_translate/generated_codes/experiment/<exp>/`. No
+extra step needed.
+
+Override the local destination with `--fetch-dest`, or disable auto-fetch
+entirely with `--no-fetch-results` (the data still lives on Eagle —
+retrieve it manually with the `--on-resource` recipe below).
+
+If you Ctrl-C to detach before the job finishes, auto-fetch is skipped (the
+job is still running). After it completes on its own, pull manually:
+```bash
+rsync -avz \
+  vchirio@polaris.alcf.anl.gov:/eagle/EE-ECP/LASSI-EE/lassi_translate/generated_codes/experiment/<exp_dir>/ \
+  ./generated_codes/experiment/<exp_dir>/
+```
+
+**`--on-resource` mode** — at the end of the run, the pipeline prints the
+exact `rsync` command (with your username and the experiment path filled
+in) to paste into a *workstation* shell. Example:
+```bash
+rsync -avz \
+  vchirio@polaris.alcf.anl.gov:/eagle/EE-ECP/LASSI-EE/lassi_translate/generated_codes/experiment/exp_XSBench_translate_..._t11_30_36 \
+  ./pulled_results/
+```
+
+Quick peek without pulling — read the one-line outcome remotely:
+```bash
+ssh vchirio@polaris.alcf.anl.gov \
+  'cat /eagle/EE-ECP/LASSI-EE/lassi_translate/generated_codes/experiment/<exp_dir>/results.csv'
+```
+
+The exact experiment directory name is printed in the run banner as
+`Experiment : exp_...`.
 
 ---
 
@@ -178,11 +242,18 @@ ssh your_username@polaris.alcf.anl.gov 'qdel <jobid>'
 
 ---
 
-## What's not supported
+## Scope and limitations
 
-- `--task energy` and `--task both` only work in **remote mode** (not `--on-resource` / `--submit`).
+**Supported tasks (CUDA input only):**
+| `--task` | Polaris | Aurora |
+|---|---|---|
+| `translate` (CUDA → SYCL) | ✓ (verify via icpx CUDA backend) | ✓ (verify via icpx PVC backend) |
+| `energy` (CUDA → CUDA optimization) | ✓ (remote mode only) | ✗ |
+
+**Other limits:**
+- `--task energy` only works in **remote mode** (not `--on-resource` / `--submit`).
 - `gpt55` (Argo) requires `temperature=1`; the pipeline sends `0.2`, so it doesn't work yet.
-- Aurora's Flare filesystem isn't in IRI — file reads fall back to SSH (slower but transparent).
+- Both resources require their filesystems to be registered in ALCF's IRI (Polaris/Eagle, Aurora/Flare). The pipeline does not fall back to SSH for filesystem operations — if amsc can't reach the configured filesystem, the run fails immediately with a clear error.
 - Only XSBench has a built-in checksum check; other apps rely on the LLM-as-judge step.
 
 ---

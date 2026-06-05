@@ -29,12 +29,10 @@ WORKERS = {
     "polaris": {
         "translate":         ("polaris_worker.sh",            "translate"),
         "energy_cuda":       ("polaris_worker.sh",            "cuda_energy"),
-        "energy_sycl":       ("polaris_worker.sh",            "sycl_energy"),
         "persistent_worker": ("polaris_persistent_worker.sh", ""),
     },
     "aurora": {
         "translate":         ("aurora_worker.sh",             "translate"),
-        "energy_sycl":       ("aurora_worker.sh",             "sycl_energy"),
         "persistent_worker": ("aurora_persistent_worker.sh",  ""),
     },
 }

@@ -1,10 +1,11 @@
 """PBS submission, the long-running PersistentWorker, and the per-attempt JobRunner.
 
-Used in remote mode only.  --on-resource and --submit use LocalRunner instead.
+amsc-client is required.  No SSH fallbacks: job submission, state polling, and
+all IPC reads go through amsc.  The only SSH usage is `rsync` (upload) for the
+IPC trigger.json + exit signal — amsc has no upload API.
 """
 import json
 import shlex
-import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -21,71 +22,11 @@ PERSISTENT_RESULT_TIMEOUT = 1800
 EAGLE_PROPAGATION_S       = 5
 
 
-class SshPbsJob:
-    """A PBS job submitted via SSH qsub.  Duck-typed to match amsc_client's job
-    object (.id, .state, .is_terminal, .status) so callers don't need to branch."""
-
-    def __init__(self, job_id, ssh_ctl, host, user):
-        self._id, self._ssh, self._host, self._user = job_id, ssh_ctl, host, user
-
-    @property
-    def id(self): return self._id
-
-    def _state_rc(self):
-        r = subprocess.run(
-            ["ssh", "-o", f"ControlPath={self._ssh}", f"{self._user}@{self._host}",
-             f"qstat -f {shlex.quote(self._id)} 2>/dev/null"],
-            capture_output=True, text=True)
-        if r.returncode != 0: return "F", r.returncode
-        for line in r.stdout.splitlines():
-            s = line.strip()
-            if s.startswith("job_state"):
-                return s.split("=", 1)[1].strip(), 0
-        return "R", 0
-
-    @property
-    def state(self):
-        s, _ = self._state_rc()
-        return {"Q":"queued","H":"queued","R":"running","E":"exiting",
-                "F":"completed","X":"completed"}.get(s, s.lower())
-
-    @property
-    def is_terminal(self):
-        s, rc = self._state_rc()
-        return rc != 0 or s in ("F", "X")
-
-    @property
-    def status(self): return self.state
-
-
-def ssh_pbs_submit(*, ssh_ctl, host, user, job_name, queue, account, walltime_s,
-                   nodes=1, filesystems="", remote_dir, stdout_path, stderr_path, cmd):
-    """Submit a PBS job via `ssh user@host qsub <<<script`.  Used when the amsc
-    API can't submit (e.g. Aurora's IRI doesn't expose job submission)."""
-    h, rem = divmod(walltime_s, 3600); m, s = divmod(rem, 60)
-    wt = f"{h:02d}:{m:02d}:{s:02d}"
-    fs = f"#PBS -l filesystems={filesystems}" if filesystems else ""
-    script = (
-        f"#!/bin/bash\n#PBS -N {job_name}\n#PBS -q {queue}\n#PBS -A {account}\n"
-        f"#PBS -l select={nodes}\n#PBS -l walltime={wt}\n{fs}\n"
-        f"#PBS -o {stdout_path}\n#PBS -e {stderr_path}\n"
-        f"cd {shlex.quote(remote_dir)}\n{cmd}\n")
-    r = subprocess.run(
-        ["ssh", "-o", f"ControlPath={ssh_ctl}", f"{user}@{host}", "qsub"],
-        input=script, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"SSH qsub failed (rc={r.returncode}): {r.stderr.strip()}")
-    jid = r.stdout.strip()
-    if not jid: raise RuntimeError("SSH qsub returned empty job ID")
-    return SshPbsJob(jid, ssh_ctl, host, user)
-
-
 def submit_job(*, compute_resource, remote_dir, worker_script, task_arg="",
                src_remote_path, results_remote_dir, run_args, job_name,
                account, queue, filesystems, walltime_s=JOB_DURATION_S,
-               compiler_env=None, ssh_ctl="", host="", user=""):
-    """Submit one PBS job that runs `worker.sh <task> <src> <outdir> ...`.
-    Tries amsc_client.submit first, falls back to SSH qsub on failure."""
+               compiler_env=None):
+    """Submit one PBS job that runs `worker.sh <task> <src> <outdir> ...` via amsc."""
     env = " ".join(f"{k}={shlex.quote(v)}" for k, v in (compiler_env or {}).items() if v)
     env = (env + " ") if env else ""
     args = " ".join(shlex.quote(a) for a in run_args)
@@ -93,19 +34,11 @@ def submit_job(*, compute_resource, remote_dir, worker_script, task_arg="",
            f"{' '+shlex.quote(task_arg) if task_arg else ''}"
            f" {shlex.quote(src_remote_path)} {shlex.quote(results_remote_dir)} {args}")
     so, se = f"{results_remote_dir}/pbs_stdout.log", f"{results_remote_dir}/pbs_stderr.log"
-    try:
-        return compute_resource.submit(
-            executable="/bin/bash", arguments=["-c", cmd],
-            directory=remote_dir, name=job_name, queue=queue, account=account,
-            duration=walltime_s, nodes=1, stdout_path=so, stderr_path=se,
-            filesystems=filesystems)
-    except Exception as exc:
-        if not (ssh_ctl and host and user): raise
-        print(f"  [amsc fallback → SSH qsub: {exc}]", flush=True)
-        return ssh_pbs_submit(ssh_ctl=ssh_ctl, host=host, user=user,
-            job_name=job_name, queue=queue, account=account, walltime_s=walltime_s,
-            filesystems=filesystems, remote_dir=remote_dir,
-            stdout_path=so, stderr_path=se, cmd=cmd)
+    return compute_resource.submit(
+        executable="/bin/bash", arguments=["-c", cmd],
+        directory=remote_dir, name=job_name, queue=queue, account=account,
+        duration=walltime_s, nodes=1, stdout_path=so, stderr_path=se,
+        filesystems=filesystems)
 
 
 def wait_for_job(job, timeout_s=JOB_WAIT_TIMEOUT_S):
@@ -133,7 +66,8 @@ class PersistentWorker:
         result_ready.json  worker writes when work is done; driver polls for it
         exit               driver writes to ask worker to shut down
 
-    See workers/*_persistent_worker.sh for the worker-side event loop.
+    Driver-side: trigger.json + exit are uploads (rsync); all reads/moves/rms
+    go through amsc.  See workers/*_persistent_worker.sh for the worker loop.
     """
 
     def __init__(self, job, ipc_dir, session: HPCSession, hostname=""):
@@ -150,23 +84,13 @@ class PersistentWorker:
         say = (lambda m, end="\n": None) if quiet else (lambda m, end="\n": print(m, end=end, flush=True))
 
         say(f"  Submitting persistent worker ({name})...", end="  ")
-        try:
-            job = compute_resource.submit(
-                executable="/bin/bash", arguments=["-c", cmd],
-                directory=remote_dir, name=name, queue=queue, account=account,
-                duration=walltime_s, nodes=1,
-                stdout_path=f"{ipc_dir}/pbs_stdout.log",
-                stderr_path=f"{ipc_dir}/pbs_stderr.log",
-                filesystems=filesystems)
-        except Exception as exc:
-            if not session.ssh_ctl: raise
-            say(f"\n  [amsc fallback → SSH qsub: {exc}]")
-            job = ssh_pbs_submit(
-                ssh_ctl=session.ssh_ctl, host=session.host, user=session.user,
-                job_name=name, queue=queue, account=account, walltime_s=walltime_s,
-                filesystems=filesystems, remote_dir=remote_dir,
-                stdout_path=f"{ipc_dir}/pbs_stdout.log",
-                stderr_path=f"{ipc_dir}/pbs_stderr.log", cmd=cmd)
+        job = compute_resource.submit(
+            executable="/bin/bash", arguments=["-c", cmd],
+            directory=remote_dir, name=name, queue=queue, account=account,
+            duration=walltime_s, nodes=1,
+            stdout_path=f"{ipc_dir}/pbs_stdout.log",
+            stderr_path=f"{ipc_dir}/pbs_stderr.log",
+            filesystems=filesystems)
         say(f"{G}submitted{E}  (PBS ID: {job.id})")
 
         started = f"{ipc_dir}/job_started"
@@ -190,9 +114,9 @@ class PersistentWorker:
         return cls(job, ipc_dir, session, hostname=host)
 
     def signal_work(self, trigger):
-        """Atomically deliver `trigger` dict to the worker via rsync + mv."""
+        """Atomically deliver `trigger` dict to the worker: rsync upload + amsc mv."""
         s = self._session
-        s.run(f"rm -f {shlex.quote(self._ipc + '/result_ready.json')}")
+        s.rm(self._ipc + "/result_ready.json")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False,
                                           prefix="lassi_trigger_") as tf:
             json.dump(trigger, tf); tmp = tf.name
@@ -200,8 +124,7 @@ class PersistentWorker:
             remote_tmp = f"{self._ipc}/trigger.json.tmp"
             if not s.rsync(tmp, remote_tmp):
                 raise RuntimeError("trigger rsync failed")
-            if s.run(f"mv {shlex.quote(remote_tmp)} {shlex.quote(self._ipc + '/trigger.json')}") != 0:
-                raise RuntimeError("trigger mv failed")
+            s.mv(remote_tmp, f"{self._ipc}/trigger.json")
         finally:
             Path(tmp).unlink(missing_ok=True)
 
@@ -230,10 +153,10 @@ class PersistentWorker:
         raise TimeoutError(f"Worker result timed out after {timeout_s}s")
 
     def cleanup_result(self):
-        self._session.run(f"rm -f {shlex.quote(self._ipc + '/result_ready.json')}")
+        self._session.rm(self._ipc + "/result_ready.json")
 
     def shutdown(self):
-        """Send the exit signal and wait for the worker job to terminate."""
+        """Upload the exit signal via rsync; wait for the worker job to terminate."""
         s = self._session
         print(f"\n  Sending exit signal...", end="  ", flush=True)
         with tempfile.NamedTemporaryFile(mode="w", suffix=".exit", delete=False,
@@ -295,7 +218,6 @@ class JobRunner:
         print(f"{G}done{E}")
 
     def _run_per_job(self, src_remote, results_dir, run_args, job_name, verbose):
-        s = self._session
         print(f"  Submitting PBS job ({job_name})...", end="  ", flush=True)
         try:
             job = submit_job(
@@ -304,14 +226,13 @@ class JobRunner:
                 src_remote_path=src_remote, results_remote_dir=results_dir,
                 run_args=run_args, job_name=job_name,
                 account=self._account, queue=self._queue, filesystems=self._fs,
-                walltime_s=self._walltime, compiler_env=self._env,
-                ssh_ctl=s.ssh_ctl, host=s.host, user=s.user)
+                walltime_s=self._walltime, compiler_env=self._env)
         except Exception as exc:
             print(f"{R}FAILED: {exc}{E}")
             raise Exception(f"PBS error: {exc}") from exc
         pbs = job.id.split(".")[0]
         print(f"{G}submitted{E}  (PBS ID: {job.id})")
-        if verbose: print(f"    Monitor: ssh {s.host} qstat {pbs}")
+        if verbose: print(f"    Monitor: qstat {pbs}")
         print(f"  Waiting for PBS job {pbs}...", end="  ", flush=True)
         state = wait_for_job(job)
         col = G if state == "completed" else R

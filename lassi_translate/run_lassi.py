@@ -29,16 +29,16 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import lassi.llm_client as _llm
-from lassi.alcf         import amsc_connect, ssh_master_start, ssh_master_stop
+from lassi.alcf         import amsc_connect
 from lassi.format_colors import B, G, R, E
 from lassi.hpc_jobs     import JOB_DURATION_S, PersistentWorker, build_runner
 from lassi.hpc_session  import HPCSession
 from lassi.local_runner  import build_local_runner
 from lassi.local_session import LocalSession
-from lassi.pipeline     import (print_translate_summary, run_baseline, run_both_pipeline,
+from lassi.pipeline     import (print_translate_summary, run_baseline,
                                 run_pipeline, run_test_run)
 from lassi.resources    import RESOURCES, can_run
-from lassi.source_loader import find_apps_json, load_cuda_source, load_sycl_source
+from lassi.source_loader import find_apps_json, load_cuda_source
 
 _SEP = "=" * 72
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -81,16 +81,18 @@ def _build_parser(defaults: dict) -> argparse.ArgumentParser:
 
     # Resource + task
     p.add_argument("--resource", default=None, choices=["polaris", "aurora"])
-    p.add_argument("--task", default=None, choices=["translate", "energy", "both"])
-    p.add_argument("--input-framework", default="cuda", choices=["cuda", "sycl"])
+    p.add_argument("--task", default=None, choices=["translate", "energy"])
     p.add_argument("--app-category", default="Miniapps")
     p.add_argument("--app-name", default="XSBench")
-    p.add_argument("--sycl-source", default="")
 
     # Identity / remote
     p.add_argument("--alcf-username", default=os.environ.get("USER", ""))
     p.add_argument("--remote-dir", default="")
     p.add_argument("--skip-sync", action="store_true")
+    # Where to write generated_codes/.  Default = next to run_lassi.py.
+    # Useful when running --on-resource with code in $HOME (small quota) —
+    # point at /eagle/.../ to avoid quota errors.
+    p.add_argument("--output-dir", default="")
 
     # PBS
     p.add_argument("--account",  default=_DEFAULT_ACCOUNT)
@@ -111,10 +113,19 @@ def _build_parser(defaults: dict) -> argparse.ArgumentParser:
     p.add_argument("--inference-cluster", default="sophia", choices=["sophia", "metis"])
     p.add_argument("--remote-conda-env", default="base")
     p.add_argument("--remote-python",    default="")
+    # After --submit job completes, auto-rsync the experiment dir back to the
+    # workstation.  --fetch-dest is the local destination (default: alongside
+    # the project's generated_codes/experiment/).
+    p.add_argument("--no-fetch-results", dest="fetch_results",
+                   action="store_false", default=True)
+    p.add_argument("--fetch-dest", default="")
 
     # Pipeline
     p.add_argument("--no-self-prompting", dest="self_prompting", action="store_false")
-    p.add_argument("--no-judge",          dest="use_judge",      action="store_false")
+    # LLM-as-judge functional-equivalence check after each successful run.
+    # Default is set from lassi_config.py ("use_judge": True/False) — pass
+    # --judge / --no-judge to override per-invocation.
+    p.add_argument("--judge", dest="use_judge", action=argparse.BooleanOptionalAction)
     p.add_argument("--min-energy-gain", type=float, default=_DEFAULT_MIN_GAIN_PCT)
     p.add_argument("--verifyprompt", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--debug", action="store_true", default=False)
@@ -134,17 +145,8 @@ def _build_parser(defaults: dict) -> argparse.ArgumentParser:
 
 def _load_source(args, holder):
     """Read CUDA or SYCL source into memory; record the source Path in holder[0]."""
-    if args.task in ("translate", "both") or (args.task == "energy" and args.input_framework == "cuda"):
-        print(f"\n  Loading CUDA source ({args.app_category}/{args.app_name})...")
-        code, run_args, src_path, ver = load_cuda_source(_SCRIPT_DIR, args.app_category, args.app_name)
-    else:
-        print(f"\n  Loading SYCL source from: {args.sycl_source}")
-        src_path = Path(args.sycl_source).resolve()
-        code = load_sycl_source(src_path)
-        catalog = json.loads(find_apps_json(_SCRIPT_DIR).read_text())
-        entry = catalog.get(args.app_category, {}).get(args.app_name, {})
-        run_args = entry.get("app_params", [])
-        ver = entry.get("verification", "none")
+    print(f"\n  Loading CUDA source ({args.app_category}/{args.app_name})...")
+    code, run_args, src_path, ver = load_cuda_source(_SCRIPT_DIR, args.app_category, args.app_name)
     holder[0] = src_path
     print(f"  Source: {len(code.splitlines())} lines  |  run args: {run_args}")
     return code, run_args, ver
@@ -172,6 +174,8 @@ def _banner(args, resource_cfg, remote_dir: str,
     print(f"  Resource   : {B}{args.resource}{E} ({resource_cfg.gpu_vendor} GPU)")
     print(f"  Queue      : {B}{args.queue}{E}  |  account: {args.account}")
     print(f"  Remote dir : {remote_dir}")
+    print(f"  Judge      : {B}{'enabled' if args.use_judge else 'disabled'}{E}"
+          f"  (LLM-as-judge functional-equivalence check)")
     if args.task == "energy":
         print(f"  Min gain   : {args.min_energy_gain:.1f}%")
     print(_SEP)
@@ -242,46 +246,37 @@ def _verify_inference_token():
     raise SystemExit(f"  {R}Token check failed:{E}  {err}")
 
 
-def _sync_globus_tokens_to_remote(session, host, user):
+def _sync_globus_tokens_to_remote(session, user):
     """Mirror local tokens.json to the matching ~/.globus path on the remote.
-    rsync -u preserves a newer remote copy if Polaris auto-refreshed since last submit."""
+    Upload via rsync (amsc has no upload API); mkdir via amsc fs."""
     local = _local_tokens_dir()
     if not local.is_dir(): raise SystemExit("local tokens missing")
-    rc, home = session.run_capture("echo $HOME")
-    remote_home = home.strip() if rc == 0 and home.strip() else "~"
-    remote = f"{remote_home}/.globus/app/{_AUTH_CLIENT_ID}/{_APP_NAME}"
+    remote = f"/home/{user}/.globus/app/{_AUTH_CLIENT_ID}/{_APP_NAME}"
     print(f"  Syncing Globus tokens to {remote}...", end="  ", flush=True)
-    session.run(f"mkdir -p {shlex.quote(remote)}")
-    src = str(local).rstrip("/") + "/"
-    cmd = ["rsync", "-au", "-e", f"ssh -o ControlPath={session.ssh_ctl}",
-           src, f"{user}@{host}:{remote}/"]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        print(f"{R}FAILED{E}\n    {r.stderr.strip()[:300]}")
+    session.mkdir(remote)
+    if not session.rsync(str(local), remote, is_dir=True):
         raise SystemExit("token sync failed")
     print(f"{G}OK{E}")
 
 
 # ── --submit: build + tail a PBS job that runs --on-resource ────────────────
 
-def _build_submit_pbs_script(*, args, resource_cfg, remote_dir, remote_log_path):
-    """Generate the bash PBS script body for --submit.
-
-    The script: discovers conda (or uses --remote-python), then invokes
-    `python3 run_lassi.py --on-resource ...` with all of the user's flags
-    forwarded.  LASSI_FORCE_TTY=1 makes SlidingWindow render ANSI even
-    though stdout is the PBS log file (the workstation tail-Fs it back).
-    """
+def _build_submit_pbs_script(*, args, resource_cfg, remote_dir, remote_expdir_marker):
+    """Generate the bash body for the amsc-submitted PBS job (no #PBS headers
+    — amsc.submit passes those as native arguments).  The body discovers conda
+    (or uses --remote-python) then invokes `python3 run_lassi.py --on-resource`
+    with all of the user's flags forwarded.  LASSI_FORCE_TTY=1 makes the
+    SlidingWindow render ANSI even though stdout is the PBS log file (which
+    the workstation polls via amsc fs.view)."""
     inner = ["--on-resource", "--task", args.task, "--resource", args.resource,
              "--app-category", args.app_category, "--app-name", args.app_name,
              "--model", args.model, "--inference-cluster", args.inference_cluster,
              "--min-energy-gain", str(args.min_energy_gain)]
-    if args.input_framework != "cuda": inner += ["--input-framework", args.input_framework]
-    if args.sycl_source: inner += ["--sycl-source", args.sycl_source]
     if not args.self_prompting: inner += ["--no-self-prompting"]
     if not args.use_judge:      inner += ["--no-judge"]
     if args.verifyprompt:       inner += ["--verifyprompt"]
     if args.debug:              inner += ["--debug"]
+    if args.output_dir:         inner += ["--output-dir", args.output_dir]
     for flag, val in [("--sycl-compiler", args.sycl_compiler),
                       ("--sycl-flags",    args.sycl_flags),
                       ("--sycl-ldflags",  args.sycl_ldflags),
@@ -290,10 +285,6 @@ def _build_submit_pbs_script(*, args, resource_cfg, remote_dir, remote_log_path)
                       ("--cuda-ldflags",  args.cuda_ldflags)]:
         if val: inner += [flag, val]
     inner_cmd = " ".join(shlex.quote(a) for a in inner)
-
-    h, rem = divmod(args.walltime, 3600); m, s = divmod(rem, 60)
-    wt = f"{h:02d}:{m:02d}:{s:02d}"
-    fs = f"#PBS -l filesystems={resource_cfg.filesystems}" if resource_cfg.filesystems else ""
 
     if args.remote_python:
         py = shlex.quote(args.remote_python)
@@ -326,13 +317,9 @@ def _build_submit_pbs_script(*, args, resource_cfg, remote_dir, remote_log_path)
         )
 
     return (
-        "#!/bin/bash\n"
-        f"#PBS -N lassi-translate-{int(time.time())}\n"
-        f"#PBS -q {args.queue}\n#PBS -A {args.account}\n"
-        f"#PBS -l select=1\n#PBS -l walltime={wt}\n{fs}\n"
-        f"#PBS -o {remote_log_path}\n#PBS -e {remote_log_path}.err\n\n"
         "export PYTHONUNBUFFERED=1\n"
-        "export LASSI_FORCE_TTY=1\n\n"
+        "export LASSI_FORCE_TTY=1\n"
+        f"export LASSI_EXPDIR_FILE={shlex.quote(remote_expdir_marker)}\n\n"
         "echo '=== lassi-translate (--submit) ==='\n"
         "echo \"Hostname: $(hostname)\"\n"
         "echo \"Date:     $(date -u '+%Y-%m-%d %H:%M:%S UTC')\"\n"
@@ -347,51 +334,105 @@ def _build_submit_pbs_script(*, args, resource_cfg, remote_dir, remote_log_path)
     )
 
 
-def _tail_until_ctrl_c(session, log_path, job_id, host, user):
-    """ssh tail -F the PBS log to local stdout.  Ctrl-C detaches without killing
-    the job and prints reattach/qdel commands the user can paste later."""
+def _tail_until_ctrl_c(session, compute_resource, log_path, job_id):
+    """Poll amsc fs.view to stream the PBS log to local stdout.
+
+    Each tick: read the next chunk of bytes via amsc and print to stdout.
+    On Ctrl-C we detach (job keeps running) and return False.  When the PBS
+    job reaches a terminal state via amsc, we drain any remaining bytes and
+    return True.
+    """
     print(f"  {B}Streaming {log_path} (Ctrl-C to detach).{E}\n")
     print("─" * 72)
-    tail = subprocess.Popen(
-        ["ssh", "-o", f"ControlPath={session.ssh_ctl}", f"{user}@{host}",
-         f"tail -n +1 -F {shlex.quote(log_path)} 2>/dev/null"],
-        stdout=sys.stdout, stderr=sys.stderr)
-    try: tail.wait()
+    job = compute_resource.jobs([job_id])[0]
+    offset = 0
+    try:
+        while True:
+            size = session.file_size(log_path)
+            if size > offset:
+                chunk = session.read_bytes(log_path, offset=offset, size=size - offset)
+                if chunk:
+                    sys.stdout.write(chunk); sys.stdout.flush()
+                    offset += len(chunk.encode("utf-8", errors="replace"))
+            try:
+                terminal = job.is_terminal
+            except Exception:
+                terminal = False
+            if terminal:
+                time.sleep(2)  # final drain
+                size = session.file_size(log_path)
+                if size > offset:
+                    chunk = session.read_bytes(log_path, offset=offset, size=size - offset)
+                    if chunk: sys.stdout.write(chunk); sys.stdout.flush()
+                print(f"\n{'─' * 72}")
+                print(f"  {G}✓{E}  PBS job {B}{job_id}{E} finished.")
+                return True
+            time.sleep(3)
     except KeyboardInterrupt:
-        tail.terminate()
-        try: tail.wait(timeout=2)
-        except subprocess.TimeoutExpired: tail.kill()
         print(f"\n{'─' * 72}")
         print(f"  {B}Detached.{E}  PBS job {B}{job_id}{E} still running.")
-        print(f"  Re-attach:  ssh {user}@{host} 'tail -F {log_path}'")
-        print(f"  Kill:       ssh {user}@{host} 'qdel {job_id}'\n")
+        print(f"  Kill via amsc:  job = compute.jobs(['{job_id}'])[0]; job.cancel()\n")
+        return False
+
+
+def _fetch_results(*, session, marker_path, dest_dir):
+    """After a --submit job completes, read the expdir marker via amsc, then
+    recursively download the experiment dir via amsc.fs (no rsync — amsc has
+    a `download` API that's used for the back direction)."""
+    remote_expdir = session.read_file(marker_path).strip()
+    if not remote_expdir or remote_expdir.startswith("[FS"):
+        print(f"  {R}Could not read expdir marker ({marker_path}); skipping fetch.{E}")
+        return
+    dest_root = Path(dest_dir).expanduser() / Path(remote_expdir).name
+    print(f"  Fetching {B}{Path(remote_expdir).name}{E} to {dest_root}...", end="  ", flush=True)
+    n_files = _amsc_download_tree(session, remote_expdir, dest_root)
+    print(f"{G}OK{E}  ({n_files} files)\n  Local: {B}{dest_root}{E}")
+
+
+def _amsc_download_tree(session, remote_dir, local_dir: Path) -> int:
+    """Recursively download `remote_dir` → `local_dir` via amsc.fs.{ls,download}."""
+    local_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for entry in session.ls(remote_dir):
+        name = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+        is_dir = (entry.get("type") == "directory" if isinstance(entry, dict)
+                  else getattr(entry, "is_dir", False))
+        if not name: continue
+        rpath = f"{remote_dir}/{name}"
+        lpath = local_dir / name
+        if is_dir:
+            count += _amsc_download_tree(session, rpath, lpath)
+        else:
+            data = session.download(rpath)
+            lpath.write_text(data if isinstance(data, str) else data.decode("utf-8", "replace"))
+            count += 1
+    return count
 
 
 def _submit_main(args, parser) -> int:
     """--submit dispatch: from the workstation, set up auth + tokens + code on
-    the remote, submit one PBS job that runs --on-resource, tail its stdout."""
+    the remote, submit one PBS job via amsc that runs --on-resource, poll its
+    log via amsc.fs.view."""
     resource_cfg = RESOURCES[args.resource]
     remote_dir = args.remote_dir or resource_cfg.default_dir or _SCRIPT_DIR.name
 
     try:
         compute, fs = amsc_connect(resource_cfg.amsc_resource, resource_cfg.amsc_fs, _SCRIPT_DIR)
-        ssh_ctl = ssh_master_start(resource_cfg.host, args.alcf_username)
     except Exception as exc:
         print(f"  {R}Connection failed: {exc}{E}", file=sys.stderr); return 2
 
-    session = HPCSession(resource_cfg.host, args.alcf_username, ssh_ctl, fs)
+    session = HPCSession(resource_cfg.host, args.alcf_username, fs)
     print(f"  {G}✓{E}  Connected to {B}{resource_cfg.host}{E}")
 
     _ensure_local_inference_auth()
     _refresh_local_inference_token()
     _verify_inference_token()
-    _sync_globus_tokens_to_remote(session, resource_cfg.host, args.alcf_username)
+    _sync_globus_tokens_to_remote(session, args.alcf_username)
 
     session.mkdir(remote_dir)
     if not args.skip_sync:
         print(f"  Syncing lassi_translate to {remote_dir} (following symlinks)...", end="  ", flush=True)
         if not session.rsync(str(_SCRIPT_DIR), remote_dir, is_dir=True, dereference=True):
-            ssh_master_stop(ssh_ctl, resource_cfg.host, args.alcf_username)
             raise SystemExit("rsync failed")
         print(f"{G}OK{E}")
 
@@ -400,26 +441,28 @@ def _submit_main(args, parser) -> int:
     log_dir = f"{remote_dir}/generated_codes/experiment/submit_logs"
     session.mkdir(log_dir)
     log_path = f"{log_dir}/lassi_submit_{dt}.log"
+    expdir_marker = f"{log_dir}/lassi_submit_{dt}.expdir"
 
-    script = _build_submit_pbs_script(args=args, resource_cfg=resource_cfg,
-                                       remote_dir=remote_dir, remote_log_path=log_path)
+    body = _build_submit_pbs_script(args=args, resource_cfg=resource_cfg,
+                                     remote_dir=remote_dir,
+                                     remote_expdir_marker=expdir_marker)
     print(f"  Submitting PBS job ({B}{args.queue}{E}, walltime {args.walltime}s)...", end="  ", flush=True)
     try:
-        r = subprocess.run(
-            ["ssh", "-o", f"ControlPath={ssh_ctl}",
-             f"{args.alcf_username}@{resource_cfg.host}", "qsub"],
-            input=script, capture_output=True, text=True)
-        if r.returncode != 0 or not r.stdout.strip():
-            print(f"{R}FAILED{E}\n  qsub stderr: {r.stderr.strip()}", file=sys.stderr)
-            ssh_master_stop(ssh_ctl, resource_cfg.host, args.alcf_username); return 2
-        job_id = r.stdout.strip()
+        job = compute.submit(
+            executable="/bin/bash", arguments=["-c", body],
+            directory=remote_dir, name=f"lassi-translate-{int(time.time())}",
+            queue=args.queue, account=args.account, duration=args.walltime, nodes=1,
+            stdout_path=log_path, stderr_path=log_path + ".err",
+            filesystems=resource_cfg.filesystems)
+        job_id = job.id
         print(f"{G}submitted{E}  (PBS ID: {B}{job_id}{E})")
     except Exception as exc:
-        print(f"{R}FAILED: {exc}{E}", file=sys.stderr)
-        ssh_master_stop(ssh_ctl, resource_cfg.host, args.alcf_username); return 2
+        print(f"{R}FAILED: {exc}{E}", file=sys.stderr); return 2
 
-    _tail_until_ctrl_c(session, log_path, job_id, resource_cfg.host, args.alcf_username)
-    ssh_master_stop(ssh_ctl, resource_cfg.host, args.alcf_username)
+    completed = _tail_until_ctrl_c(session, compute, log_path, job_id)
+    if completed and args.fetch_results:
+        dest = args.fetch_dest or str(_SCRIPT_DIR / "generated_codes" / "experiment")
+        _fetch_results(session=session, marker_path=expdir_marker, dest_dir=dest)
     return 0
 
 
@@ -435,9 +478,8 @@ def _on_resource_main(args, parser) -> int:
     for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.setdefault(k, _COMPUTE_HTTPS_PROXY)
 
-    if (args.task == "energy" and args.resource == "aurora"
-            and args.input_framework == "cuda" and not args.sycl_source):
-        parser.error("Aurora energy task needs --input-framework sycl --sycl-source PATH")
+    if args.task == "energy" and args.resource != "polaris":
+        parser.error("--task energy only supports --resource polaris (CUDA energy optimization)")
 
     holder = [None]
     input_code, run_args, verification = _load_source(args, holder)
@@ -464,10 +506,17 @@ def _on_resource_main(args, parser) -> int:
     model_slug = re.sub(r"[/: ]", "_", args.model)
     app_slug   = re.sub(r"[/: ]", "_", args.app_name)
     exp = f"exp_{app_slug}_{args.task}_{model_slug}_{resource_cfg.gpu_vendor}__{dt}"
-    exp_dir = _SCRIPT_DIR / "generated_codes" / "experiment" / exp
+    out_base = Path(args.output_dir).expanduser() if args.output_dir \
+               else _SCRIPT_DIR / "generated_codes"
+    exp_dir = out_base / "experiment" / exp
     exp_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Experiment : {exp}")
     print(f"  Local dir  : {exp_dir}\n")
+
+    marker = os.environ.get("LASSI_EXPDIR_FILE")
+    if marker:
+        try: Path(marker).write_text(str(exp_dir.resolve()) + "\n")
+        except Exception as exc: print(f"  [warn] could not write expdir marker: {exc}")
 
     sycl_env, cuda_env = _compiler_envs(args)
 
@@ -512,11 +561,16 @@ def _on_resource_main(args, parser) -> int:
 
     if success:
         print_translate_summary(resource=args.resource,
-            original_framework=args.input_framework, target_framework="sycl",
+            original_framework="cuda", target_framework="sycl",
             baseline=baseline_metrics, generated=gen,
             total_elapsed_s=time.monotonic() - t_connected,
             versioned_path=exp_dir / "Main_v1_Trial1.cpp",
             verification=verification)
+
+    if not os.environ.get("LASSI_EXPDIR_FILE"):
+        print(f"\n  {B}To retrieve results to your workstation, run there:{E}")
+        print(f"    rsync -avz {args.alcf_username}@{resource_cfg.host}:"
+              f"{shlex.quote(str(exp_dir.resolve()))} ./pulled_results/\n")
     return 0 if success else 1
 
 
@@ -558,18 +612,16 @@ def main() -> int:
 
     # ── Remote mode ─────────────────────────────────────────────────────────
     resource_cfg = RESOURCES[args.resource]
-    if (args.task == "energy" and args.resource == "aurora"
-            and args.input_framework == "cuda" and not args.sycl_source):
-        parser.error("Aurora energy task needs --input-framework sycl --sycl-source PATH")
+    if args.task == "energy" and args.resource != "polaris":
+        parser.error("--task energy only supports --resource polaris (CUDA energy optimization)")
     remote_dir = args.remote_dir or resource_cfg.default_dir
 
     try:
         compute, fs = amsc_connect(resource_cfg.amsc_resource, resource_cfg.amsc_fs, _SCRIPT_DIR)
-        ssh_ctl = ssh_master_start(resource_cfg.host, args.alcf_username)
     except Exception as exc:
         print(f"  {R}Connection failed: {exc}{E}", file=sys.stderr); return 2
 
-    session = HPCSession(resource_cfg.host, args.alcf_username, ssh_ctl, fs)
+    session = HPCSession(resource_cfg.host, args.alcf_username, fs)
 
     holder = [None]
     input_code, run_args, verification = _load_source(args, holder)
@@ -578,7 +630,6 @@ def main() -> int:
     session.mkdir(remote_dir)
     if not args.skip_sync:
         if not session.rsync(str(_SCRIPT_DIR), remote_dir, is_dir=True):
-            ssh_master_stop(ssh_ctl, resource_cfg.host, args.alcf_username)
             raise SystemExit("rsync failed")
 
     remote_dir = session.resolve_abs(remote_dir)
@@ -590,7 +641,9 @@ def main() -> int:
     model_slug = re.sub(r"[/: ]", "_", args.model)
     app_slug   = re.sub(r"[/: ]", "_", args.app_name)
     exp = f"exp_{app_slug}_{args.task}_{model_slug}_{resource_cfg.gpu_vendor}__{dt}"
-    exp_dir = _SCRIPT_DIR / "generated_codes" / "experiment" / exp
+    out_base = Path(args.output_dir).expanduser() if args.output_dir \
+               else _SCRIPT_DIR / "generated_codes"
+    exp_dir = out_base / "experiment" / exp
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     sycl_env, cuda_env = _compiler_envs(args)
@@ -599,7 +652,7 @@ def main() -> int:
     print(f"  Establishing connection to {B}{resource_cfg.host}{E} "
           f"(persistent worker submitting)...", flush=True)
     persistent = None
-    if args.persistent_worker and ssh_ctl:
+    if args.persistent_worker:
         try:
             persistent = PersistentWorker.launch(
                 session=session, compute_resource=compute, remote_dir=remote_dir,
@@ -629,25 +682,8 @@ def main() -> int:
             walltime_s=args.walltime, persistent=persistent)
 
     success = False
-    if args.task == "both":
-        success = run_both_pipeline(
-            model=args.model, resource=args.resource, resource_cfg=resource_cfg,
-            session=session, compute_resource=compute,
-            remote_dir=remote_dir, account=args.account, queue=args.queue,
-            run_args=run_args, cuda_input_code=input_code, original_cu_path=original_src,
-            experiment_dir=exp_dir, experiment_name=exp,
-            csv_path=exp_dir / "results.csv", run_id=run_id, walltime_s=args.walltime,
-            sycl_compiler_env=sycl_env, sycl_energy_compiler_env=sycl_env,
-            use_self_prompting=args.self_prompting,
-            verifyprompt=args.verifyprompt, verbose=args.debug,
-            min_energy_gain_pct=args.min_energy_gain,
-            use_judge=args.use_judge, verification=verification, persistent=persistent)
-
-    elif args.task == "energy":
-        if args.resource == "polaris" and args.input_framework == "cuda":
-            key, ext, env = "energy_cuda", ".cu", cuda_env
-        else:
-            key, ext, env = "energy_sycl", ".cpp", sycl_env
+    if args.task == "energy":
+        key, ext, env = "energy_cuda", ".cu", cuda_env
         runner = _runner(key, env)
         bej, bpw, bso = run_baseline(
             session=session, runner=runner, remote_dir=remote_dir,
@@ -704,14 +740,13 @@ def main() -> int:
             use_judge=args.use_judge, verification=verification, measure_perf=True)
         if success:
             print_translate_summary(resource=args.resource,
-                original_framework=args.input_framework, target_framework="sycl",
+                original_framework="cuda", target_framework="sycl",
                 baseline=baseline_metrics, generated=gen,
                 total_elapsed_s=time.monotonic() - t_connected,
                 versioned_path=exp_dir / "Main_v1_Trial1.cpp",
                 verification=verification)
 
     if persistent: persistent.shutdown()
-    if ssh_ctl:    ssh_master_stop(ssh_ctl, resource_cfg.host, args.alcf_username)
     return 0 if success else 1
 
 

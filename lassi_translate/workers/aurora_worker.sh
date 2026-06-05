@@ -3,7 +3,7 @@
 # (Intel Data Center GPU Max / Ponte Vecchio, icpx + Level Zero).
 #
 # Usage: bash aurora_worker.sh <task> <src> <outdir> [run_args...]
-#   task : translate | sycl_energy
+#   task : translate
 #
 # Optional env overrides: SYCL_COMPILER, SYCL_FLAGS, SYCL_LDFLAGS
 #
@@ -50,15 +50,15 @@ _resolve_xpu_smi    "$LOG"
 } >> "$LOG"
 
 case "$TASK" in
-    translate|sycl_energy)
+    translate)
         COMPILER="${SYCL_COMPILER:-icpx}"
         _SYCL_DEFAULT='-O3 -std=c++17 -fsycl -fsycl-targets=spir64_gen -Xs "-device pvc"'
         FLAGS="${SYCL_FLAGS:-$_SYCL_DEFAULT}"
         LDFLAGS="${SYCL_LDFLAGS:-}"
-        MONITOR=$([ "$TASK" = sycl_energy ] && echo xpu_smi || echo none)
+        MONITOR=none
         ;;
     *)
-        echo "ERROR: unknown task '$TASK' (expected: translate|sycl_energy)" \
+        echo "ERROR: unknown task '$TASK' (expected: translate)" \
             | tee -a "$LOG" > "${OUTDIR}/build_stderr.log"
         echo -n "1" > "${OUTDIR}/build_rc.txt"
         exit 1

@@ -23,7 +23,7 @@ def tail5(text):
 
 def parse_attempt_results(session, results_dir, has_energy=False):
     """Read build_rc/run_rc + their logs (and optional energy_results) from `results_dir`."""
-    def rfile(f, lim=10000): return session.read_remote_file(f"{results_dir}/{f}", lim)
+    def rfile(f, lim=10000): return session.read_file(f"{results_dir}/{f}", lim)
     def rc(f):
         raw = rfile(f, lim=5).strip()
         return int(raw) if _INT_RE.fullmatch(raw) else -1

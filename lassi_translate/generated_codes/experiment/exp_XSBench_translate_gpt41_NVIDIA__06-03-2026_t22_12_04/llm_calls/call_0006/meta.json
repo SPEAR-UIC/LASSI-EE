@@ -1,9 +1,0 @@
-{
-  "timestamp_utc": "2026-06-04T03:44:39.207398+00:00",
-  "call_id": 6,
-  "intent": "code generation",
-  "model": "gpt41",
-  "system_chars": 3310,
-  "user_chars": 120254,
-  "response_chars": 39238
-}

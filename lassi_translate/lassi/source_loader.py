@@ -51,13 +51,6 @@ def load_cuda_source(script_dir, app_category, app_name):
     return code, cfg.get("app_params", []), main, cfg.get("verification", "none")
 
 
-def load_sycl_source(path):
-    """Read a SYCL .cpp file + its sibling *.hpp/*.h headers as one string."""
-    if not path.exists(): raise FileNotFoundError(f"SYCL source missing: {path}")
-    return _prepend_headers(path.read_text(encoding="utf-8"),
-                            path.parent, ("*.hpp", "*.h"), exclude=path)
-
-
 def sync_file_to_remote(session: HPCSession, local_file, remote_dir, exp, filename):
     """rsync one file to the canonical experiment directory on the remote FS."""
     return session.rsync(str(local_file),

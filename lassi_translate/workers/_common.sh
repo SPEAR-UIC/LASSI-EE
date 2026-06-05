@@ -23,6 +23,10 @@ _setup_lmod_oneapi() {
         echo "  [Lmod] sourcing $_init" >> "$_log"
         # shellcheck source=/dev/null
         source "$_init" >> "$_log" 2>&1 || true
+        # Polaris compute nodes need /soft/modulefiles on MODULEPATH (it's
+        # not there by default in non-interactive child shells, even when
+        # the parent shell `module use`'d it earlier).
+        module use /soft/modulefiles >> "$_log" 2>&1 || true
         module load oneapi/release >> "$_log" 2>&1 \
             || module load oneapi   >> "$_log" 2>&1 \
             || true
@@ -64,6 +68,7 @@ _resolve_icpx() {
 _setup_cuda() {
     local _log="$1"
     if command -v module &>/dev/null; then
+        module use /soft/modulefiles >> "$_log" 2>&1 || true
         module load cudatoolkit-standalone >> "$_log" 2>&1 \
             || module load cudatoolkit     >> "$_log" 2>&1 \
             || module load cuda            >> "$_log" 2>&1 \
@@ -143,35 +148,6 @@ _start_nvidia_power_monitor() {
     [ -z "$NVIDIA_SMI" ] && return 0
     : > "${_outdir}/power_samples.log"
     "$NVIDIA_SMI" dmon -s p -d 1 -i 0 >> "${_outdir}/power_samples.log" 2>&1 &
-    MONITOR_PID=$!
-}
-
-# _start_xpu_power_monitor <outdir>
-# Aurora xpu-smi has no streaming "dmon"; we poll JSON output once per second
-# and emit "<gpu_idx> <power_W>" lines matching the nvidia-smi dmon format
-# consumed by _compute_energy. Requires $XPU_SMI.
-_start_xpu_power_monitor() {
-    local _outdir="$1"
-    MONITOR_PID=""
-    [ -z "$XPU_SMI" ] && return 0
-    : > "${_outdir}/power_samples.log"
-    (
-        while true; do
-            pwr=$("$XPU_SMI" stats -d 0 2>/dev/null \
-                  | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    tile = data[0] if isinstance(data, list) else data
-    pwr_keys = [k for k in tile if 'power' in k.lower()]
-    print(float(tile[pwr_keys[0]]) if pwr_keys else -1)
-except Exception:
-    print(-1)
-" 2>/dev/null || echo "-1")
-            echo "0 $pwr" >> "${_outdir}/power_samples.log"
-            sleep 1
-        done
-    ) &
     MONITOR_PID=$!
 }
 
@@ -257,7 +233,7 @@ RESULT_PYEOF
 #                    <monitor> <device_selector> <use_eval> \
 #                    [run_args...]
 #
-#   <monitor>          : none | nvidia_smi | xpu_smi
+#   <monitor>          : none | nvidia_smi
 #   <device_selector>  : value for ONEAPI_DEVICE_SELECTOR (empty for nvcc)
 #   <use_eval>         : 0 | 1   — Aurora's `-Xs "-device pvc"` needs eval
 #                                  to preserve the embedded quotes
@@ -323,7 +299,6 @@ _compile_and_run() {
 
     case "$_monitor" in
         nvidia_smi) _start_nvidia_power_monitor "$_outdir" ;;
-        xpu_smi)    _start_xpu_power_monitor    "$_outdir" ;;
         *)          MONITOR_PID="" ;;
     esac
 

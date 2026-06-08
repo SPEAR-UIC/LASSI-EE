@@ -1,2 +1,0 @@
-timestamp,app,model,gpu_vendor,success,runtime_min
-06-04-2026_t20_02_13,XSBench,openai/gpt-oss-120b,NVIDIA,True,17.89

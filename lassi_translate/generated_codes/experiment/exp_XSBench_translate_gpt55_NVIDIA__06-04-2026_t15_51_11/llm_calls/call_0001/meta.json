@@ -1,9 +1,0 @@
-{
-  "timestamp_utc": "2026-06-04T20:54:06.104785+00:00",
-  "call_id": 1,
-  "intent": "SYCL reference guide summarization",
-  "model": "gpt55",
-  "system_chars": 335,
-  "user_chars": 39826,
-  "response_chars": 10984
-}

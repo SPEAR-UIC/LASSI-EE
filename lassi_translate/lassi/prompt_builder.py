@@ -1,14 +1,9 @@
-"""LLM prompt assembly + the LLM-as-judge correctness check.
-
-Three stages of the pipeline call into this module:
-  Stage 0: run_selfprompt          — summarize context, analyze source
-  Stage 1: build_stage1_prompt     — initial generation prompt
-  Stage 2: build_correction_prompt — per-attempt error-correction prompt
-
-System prompts and Stage 1/2 user prompts come from lassi/prompt_dictionary.py.
-Stage 0 user-prompt wording is implemented as inline f-strings here (mirroring
-base lassi/llm_methods.py).
-"""
+"""LLM prompt assembly + LLM-as-judge correctness check.
+  Stage 0: run_selfprompt          (context summary + source analysis)
+  Stage 1: build_stage1_prompt     (initial generation)
+  Stage 2: build_correction_prompt (per-attempt correction)
+System + Stage 1/2 user prompts come from prompt_dictionary.py.  Stage 0
+user prompts are inline f-strings here (mirrors base lassi/llm_methods.py)."""
 import lassi.llm_client as _llm
 from lassi.format_colors    import B, G, E
 from lassi.prompt_dictionary import PromptDictionary
@@ -33,9 +28,7 @@ _TASK_KEYS = {
 }
 
 
-def _keys(task, resource):
-    """Look up the prompt-key dict for a (task, resource) combo."""
-    return _TASK_KEYS[(task, resource)]
+def _keys(task, resource): return _TASK_KEYS[(task, resource)]
 
 
 def _preamble(guide_summary, source_description):
@@ -50,9 +43,8 @@ def _preamble(guide_summary, source_description):
 
 def run_selfprompt(*, model, prompts: PromptDictionary, input_code,
                    task, resource, verifyprompt, use_self_prompting):
-    """Stage 0: ask the LLM to summarize the reference guide + analyze the source.
-    User-prompt wording mirrors base lassi/llm_methods.py inline templates.
-    Returns (guide_summary, source_description) — both empty if disabled."""
+    """Stage 0: summarize reference guide + analyze source.  Returns
+    (guide_summary, source_description); both empty if disabled."""
     if not use_self_prompting:
         return "", ""
     print(f"\n{B}----- STAGE 0: SELF-PROMPTING -----{E}\n")
@@ -115,9 +107,8 @@ def build_correction_prompt(*, prompts, task, resource, code_block,
                             compile_err, run_err, run_stdout, input_code, attempt,
                             guide_summary="", source_description="",
                             best_code_block="", opt_power_w=-1.0, opt_dur_s=-1.0):
-    """Stage 2: classify the error and build the correction prompt.
-    Returns (err_type_label, user_prompt) — err_type drives the temperature ratchet.
-    Base has no dedicated 'energy improve' prompt — stagnation reuses err_key."""
+    """Stage 2: classify the error, build the correction prompt.
+    Returns (err_type, user_prompt); err_type drives the temperature ratchet."""
     err_key = _keys(task, resource)["err_key"]
 
     if compile_err == "execute_error":
@@ -149,8 +140,7 @@ def build_correction_prompt(*, prompts, task, resource, code_block,
 
 def run_judge(*, model, system_prompt, source_code, source_stdout, source_metrics,
               refactored_code, refactored_stdout, refactored_metrics):
-    """LLM-as-judge: ask the model to decide functional equivalence.
-    Returns "VALID" / "INVALID" / "NONE"."""
+    """LLM-as-judge: decide functional equivalence; returns 'VALID' / 'INVALID' / 'NONE'."""
     print(f"\n  {B}[Judge] Verifying functional equivalence...{E}")
     prompt = (
         "Please compare the difference between the following two CUDA C++ codes.\n\n"

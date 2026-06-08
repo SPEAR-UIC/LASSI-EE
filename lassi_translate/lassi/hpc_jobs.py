@@ -1,9 +1,7 @@
-"""PBS submission, the long-running PersistentWorker, and the per-attempt JobRunner.
+"""PBS submission (amsc), the long-running PersistentWorker, the per-attempt JobRunner.
 
-amsc-client is required.  No SSH fallbacks: job submission, state polling, and
-all IPC reads go through amsc.  The only SSH usage is `rsync` (upload) for the
-IPC trigger.json + exit signal — amsc has no upload API.
-"""
+amsc-only for job submission + state polling + IPC reads.  SSH is used only for
+rsync uploads of trigger.json + exit signal (amsc has no upload API)."""
 import json
 import shlex
 import tempfile
@@ -42,33 +40,25 @@ def submit_job(*, compute_resource, remote_dir, worker_script, task_arg="",
 
 
 def wait_for_job(job, timeout_s=JOB_WAIT_TIMEOUT_S):
-    """Poll job.is_terminal every JOB_POLL_INTERVAL_S until done (or timeout)."""
+    """Poll job.refresh() until terminal (or timeout).  Job.state is cached;
+    only refresh() pulls live state.  NotFound = job purged → 'completed'."""
     start = time.time()
     while timeout_s is None or time.time() - start < timeout_s:
         try:
-            _ = job.status
-            if job.is_terminal: return job.state
+            state = job.refresh()
+            if state in ("completed", "failed", "cancelled"): return state
         except Exception as exc:
             m = str(exc).lower()
             if "not found" in m or "400" in m: return "completed"
         time.sleep(JOB_POLL_INTERVAL_S)
-    try: return job.state
+    try: return job.refresh()
     except Exception: return "unknown"
 
 
 class PersistentWorker:
-    """A long-running PBS job that processes compile-and-run requests via file-IPC.
-
-    Avoids queueing a fresh PBS job per attempt (which would burn minutes of
-    queue wait each time).  IPC files in `ipc_dir` on the remote FS:
-        job_started        worker writes (hostname) when ready
-        trigger.json       driver writes to request work; worker polls for it
-        result_ready.json  worker writes when work is done; driver polls for it
-        exit               driver writes to ask worker to shut down
-
-    Driver-side: trigger.json + exit are uploads (rsync); all reads/moves/rms
-    go through amsc.  See workers/*_persistent_worker.sh for the worker loop.
-    """
+    """Long-running PBS job that processes compile-and-run requests via file-IPC
+    in `ipc_dir`:  job_started (worker→), trigger.json (driver→), result_ready.json
+    (worker→), exit (driver→).  Driver uploads via rsync; reads via amsc."""
 
     def __init__(self, job, ipc_dir, session: HPCSession, hostname=""):
         self._job, self._ipc, self._session, self.hostname = job, ipc_dir, session, hostname
@@ -80,12 +70,12 @@ class PersistentWorker:
         """Submit the worker PBS job and wait for it to write job_started."""
         script = f"{remote_dir}/workers/{WORKERS[resource_name]['persistent_worker'][0]}"
         name = f"lassi-persistent-{int(time.time())}"
-        cmd = f"bash {shlex.quote(script)} {shlex.quote(ipc_dir)}"
         say = (lambda m, end="\n": None) if quiet else (lambda m, end="\n": print(m, end=end, flush=True))
 
         say(f"  Submitting persistent worker ({name})...", end="  ")
+        # /bin/bash <script> <arg> — avoids amsc's GraphQL escaping of quoted strings.
         job = compute_resource.submit(
-            executable="/bin/bash", arguments=["-c", cmd],
+            executable="/bin/bash", arguments=[script, ipc_dir],
             directory=remote_dir, name=name, queue=queue, account=account,
             duration=walltime_s, nodes=1,
             stdout_path=f"{ipc_dir}/pbs_stdout.log",
@@ -95,36 +85,41 @@ class PersistentWorker:
 
         started = f"{ipc_dir}/job_started"
         deadline = None if start_timeout_s is None else time.time() + start_timeout_s
-        say(f"  Waiting for worker to start...", end="  ")
+        say(f"  Waiting for worker to start (PBS queue + env setup, ~30-90s)...")
+        t0 = time.time()
         while True:
-            if session.file_exists(started): break
-            try:
-                if job.is_terminal:
-                    raise RuntimeError(
-                        f"Worker {job.id} terminated before startup; "
-                        f"check {ipc_dir}/pbs_stderr.log")
-            except RuntimeError: raise
-            except Exception: pass
+            elapsed = int(time.time() - t0)
+            try: state = job.refresh()      # live state (NOT job.state — that's cached)
+            except Exception as exc:
+                m = str(exc).lower()
+                state = "completed" if ("not found" in m or "404" in m) else "?"
+            if state in ("running", "active"):
+                if session.file_exists(started): break
+                say(f"    [{elapsed:>3}s] PBS state={state}, worker initializing on node...")
+            else:
+                say(f"    [{elapsed:>3}s] PBS state={state}")
+            if state in ("completed", "failed", "cancelled"):
+                raise RuntimeError(
+                    f"Worker {job.id} terminated before startup ({state}); "
+                    f"check {ipc_dir}/pbs_stderr.log")
             if deadline is not None and time.time() >= deadline:
                 raise TimeoutError(f"Worker startup timed out; check {ipc_dir}/pbs_stderr.log")
-            time.sleep(10)
+            time.sleep(5)
 
         host = session.read_file(started).strip()
-        say(f"{G}ready{E}  (node: {host})")
+        say(f"  {G}✓{E}  Worker ready  (node: {host}, elapsed: {int(time.time()-t0)}s)")
         return cls(job, ipc_dir, session, hostname=host)
 
     def signal_work(self, trigger):
-        """Atomically deliver `trigger` dict to the worker: rsync upload + amsc mv."""
+        """Deliver `trigger` dict to the worker via rsync (atomic temp+rename)."""
         s = self._session
         s.rm(self._ipc + "/result_ready.json")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False,
                                           prefix="lassi_trigger_") as tf:
             json.dump(trigger, tf); tmp = tf.name
         try:
-            remote_tmp = f"{self._ipc}/trigger.json.tmp"
-            if not s.rsync(tmp, remote_tmp):
+            if not s.rsync(tmp, f"{self._ipc}/trigger.json"):
                 raise RuntimeError("trigger rsync failed")
-            s.mv(remote_tmp, f"{self._ipc}/trigger.json")
         finally:
             Path(tmp).unlink(missing_ok=True)
 
@@ -143,8 +138,9 @@ class PersistentWorker:
                     return json.loads(s.read_file(path))
             if time.time() - last_check > 30:
                 try:
-                    if self._job.is_terminal:
-                        raise RuntimeError(f"Worker {self._job.id} died; "
+                    state = self._job.refresh()
+                    if state in ("completed", "failed", "cancelled"):
+                        raise RuntimeError(f"Worker {self._job.id} died ({state}); "
                                            f"check {self._ipc}/pbs_stderr.log")
                 except RuntimeError: raise
                 except Exception: pass
@@ -170,8 +166,9 @@ class PersistentWorker:
         deadline = time.time() + 120
         while time.time() < deadline:
             try:
-                if self._job.is_terminal:
-                    print(f"{G}done{E}  ({self._job.state})"); return
+                state = self._job.refresh()
+                if state in ("completed", "failed", "cancelled"):
+                    print(f"{G}done{E}  ({state})"); return
             except Exception: pass
             time.sleep(5)
         print(f"{R}timeout{E}")
@@ -189,8 +186,7 @@ class JobRunner:
         self._env, self._walltime, self._persistent = compiler_env, walltime_s, persistent
 
     def run(self, *, src_remote, results_dir, run_args, job_name, verbose=False):
-        """Compile + run.  Raises RuntimeError on fatal (worker died),
-        generic Exception on retriable (compile error to feed back to LLM)."""
+        """Compile + run.  Raises RuntimeError = fatal; Exception = retriable."""
         if self._persistent is not None:
             self._run_persistent(src_remote, results_dir, run_args, job_name)
         else:

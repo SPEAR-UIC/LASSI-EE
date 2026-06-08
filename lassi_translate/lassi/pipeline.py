@@ -18,8 +18,8 @@ from lassi.prompt_builder   import (build_correction_prompt, build_stage1_prompt
                                     run_judge, run_selfprompt)
 from lassi.prompt_dictionary import PromptDictionary
 from lassi.resources         import ResourceConfig
-from lassi.results           import (parse_attempt_results, save_attempt_logs, tail5,
-                                    xsbench_checksum_status)
+from lassi.results           import (parse_attempt_results, parse_throughput,
+                                    save_attempt_logs, tail5, xsbench_checksum_status)
 from lassi.source_loader     import sync_file_to_remote
 
 _DEFAULT_MIN_GAIN_PCT = 1.0
@@ -220,6 +220,7 @@ def write_metadata(*, experiment_dir: Path, experiment_name, runtime_s, attempt_
 
     if energy_efficiency_success and best_code_block and baseline_energy_j > 0 and best_energy > 0:
         print(f"\n{B}----- BEGIN CODE COMPARISON -----{E}\n")
+        prompts = PromptDictionary()
         cp = (prompts.get_code_comparison("CUDA_cpp")
               + "\n\n[BEGIN SOURCE CODE AND RESULTS]\n\n" + input_code
               + "\n\nOUTPUT: \n\n" + baseline_stdout)
@@ -249,17 +250,31 @@ def _correctness_note(verification):
     return "CRITICAL: preserve the exact behavior and output of the original source code."
 
 
-def _save_success(*, experiment_dir: Path, csv_path: Path, experiment_data, trial_number,
-                  src_extension, saved_code, start_time, energy_fields=None):
-    versioned = experiment_dir / f"Main_v1_Trial{trial_number}{src_extension}"
-    versioned.write_text(saved_code, encoding="utf-8")
-    runtime_min = round((time.time() - start_time) / 60, 2)
-    experiment_data["success"] = True
-    experiment_data["runtime_min"] = runtime_min
-    if energy_fields: experiment_data.update(energy_fields)
+def _record_outcome(*, csv_path: Path, experiment_data, success: bool,
+                    start_time: float, extra_fields: dict | None = None):
+    """Write one row to results.csv (called once per run — success OR failure)."""
+    experiment_data["success"]     = success
+    experiment_data["runtime_min"] = round((time.time() - start_time) / 60, 2)
+    if extra_fields: experiment_data.update(extra_fields)
     with csv_path.open("a", newline="") as f:
         csv.DictWriter(f, fieldnames=list(experiment_data.keys())).writerow(experiment_data)
+    return experiment_data["runtime_min"]
+
+
+def _save_success(*, experiment_dir: Path, csv_path: Path, experiment_data, trial_number,
+                  src_extension, saved_code, start_time, extra_fields=None):
+    versioned = experiment_dir / f"Main_v1_Trial{trial_number}{src_extension}"
+    versioned.write_text(saved_code, encoding="utf-8")
+    runtime_min = _record_outcome(csv_path=csv_path, experiment_data=experiment_data,
+                                   success=True, start_time=start_time,
+                                   extra_fields=extra_fields)
     return versioned, runtime_min
+
+
+def _write_attempts_log(experiment_dir: Path, attempt_log: list[dict]):
+    """Dump per-attempt outcomes (compile/runtime/checksum/judge/success) as JSON."""
+    (experiment_dir / "attempts.json").write_text(
+        json.dumps(attempt_log, indent=2), encoding="utf-8")
 
 
 def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunner,
@@ -268,21 +283,12 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                  use_self_prompting=True, verifyprompt=False, verbose=False,
                  baseline_energy_j=-1.0, baseline_power_w=-1.0, baseline_stdout="",
                  min_energy_gain_pct=_DEFAULT_MIN_GAIN_PCT, has_energy=False,
-                 use_judge=True, verification="none", measure_perf=False):
-    """Core pipeline loop.  Runs Stage 0 + 1, then up to _MAX_ATTEMPTS of Stage 2.
-
-    Per attempt: LLM generates code → upload → compile+run via `runner` →
-    parse results → on failure, classify error and build correction prompt;
-    on success (and energy improvement, if applicable) → exit.
-
-    Temperature ratchet (mirrors base LASSI-EE):
-      - compile/runtime/judge errors: 0.2 for attempts 1-2, then +0.2/attempt,
-        cap at 1.0 → terminate
-      - energy-not-improved: bump per attempt
-      - energy-keep-improving: hold at current temp (reset on improvement)
-
-    Returns (success, code_block, final_metrics).
-    """
+                 use_judge=True, verification="none", measure_perf=False,
+                 baseline_metrics: dict | None = None):
+    """Core loop: Stage 0 + 1, then up to _MAX_ATTEMPTS of Stage 2.  Each
+    attempt: LLM generates code → upload → compile+run → parse → judge.
+    Temperature ratchets up on stuck errors (cap 1.0 = terminate).
+    Returns (success, code_block, final_metrics)."""
     prompts = PromptDictionary()
     start_time = time.time()
 
@@ -316,6 +322,21 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
     energy_efficiency_iteration = 0
     energy_efficiency_success = False
     attempt = 0
+    attempt_log: list[dict] = []   # per-attempt outcomes for attempts.json
+
+    def _summary_fields(translation_stdout: str = "", translation_duration_s: float = -1.0):
+        """Bundle the comparable baseline + translation perf into csv-row dict."""
+        b_dur = baseline_metrics.get("duration_s", -1.0) if baseline_metrics else -1.0
+        _, b_thru = parse_throughput(baseline_metrics.get("run_stdout", "")
+                                      if baseline_metrics else "")
+        _, t_thru = parse_throughput(translation_stdout)
+        return {
+            "attempts":               attempt + 1,
+            "baseline_runtime_s":     round(b_dur, 3) if b_dur > 0 else -1.0,
+            "baseline_throughput":    b_thru,
+            "translation_runtime_s":  round(translation_duration_s, 3) if translation_duration_s > 0 else -1.0,
+            "translation_throughput": t_thru,
+        }
 
     for attempt in range(_MAX_ATTEMPTS + 1):
         if attempt == 0:
@@ -334,12 +355,8 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                 best_code_block=best_code_block, opt_power_w=last_power_w, opt_dur_s=last_dur_s)
             print(f"  {B}Attempt {attempt}/{_MAX_ATTEMPTS}{E} — correcting {err_type}")
 
-            # Temperature ratchet:
-            #   energy-insufficient → bump per attempt (unchanged)
-            #   code errors        → only bump after 3 consecutive errors of the
-            #                        SAME type (compile / runtime / verification);
-            #                        a different error type resets the streak
-            #   cap at 1.0 = terminate.
+            # Temperature ratchet: energy-insufficient bumps every attempt;
+            # code errors bump only after 3 consecutive of the same type.
             if err_type == "energy improvement insufficient":
                 energy_correction_cnt += 1
                 call_temp, code_gen_temp = code_gen_temp, round(min(code_gen_temp + 0.2, 1.0), 1)
@@ -395,6 +412,8 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
             if t: print(t)
             compile_err = results["build_stderr"] or "Compilation failed"
             run_stdout = ""
+            attempt_log.append({"attempt": attempt, "outcome": "compile_error",
+                                 "summary": (results["build_stderr"] or "")[:300]})
             continue
         print(f"  Compiling...  {B}{G}✓  OK{E}")
 
@@ -404,6 +423,8 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
             print(f"  Running...    {B}{R}✗  runtime error:{E}")
             if t: print(t)
             compile_err, run_err = "execute_error", results["run_stderr"] or "non-zero exit"
+            attempt_log.append({"attempt": attempt, "outcome": "runtime_error",
+                                 "summary": (results["run_stderr"] or "non-zero exit")[:300]})
             continue
         print(f"  Running...    {B}{G}✓  OK{E}")
 
@@ -420,6 +441,8 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                     "including print_results(), run_event_based_simulation_baseline(), and "
                     "grid_init_do_not_profile(). Do NOT generate a simplified stub.\n"
                     f"\n[ORIGINAL SOURCE FOR REFERENCE]\n{input_code}\n[/ORIGINAL SOURCE]\n")
+                attempt_log.append({"attempt": attempt, "outcome": "checksum_mismatch",
+                                     "summary": cs_line or "(missing)"})
                 continue
             print(f"  Checksum...   {B}{G}✓  {cs_line}{E}")
 
@@ -438,6 +461,8 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                 compile_err = (f"VERIFICATION MISMATCH (LLM judge): {reason}. "
                                "Ensure ALL original logic, prints, and computation are preserved.")
                 run_stdout = ""
+                attempt_log.append({"attempt": attempt, "outcome": "judge_rejected",
+                                     "summary": f"verdict={verdict}: {reason}"})
                 continue
 
         if has_energy:
@@ -495,16 +520,22 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
             pass
         else:
             task_label = "translate" if task == "translate" else "energy"
+            t_dur = results.get("duration_s", -1.0)
             last_metrics = {"run_stdout": run_stdout,
                             "energy_joules": results.get("energy_joules", -1.0),
                             "avg_power_w":   results.get("avg_power_w",   -1.0),
-                            "duration_s":    results.get("duration_s",    -1.0),
+                            "duration_s":    t_dur,
                             "num_samples":   results.get("num_samples",    0),
                             "attempt_count": attempt}
+            attempt_log.append({"attempt": attempt, "outcome": "success",
+                                 "summary": f"runtime {t_dur:.2f}s" if t_dur > 0 else "ok"})
+            _write_attempts_log(experiment_dir, attempt_log)
             versioned, runtime_min = _save_success(
                 experiment_dir=experiment_dir, csv_path=csv_path,
                 experiment_data=experiment_data, trial_number=trial_number,
-                src_extension=src_extension, saved_code=code_block, start_time=start_time)
+                src_extension=src_extension, saved_code=code_block, start_time=start_time,
+                extra_fields=_summary_fields(translation_stdout=run_stdout,
+                                              translation_duration_s=t_dur))
             attempts_label = f"attempt {attempt + 1}" if attempt > 0 else "first attempt"
             print(f"\n  {B}{G}✅  {task_label.capitalize()} complete{E}  —  "
                   f"{attempts_label}  |  {runtime_min} min total\n")
@@ -524,13 +555,19 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
     if has_energy and energy_check_enabled and best_energy > 0:
         red = (baseline_energy_j - best_energy) / baseline_energy_j * 100.0
         if red >= min_energy_gain_pct:
+            attempt_log.append({"attempt": attempt, "outcome": "success_post_loop",
+                                 "summary": f"best energy {best_energy:.1f} J ({red:+.1f}%)"})
+            _write_attempts_log(experiment_dir, attempt_log)
+            extras = _summary_fields(translation_stdout=best_run_stdout,
+                                      translation_duration_s=best_dur_s)
+            extras.update({"baseline_energy_j": baseline_energy_j,
+                           "optimized_energy_j": best_energy,
+                           "energy_reduction_pct": round(red, 2)})
             versioned, runtime_min = _save_success(
                 experiment_dir=experiment_dir, csv_path=csv_path,
                 experiment_data=experiment_data, trial_number=trial_number,
                 src_extension=src_extension, saved_code=best_code_block, start_time=start_time,
-                energy_fields={"baseline_energy_j": baseline_energy_j,
-                               "optimized_energy_j": best_energy,
-                               "energy_reduction_pct": round(red, 2)})
+                extra_fields=extras)
             print(f"\n  {B}{G}✅  Energy complete{E}  —  {runtime_min} min total\n"
                   f"  Energy: {baseline_energy_j:.1f} J → {best_energy:.1f} J  "
                   f"({red:+.1f}%)  [{energy_efficiency_iteration} improvement(s)]\n")
@@ -553,6 +590,13 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
           f"(best: {best_energy:.1f} J, baseline: {baseline_energy_j:.1f} J).{E}\n"
           if has_energy and energy_check_enabled else
           f"\n{B}{R}❌  PIPELINE ERROR: exceeded {_MAX_ATTEMPTS} self-correction attempts.{E}\n")
+
+    # Record the failure: attempts.json + a success=False row in results.csv
+    _write_attempts_log(experiment_dir, attempt_log)
+    _record_outcome(csv_path=csv_path, experiment_data=experiment_data,
+                    success=False, start_time=start_time,
+                    extra_fields=_summary_fields(translation_stdout=best_run_stdout or run_stdout,
+                                                  translation_duration_s=best_dur_s))
 
     write_metadata(experiment_dir=experiment_dir, experiment_name=experiment_name,
         runtime_s=time.time() - start_time, attempt_count=attempt,

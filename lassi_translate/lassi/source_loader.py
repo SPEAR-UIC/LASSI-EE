@@ -1,8 +1,5 @@
-"""Find + load application source code (CUDA / SYCL).
-
-source_apps.json maps app names → directory + run arguments + verification
-strategy.  Headers (*.cuh, *.h) are prepended so the LLM sees the full program.
-"""
+"""Find + load CUDA application source.  source_apps.json maps app → folder +
+run args + verification; *.cuh/*.h headers are prepended so the LLM sees the full program."""
 import json
 from pathlib import Path
 
@@ -10,17 +7,15 @@ from lassi.hpc_session import HPCSession
 
 
 def find_source_dir(script_dir, app_folder, category=""):
-    """Locate the source directory for `app_folder` under source_codes/[category/]."""
+    """Find source dir for `app_folder` under source_codes/[category/]."""
     src = script_dir / "source_codes"
     for suffix in ([f"{category}/{app_folder}", app_folder] if category else [app_folder]):
-        c = src / suffix
-        if c.is_dir(): return c
+        if (c := src / suffix).is_dir(): return c
     raise FileNotFoundError(f"Source dir not found: {app_folder!r} under {src}")
 
 
 def find_apps_json(script_dir):
-    p = script_dir / "source_apps.json"
-    if p.exists(): return p
+    if (p := script_dir / "source_apps.json").exists(): return p
     raise FileNotFoundError(f"source_apps.json not found in {script_dir}")
 
 

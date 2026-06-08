@@ -1,11 +1,5 @@
-"""ALCF connection setup via Globus (amsc_client).
-
-Only used in remote mode and --submit mode (workstation side).  --on-resource
-runs entirely on the compute node and doesn't need any of this.
-
-No SSH fallbacks: if amsc can't reach the configured filesystem resource we
-raise loudly rather than silently degrade.
-"""
+"""ALCF connection via Globus (amsc_client) — workstation side only.
+Raises loudly if the filesystem resource isn't reachable; no SSH fallback."""
 import os
 import socket
 import subprocess
@@ -25,12 +19,8 @@ def apply_ipv4_patch():
 
 
 def amsc_connect(resource_name, fs_name, script_dir: Path, quiet=True):
-    """Globus-auth and return (compute_resource, fs_resource).  First call opens
-    a browser; subsequent calls reuse cached credentials.  Re-execs into a
-    sibling .venv if amsc_client isn't importable in the current interpreter.
-
-    Raises RuntimeError if the filesystem resource isn't reachable via amsc —
-    no SSH fallback."""
+    """Globus-auth, return (compute, fs).  First call opens a browser; later
+    calls reuse cached credentials.  Re-execs into sibling .venv if needed."""
     apply_ipv4_patch()
     try:
         from amsc_client import Client
@@ -51,13 +41,10 @@ def amsc_connect(resource_name, fs_name, script_dir: Path, quiet=True):
     client = Client(token="not-needed")
     alcf = client.facility("alcf")
     compute = alcf.resource(resource_name)
-    try:
-        fs = alcf.resource(fs_name)
+    try: fs = alcf.resource(fs_name)
     except Exception as exc:
-        raise RuntimeError(
-            f"amsc cannot reach filesystem {fs_name!r}: {exc}.  SSH fallback "
-            f"is disabled — fix the IRI registration or use --on-resource."
-        ) from exc
+        raise RuntimeError(f"amsc cannot reach filesystem {fs_name!r}: {exc}. "
+                           f"Fix the IRI registration or use --on-resource.") from exc
     status = compute.status
     if status.lower() not in ("up", "available", "running"):
         print(f"  WARNING: {resource_name} reports '{status}'")

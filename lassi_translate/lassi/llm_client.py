@@ -75,13 +75,8 @@ def _extract_code(text):
 
 
 class SlidingWindow:
-    """Live N-line view of streaming LLM output (ANSI cursor controls).
-
-    feed() enqueues parsed lines onto a deque; a background thread pops one
-    per tick and redraws — yields a smooth scroll even when many newlines
-    arrive in a single SSE chunk.  Falls back to silent mode on a non-TTY,
-    unless LASSI_FORCE_TTY=1 (set by --submit so output renders in tail -F).
-    """
+    """Live N-line ANSI view of streaming LLM output; smooth scrolling via a
+    background ticker.  Silent on non-TTY unless LASSI_FORCE_TTY=1 (--submit)."""
     _WIDTH = 110
     _FRAME = 0.08
     _FAST  = 0.01
@@ -161,13 +156,9 @@ class SlidingWindow:
 
 
 class LLMClient:
-    """Backend-agnostic LLM call surface.
-
-    backend="argo"            → Argo gateway via curl (remote mode)
-    backend="alcf_inference"  → ALCF Inference Endpoints via urllib (on-resource/submit)
-
-    Logs every call's prompts + response to <log_dir>/call_NNNN/ for replay.
-    """
+    """Backend-agnostic LLM client.  backend='argo' uses curl→Argo;
+    backend='alcf_inference' uses urllib→ALCF Inference Endpoints.
+    Every call's prompts + response is logged to <log_dir>/call_NNNN/."""
 
     def __init__(self, log_dir=None, debug=False, stream_display=False,
                  backend="argo", inference_cluster="sophia",
@@ -256,8 +247,7 @@ _client = LLMClient()
 def configure(*, log_dir=None, debug=False, stream_display=False,
               backend="argo", inference_cluster="sophia",
               inference_token_provider=None):
-    """Replace the module-global LLMClient.  Called once per experiment so
-    LLM-call logs land in the right per-experiment directory."""
+    """Replace the module-global LLMClient (called once per experiment)."""
     global _client
     _client = LLMClient(log_dir=log_dir, debug=debug, stream_display=stream_display,
                         backend=backend, inference_cluster=inference_cluster,
@@ -265,10 +255,8 @@ def configure(*, log_dir=None, debug=False, stream_display=False,
 
 
 def generate_code(model, system_prompt, user_prompt, **kw):
-    """Module-level shortcut: dispatch to the configured LLMClient."""
     return _client.generate_code(model, system_prompt, user_prompt, **kw)
 
 
 def generate_text(model, system_prompt, user_prompt, **kw):
-    """Module-level shortcut: dispatch to the configured LLMClient."""
     return _client.generate_text(model, system_prompt, user_prompt, **kw)

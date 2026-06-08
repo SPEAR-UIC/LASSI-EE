@@ -1,14 +1,49 @@
-"""amsc-client filesystem wrapper for talking to Polaris/Aurora from a workstation.
+"""amsc-client filesystem wrapper for Polaris/Aurora.
 
-All read-side operations (mkdir, stat, read, rm, mv) go through the amsc fs API.
-Uploads go through `rsync` over plain SSH because amsc has no upload API — that
-is the only remaining SSH usage in the pipeline.
+Every wrapper calls `fs.X`, waits for the Task, requires state == 'completed',
+then extracts result (dict-or-object).  Failures raise FsTaskError.
+
+ALCF IRI fs endpoints (empirically verified via tools/amsc_probe.py):
+    ls / mkdir / head / view / rm  ✓ work
+    stat / mv / download           ✗ 501 NOT IMPLEMENTED — we work around via
+                                     ls-of-parent (stat), atomic rsync (mv),
+                                     and rsync_pull (download)
+
+Uploads + downloads use rsync over SSH (amsc has no upload API; download is 501).
 """
+from __future__ import annotations
+
 import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
 
 from lassi.format_colors import R, E
 
-_FS_TIMEOUT = 60
+_FS_TIMEOUT = 60   # seconds
+
+
+class FsTaskError(RuntimeError):
+    """Raised when an amsc fs task reaches a non-completed terminal state."""
+
+
+def _result(task) -> Any:
+    """Extract result payload (dict from `additional_properties`, or raw)."""
+    raw = task.result
+    if raw is None: return None
+    if hasattr(raw, "additional_properties") and raw.additional_properties:
+        return raw.additional_properties
+    return raw
+
+
+def _await(task, *, op: str, path: str, timeout: int = _FS_TIMEOUT):
+    """Wait + require state == 'completed', else raise FsTaskError with payload."""
+    task.wait(timeout=timeout)
+    if task.state == "completed":
+        return _result(task)
+    payload = _result(task)
+    msg = payload if isinstance(payload, (str, dict)) else repr(payload)
+    raise FsTaskError(f"amsc {op}({path!r}) ended in state={task.state!r}: {msg}")
 
 
 class HPCSession:
@@ -16,81 +51,119 @@ class HPCSession:
 
     def __init__(self, host, user, fs_resource):
         if fs_resource is None:
-            raise RuntimeError(
-                "amsc filesystem resource is required.  This codebase no "
-                "longer supports SSH fallback for FS operations.")
+            raise RuntimeError("amsc filesystem resource is required (no SSH fallback).")
         self.host, self.user, self.fs_resource = host, user, fs_resource
+        self._fs = fs_resource.fs
+        # Per-session ControlMaster socket → one SSH password prompt per run.
+        self._ssh_ctl = str(Path(tempfile.mkdtemp(prefix="lassi_ssh_")) / "ctl")
+        import atexit; atexit.register(self.close)
 
-    # ── amsc-backed FS operations ───────────────────────────────────────────
+    def close(self):
+        """Cleanly shut down the SSH ControlMaster connection (if any)."""
+        if not self._ssh_ctl: return
+        try:
+            subprocess.run(
+                ["ssh", "-o", f"ControlPath={self._ssh_ctl}",
+                 "-O", "exit", f"{self.user}@{self.host}"],
+                capture_output=True, timeout=5)
+        except Exception: pass
+        self._ssh_ctl = ""
 
-    def mkdir(self, path):
-        self.fs_resource.fs.mkdir(path, parents=True).wait(timeout=_FS_TIMEOUT)
+    # ── Directory ops ───────────────────────────────────────────────────────
 
-    def mkdirs(self, *paths):
+    def mkdir(self, path: str) -> None:
+        """Create directory (with parents).  Idempotent — `mkdir -p` semantics."""
+        try:
+            _await(self._fs.mkdir(path, parents=True), op="mkdir", path=path)
+        except Exception as exc:
+            if "already exists" in str(exc).lower(): return
+            raise
+
+    def mkdirs(self, *paths) -> None:
         for p in paths: self.mkdir(p)
 
-    def file_exists(self, path):
-        try: self.fs_resource.fs.stat(path).wait(timeout=_FS_TIMEOUT); return True
+    def ls(self, path: str) -> list[dict]:
+        """List directory entries.  ALCF IRI returns them under `result['output']`."""
+        r = _await(self._fs.ls(path), op="ls", path=path)
+        if isinstance(r, dict) and isinstance(r.get("output"), list): return r["output"]
+        return r if isinstance(r, list) else []
+
+    @staticmethod
+    def _entry_field(entry, field):
+        return entry.get(field) if isinstance(entry, dict) else getattr(entry, field, None)
+
+    def file_exists(self, path: str) -> bool:
+        """Exists check via ls (fs.stat is 501 on ALCF)."""
+        parent, _, name = path.rpartition("/")
+        if not parent: return False
+        try: entries = self.ls(parent)
         except Exception: return False
+        return any(self._entry_field(e, "name") == name for e in entries)
 
-    def file_size(self, path):
-        try:
-            t = self.fs_resource.fs.stat(path); t.wait(timeout=_FS_TIMEOUT)
-            r = t.result
-            if isinstance(r, dict): return int(r.get("size", r.get("output", {}).get("size", 0)) or 0)
-            return int(getattr(r, "size", 0) or 0)
+    def file_size(self, path: str) -> int:
+        """Size in bytes via ls-of-parent (fs.stat is 501 on ALCF); 0 if missing."""
+        parent, _, name = path.rpartition("/")
+        if not parent: return 0
+        try: entries = self.ls(parent)
         except Exception: return 0
+        for e in entries:
+            if self._entry_field(e, "name") != name: continue
+            try: return int(self._entry_field(e, "size"))
+            except (TypeError, ValueError): return 0
+        return 0
 
-    def read_file(self, path, max_lines=10000):
-        try:
-            t = self.fs_resource.fs.head(path, lines=max_lines); t.wait(timeout=_FS_TIMEOUT)
-            r = t.result
-            if isinstance(r, dict):
-                return r.get("output", {}).get("content", "") or r.get("content", "") or str(r)
-            return str(r) if r else ""
+    # ── File reads ──────────────────────────────────────────────────────────
+
+    def _extract_content(self, r: Any) -> str:
+        """Pull text content from an fs.head / fs.view result."""
+        if r is None: return ""
+        if isinstance(r, (str, bytes)):
+            return r.decode("utf-8", "replace") if isinstance(r, bytes) else r
+        candidates = [r] if isinstance(r, dict) else []
+        if candidates and isinstance(r.get("output"), dict): candidates.append(r["output"])
+        for d in candidates:
+            for k in ("content", "text", "data"):
+                v = d.get(k)
+                if isinstance(v, (str, bytes)):
+                    return v.decode("utf-8", "replace") if isinstance(v, bytes) else v
+        return str(r)
+
+    def read_file(self, path: str, max_lines: int = 10000) -> str:
+        """Read first `max_lines` lines via fs.head; raises FsTaskError on failure."""
+        return self._extract_content(_await(self._fs.head(path, lines=max_lines),
+                                             op="head", path=path))
+
+    def read_bytes(self, path: str, *, offset: int = 0, size: int | None = None) -> str:
+        """Byte-range read via fs.view (used to tail-follow growing logs)."""
+        kw = {"offset": offset} | ({"size": size} if size is not None else {})
+        return self._extract_content(_await(self._fs.view(path, **kw),
+                                             op="view", path=path))
+
+    # ── File writes / removes ───────────────────────────────────────────────
+
+    def rm(self, path: str) -> None:
+        """Delete a file; missing files are not an error (idempotent)."""
+        from amsc_client.core.exceptions import NotFoundError
+        try: _await(self._fs.rm(path), op="rm", path=path)
+        except NotFoundError: pass
         except Exception as exc:
-            return f"[FS read error {path!r}: {exc}]"
-
-    def read_bytes(self, path, *, offset=0, size=None):
-        """Read a byte range — used for tail-following the submit log."""
-        kw = {"offset": offset}
-        if size is not None: kw["size"] = size
-        t = self.fs_resource.fs.view(path, **kw); t.wait(timeout=_FS_TIMEOUT)
-        r = t.result
-        if isinstance(r, dict):
-            return r.get("output", {}).get("content", "") or r.get("content", "") or ""
-        return str(r) if r else ""
-
-    def rm(self, path):
-        try: self.fs_resource.fs.rm(path).wait(timeout=_FS_TIMEOUT)
-        except Exception: pass  # rm of nonexistent is fine
-
-    def mv(self, src, dst):
-        self.fs_resource.fs.mv(src, dst).wait(timeout=_FS_TIMEOUT)
-
-    def ls(self, path):
-        t = self.fs_resource.fs.ls(path); t.wait(timeout=_FS_TIMEOUT)
-        r = t.result
-        if isinstance(r, dict):
-            return r.get("output", {}).get("entries", []) or r.get("entries", []) or []
-        return r or []
-
-    def download(self, path):
-        """Return the bytes of a remote file via amsc.fs.download."""
-        t = self.fs_resource.fs.download(path); t.wait(timeout=_FS_TIMEOUT)
-        r = t.result
-        if isinstance(r, dict):
-            return r.get("output", {}).get("content", "") or r.get("content", "") or ""
-        return str(r) if r else ""
+            m = str(exc).lower()
+            if any(s in m for s in ("does not exist", "no such file", "not found")): return
+            raise
 
     # ── Upload (rsync over plain SSH — amsc has no upload API) ──────────────
 
-    def rsync(self, src, dst, is_dir=False, dereference=False):
-        """Upload a file or directory via rsync.  Uses plain ssh transport with
-        `accept-new` host-key policy (no ControlMaster)."""
-        target  = f"{self.user}@{self.host}:{dst}"
-        ssh_cmd = "ssh -o StrictHostKeyChecking=accept-new"
-        cmd = ["rsync", "-av", "--mkpath", "-e", ssh_cmd]
+    @property
+    def _ssh_transport(self) -> str:
+        """ssh -e command for rsync; opens ControlMaster on first use, reused after."""
+        return (f"ssh -o StrictHostKeyChecking=accept-new "
+                f"-o ControlMaster=auto -o ControlPath={self._ssh_ctl} "
+                f"-o ControlPersist=300")
+
+    def rsync(self, src, dst, is_dir: bool = False, dereference: bool = False) -> bool:
+        """Upload (workstation → remote)."""
+        target = f"{self.user}@{self.host}:{dst}"
+        cmd = ["rsync", "-av", "--mkpath", "-e", self._ssh_transport]
         if dereference: cmd.append("-L")
         if is_dir:
             src = src.rstrip("/") + "/"
@@ -105,11 +178,19 @@ class HPCSession:
             return False
         return True
 
-    # ── Path helper (no shell required) ─────────────────────────────────────
+    def rsync_pull(self, remote_src: str, local_dst: str, is_dir: bool = True) -> bool:
+        """Download (remote → workstation) via the same ControlMaster as `rsync`."""
+        src = remote_src.rstrip("/") + ("/" if is_dir else "")
+        dst = str(local_dst).rstrip("/") + ("/" if is_dir else "")
+        cmd = ["rsync", "-az", "-e", self._ssh_transport,
+               f"{self.user}@{self.host}:{src}", dst]
+        r = subprocess.run(cmd)
+        return r.returncode == 0
 
-    def resolve_abs(self, path):
-        """amsc requires absolute paths.  Reject relative paths with a clear error."""
+    # ── Path helper ─────────────────────────────────────────────────────────
+
+    def resolve_abs(self, path: str) -> str:
+        """amsc requires absolute paths; reject relative paths with a clear error."""
         if path.startswith("/"): return path
-        raise ValueError(
-            f"Relative remote path {path!r} not supported.  Pass an absolute "
-            f"path (e.g. /eagle/EE-ECP/LASSI-EE/lassi_jobs) via --remote-dir.")
+        raise ValueError(f"Relative remote path {path!r} not supported — pass an "
+                         f"absolute path (e.g. /eagle/...) via --remote-dir.")

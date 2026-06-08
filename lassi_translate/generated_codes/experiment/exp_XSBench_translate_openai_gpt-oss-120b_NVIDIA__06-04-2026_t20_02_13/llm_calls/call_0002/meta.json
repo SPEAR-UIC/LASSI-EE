@@ -1,9 +1,0 @@
-{
-  "timestamp_utc": "2026-06-05T01:09:26.424590+00:00",
-  "call_id": 2,
-  "intent": "source code analysis",
-  "model": "openai/gpt-oss-120b",
-  "system_chars": 335,
-  "user_chars": 88218,
-  "response_chars": 12119
-}

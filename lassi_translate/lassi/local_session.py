@@ -1,6 +1,4 @@
-"""Drop-in replacement for HPCSession when the pipeline runs directly on the
-compute node (--on-resource / --submit).  Same method names; backed by stdlib
-filesystem calls instead of amsc."""
+"""Drop-in HPCSession replacement for --on-resource: stdlib FS calls, no amsc/SSH."""
 import shutil
 from pathlib import Path
 
@@ -36,9 +34,9 @@ class LocalSession:
             data = f.read() if size is None else f.read(size)
         return data.decode("utf-8", errors="replace")
 
-    def download(self, path): return Path(path).read_text(encoding="utf-8", errors="replace")
     def ls(self, path):
-        return [{"name": p.name, "type": "directory" if p.is_dir() else "file"}
+        return [{"name": p.name, "type": "directory" if p.is_dir() else "file",
+                 "size": str(p.stat().st_size) if p.is_file() else "0"}
                 for p in Path(path).iterdir()]
 
     # ── FS writes ───────────────────────────────────────────────────────────
@@ -46,10 +44,6 @@ class LocalSession:
     def rm(self, path):
         try: Path(path).unlink()
         except Exception: pass
-
-    def mv(self, src, dst):
-        Path(dst).parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(src, dst)
 
     def rsync(self, src, dst, is_dir=False, dereference=False):
         src, dst = Path(src).resolve(), Path(dst).resolve()
@@ -70,6 +64,9 @@ class LocalSession:
         except Exception as exc:
             print(f"  local copy failed ({src} → {dst}): {exc}")
             return False
+
+    def rsync_pull(self, remote_src, local_dst, is_dir=True):
+        return self.rsync(remote_src, local_dst, is_dir=is_dir)
 
     def resolve_abs(self, path):
         try: return str(Path(path).resolve())

@@ -3,7 +3,8 @@ import json
 import re
 from pathlib import Path
 
-_INT_RE = re.compile(r"-?\d+")
+_INT_RE        = re.compile(r"-?\d+")
+_THROUGHPUT_RE = re.compile(r"Lookups/s:\s*([\d,]+)")
 
 
 def xsbench_checksum_status(stdout):
@@ -15,6 +16,14 @@ def xsbench_checksum_status(stdout):
     return "", False
 
 
+def parse_throughput(stdout):
+    """Return (lookups_per_second, formatted_str) from XSBench 'Lookups/s:' line.
+    (-1, '') if not present (e.g. non-XSBench apps)."""
+    m = _THROUGHPUT_RE.search(stdout or "")
+    if not m: return -1, ""
+    return int(m.group(1).replace(",", "")), m.group(1)
+
+
 def tail5(text):
     """Last 5 non-blank lines, indented — used for compile/runtime error previews."""
     lines = [l for l in (text or "").splitlines() if l.strip()]
@@ -22,8 +31,10 @@ def tail5(text):
 
 
 def parse_attempt_results(session, results_dir, has_energy=False):
-    """Read build_rc/run_rc + their logs (and optional energy_results) from `results_dir`."""
-    def rfile(f, lim=10000): return session.read_file(f"{results_dir}/{f}", lim)
+    """Read build/run rc + logs (and energy if requested); missing files → ""."""
+    def rfile(f, lim=10000):
+        try: return session.read_file(f"{results_dir}/{f}", lim)
+        except Exception: return ""
     def rc(f):
         raw = rfile(f, lim=5).strip()
         return int(raw) if _INT_RE.fullmatch(raw) else -1
@@ -55,5 +66,5 @@ def save_attempt_logs(results, experiment_dir: Path, prefix: str):
                        ("run_stdout","run_stdout.log"),
                        ("run_stderr","run_stderr.log")]:
         content = results.get(key) or ""
-        if content and not content.startswith(("[Remote FS read error","[FS error","[FS read error","[Local FS read error")):
+        if content:
             (experiment_dir / (prefix + fname)).write_text(content, encoding="utf-8")

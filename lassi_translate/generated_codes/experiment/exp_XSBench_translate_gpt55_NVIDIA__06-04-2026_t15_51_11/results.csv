@@ -1,2 +1,0 @@
-timestamp,app,model,gpu_vendor,success,runtime_min
-06-04-2026_t15_51_11,XSBench,gpt55,NVIDIA,True,11.13

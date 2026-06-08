@@ -1,9 +1,6 @@
-"""ALCF Inference Endpoints client — stdlib HTTPS + SSE streaming.
-
-Used by --on-resource and --submit (compute nodes can't reach Argo).
-Tokens are read from the vendored helper's cache at
-~/.globus/.../inference_app/tokens.json — no globus_sdk import needed here.
-"""
+"""ALCF Inference Endpoints client (stdlib HTTPS + SSE streaming) — used by
+--on-resource / --submit (compute nodes can't reach Argo).  Reads cached tokens
+from ~/.globus/.../inference_app/tokens.json with stdlib JSON (no globus_sdk)."""
 import json
 import re
 import time
@@ -38,11 +35,7 @@ def _load_auth_helper(script_dir):
 
 
 def _find_inference_entry(obj):
-    """Walk tokens.json to find the entry for the ALCF Inference gateway.
-
-    globus_sdk 4.x nests entries 3 levels deep under {data: {DEFAULT: {<rs>: ...}}};
-    3.x is flat {<rs>: ...}.  We pick by resource_server == _GATEWAY_CLIENT_ID.
-    """
+    """Walk tokens.json (globus_sdk 3.x flat / 4.x nested) for the gateway entry."""
     if not isinstance(obj, dict): return None
     if obj.get("resource_server") == _GATEWAY_CLIENT_ID and "access_token" in obj:
         return obj
@@ -69,8 +62,7 @@ def _read_cached_access_token(safety_margin_s=60):
 
 
 def get_access_token(script_dir):
-    """Return a valid access token.  Fast path: cached file.  Slow path:
-    delegate to the vendored helper to refresh (needs globus_sdk + network)."""
+    """Return a valid access token (cached if fresh, else refresh via helper)."""
     cached = _read_cached_access_token()
     if cached: return cached
     try: helper = _load_auth_helper(script_dir)
@@ -91,12 +83,8 @@ def get_access_token(script_dir):
 def stream_chat(*, model, system_prompt, user_prompt, token,
                 cluster=DEFAULT_CLUSTER, temperature=None,
                 on_chunk: Callable[[str], None] | None = None, timeout_s=600.0):
-    """POST a chat completion (stream=true) and return the assembled response.
-
-    Calls `on_chunk(delta)` per incremental text fragment for live display.
-    User-Agent is set to curl/8.x — Cloudflare WAF blocks Python-urllib's
-    default UA.
-    """
+    """POST a streaming chat completion; return the assembled response.
+    `on_chunk(delta)` fires per fragment.  UA spoofed to curl (Cloudflare WAF)."""
     base = _BASE_URLS.get(cluster)
     if not base: raise ValueError(f"unknown cluster {cluster!r}")
     url = f"{base}/chat/completions"
@@ -163,8 +151,7 @@ def list_endpoints(token):
 
 
 def verify_token(token, timeout_s=15.0):
-    """Cheap GET that pre-flights a token (catches the 30-day high-assurance
-    timeout before any expensive operation).  Returns (ok, error_message)."""
+    """Pre-flight GET to catch 30-day high-assurance timeout; returns (ok, err_msg)."""
     try:
         list_endpoints(token)
         return True, ""

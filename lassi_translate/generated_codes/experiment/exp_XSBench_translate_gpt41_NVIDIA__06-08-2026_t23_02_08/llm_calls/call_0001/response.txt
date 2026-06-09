@@ -1,0 +1,61 @@
+```
+Key relevant points from the SYCL Programming Guide, Chapter 21:
+
+1. Device Diversity and Selection:
+   - SYCL targets heterogeneous devices, not just GPUs from a single vendor. 
+   - Code should enumerate devices and select those best suited for energy efficiency (e.g., prefer integrated GPU or CPU over discrete GPU for lower power).
+
+2. Queue/Stream Management:
+   - CUDA uses in-order streams, SYCL queues are out-of-order by default, can be made in-order.
+   - Out-of-order queues allow better overlap of operations, potentially reducing idle time and saving energy.
+   - Proper scheduling/multiple queues can utilize hardware efficiently.
+
+3. Memory Allocation, Initialization, and Local Memory:
+   - SYCL uses standard C++ mechanisms, offers malloc_host/device functions.
+   - Local memory (shared memory in CUDA) is represented by SYCL local accessors.
+   - Efficient memory management, including use of local memory, can reduce energy by minimizing global memory access.
+
+4. Indexing/ND-Range Handling:
+   - SYCL uses "last dimension is contiguous" (unit stride), CUDA uses "first dimension is contiguous".
+   - Ensuring data layout matches access patterns reduces cache misses and memory bandwidth usage, saving energy.
+
+5. Synchronization and Barriers:
+   - group_barrier and CUDA __syncthreads are similar, but SYCL requires all work-items to reach barrier (no early exit).
+   - Avoid unnecessary synchronization to minimize idle/wait times, which improves energy efficiency.
+
+6. Atomics, Fences, and Memory Order:
+   - SYCL atomics require explicit specification of memory order and scope, default is relaxed for optimal performance.
+   - Relaxed order and device scope are more energy-efficient than sequential consistency/system scope unless correctness requires stronger order.
+
+7. Sub-Groups/Warps:
+   - SYCL sub-groups may not match CUDA warp sizes (can vary by device).
+   - Use device queries to adapt kernel execution to energy-optimized sub-group sizes.
+
+8. Exception/Error Handling:
+   - SYCL uses exceptions for errors, enabling integration with modern C++ error handling and potentially graceful recovery/retry strategies.
+
+9. Global Variables and Hardware Features:
+   - SYCL does not currently support global device variables; alternative: use kernel arguments or buffers.
+   - For hardware features like tensor cores, prefer SYCL standard APIs and query device capabilities to target energy efficient hardware when available.
+
+10. Portability and Code Maintenance:
+   - Use standard SYCL APIs rather than migration tool utilities for future-proof, maintainable, and portable code.
+   - Hand-tune migrated code for maintainability, performance, and energy efficiency.
+
+11. Tools and Automated Migration:
+   - dpct/SYCLomatic helps, but human review/optimization for energy efficiency is necessary.
+
+Application for translation to improve energy efficiency:
+- Prefer device selection logic to choose lower-power devices when possible.
+- Use out-of-order queues and schedule kernels to overlap communication and computation.
+- Use local memory effectively, minimize global memory usage.
+- Match data layout and ND-range to access patterns.
+- Restrict barrier use to only when necessary; no early work-item exit before barrier.
+- Use relaxed atomics and device scope where correctness permits.
+- Query sub-group sizes and adapt for efficient execution.
+- Replace global device variables with buffers/local accessors.
+- Avoid device context mishandling for optimal code generation and kernel performance.
+- Use standard SYCL error handling for robust execution.
+
+These points should inform both automated and manual SYCL translations for improved energy efficiency.
+```

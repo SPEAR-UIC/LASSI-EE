@@ -1,0 +1,55 @@
+**Key points to apply when translating CUDA → SYCL for better energy efficiency**
+
+- **Device selection & power‑aware scheduling**
+  - Use a *device selector* (or custom selector) that prefers low‑power devices (e.g., integrated GPUs, CPUs) when performance requirements allow.
+  - Query device properties (`info::device::max_compute_units`, `info::device::name`, `info::device::has_aspect(aspect::fp64)`, etc.) and choose the most energy‑efficient device for the workload.
+
+- **Queue ordering**
+  - Prefer **in‑order queues** (`property::queue::in_order`) when possible – they simplify dependency tracking and avoid extra synchronization overhead.
+  - If overlapping kernels/memory copies is needed, use **out‑of‑order queues** with explicit `depends_on` to let the runtime schedule work efficiently and reduce idle time.
+
+- **Memory hierarchy**
+  - Exploit **local (shared) memory** (`accessor<T, 1, access::mode::read_write, access::target::local>`) for data that is reused by work‑items in a work‑group; this reduces global memory traffic → lower energy.
+  - Align host allocations (`malloc_host`/`malloc_shared`) to the device’s preferred alignment to prevent extra copies.
+
+- **Contiguous dimension handling**
+  - Remember SYCL’s last dimension is the fastest‑moving; map CUDA’s `threadIdx.x` → `item.get_local_id(N-1)`. Correct mapping avoids extra strided accesses that increase memory bandwidth and power.
+
+- **Sub‑group (warp) awareness**
+  - Use `item.get_sub_group()` and sub‑group algorithms (`permute_group_by_xor`, `reduce_over_group`, etc.) to keep work‑items tightly synchronized; this improves SIMD utilization and reduces idle lanes.
+  - Do **not** assume a fixed sub‑group size of 32 – query `item.get_sub_group().get_local_range().size()` and adapt algorithms accordingly.
+
+- **Barrier usage**
+  - Keep barriers (`group_barrier`) **local** (`access::fence_space::local_space`) unless a wider scope is required; wider scopes (`memory_scope::device`) are more expensive energy‑wise.
+  - Ensure *all* work‑items in a group reach the barrier (avoid early‑exit patterns) to prevent deadlocks and wasted cycles.
+
+- **Atomics**
+  - Use **relaxed atomics** (`memory_order::relaxed`) with the narrowest possible scope (`memory_scope::device` for device‑wide, `memory_scope::work_group` for intra‑group) when ordering is not required; this reduces synchronization overhead.
+  - Prefer `sycl::atomic_ref` over older C‑style atomics for clearer intent and easier scope control.
+
+- **Kernel launch configuration**
+  - Choose **work‑group sizes** that match the device’s preferred size (`info::device::max_work_group_size`, `info::device::preferred_work_group_size_multiple`) to achieve high occupancy with fewer idle resources.
+  - Avoid over‑provisioning work‑items that lead to under‑utilized compute units, which wastes energy.
+
+- **Minimize host‑device transfers**
+  - Batch data transfers and overlap them with computation using multiple queues or out‑of‑order submission.
+  - Use `queue::memcpy` with `depends_on` to hide latency; fewer transfers → lower PCIe/CPU‑GPU power draw.
+
+- **Context reuse**
+  - Reuse a single **SYCL context** for the whole application; creating multiple contexts forces repeated kernel compilation and memory allocation, increasing both runtime and energy consumption.
+
+- **Error handling**
+  - Replace CUDA error‑code checks with SYCL exception handling (`try { … } catch (sycl::exception const &e) { … }`). This avoids extra synchronization calls (e.g., `cudaDeviceSynchronize`) solely for error detection.
+
+- **Power‑aware compilation flags**
+  - When using Intel‑oneAPI, enable `-fsycl-targets=spir64,spir64_gen` with `-O2`/`-O3` and consider `-fsycl-device-code-split=per_kernel` to let the runtime load only needed kernels, reducing memory footprint.
+  - For NVIDIA back‑ends, enable `-Xsycl-target-backend=nvptx64-nvidia-cuda -fsycl-allow-fp64-reduced-precision` if lower precision suffices, cutting down energy per flop.
+
+- **Algorithmic refactoring**
+  - Look for opportunities to replace *global* reductions or scans with *sub‑group* or *work‑group* versions; they incur far less synchronization and memory traffic.
+  - Vectorize data paths (e.g., use `vec<T, N>`) to increase compute per memory transaction.
+
+- **Profiling for energy**
+  - Use SYCL’s built‑in profiling (`queue::property::enable_profiling`) and external tools (Intel VTune, NVIDIA Nsight) to measure kernel execution time and power; iterate on work‑group size, memory layout, and synchronization to find the sweet spot.
+
+Applying these guidelines during the CUDA‑to‑SYCL migration will help you write code that runs efficiently across heterogeneous devices while minimizing energy consumption.

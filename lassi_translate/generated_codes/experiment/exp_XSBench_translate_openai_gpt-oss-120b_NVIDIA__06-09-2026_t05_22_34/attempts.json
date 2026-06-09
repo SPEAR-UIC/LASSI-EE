@@ -1,0 +1,82 @@
+[
+  {
+    "attempt": 0,
+    "outcome": "compile_error",
+    "summary": "In file included from /lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t05_22_34/Main_attempt0.cpp:4:\n/soft/compilers/oneapi/release/2025.0/compiler/2025.0/bin/compiler/../../include/sycl/CL/sycl.hpp:14:2: warning:"
+  },
+  {
+    "attempt": 1,
+    "outcome": "compile_error",
+    "summary": "/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t05_22_34/Main_attempt1.cpp:264:73: error: excess elements in array initializer\n  264 |         {19,20,21,22,35,36,37,38,39,25,27,28,29,30,31,32,26,49,50,51,11,12,13"
+  },
+  {
+    "attempt": 2,
+    "outcome": "compile_error",
+    "summary": "/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t05_22_34/Main_attempt2.cpp:588:43: error: expected ')'\n  588 |     sycl::queue q(sycl::default_selector_v{},\n      |                                           ^\n/lu"
+  },
+  {
+    "attempt": 3,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 4,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 5,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 6,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 7,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 8,
+    "outcome": "compile_error",
+    "summary": "/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t05_22_34/Main_attempt8.cpp:568:25: error: no member named 'cuda_selector' in namespace 'sycl'\n  568 |     sycl::queue q{sycl::cuda_selector{}, sycl::property::queue"
+  },
+  {
+    "attempt": 9,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 10,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 11,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 12,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 13,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 14,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  },
+  {
+    "attempt": 15,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           999\n\tName:            CUDA_ERROR_UNKNOWN\n\tDescription:     unknown error\n\tFunction:        operator()\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/platform.cpp:84\n\nterminate called after "
+  }
+]

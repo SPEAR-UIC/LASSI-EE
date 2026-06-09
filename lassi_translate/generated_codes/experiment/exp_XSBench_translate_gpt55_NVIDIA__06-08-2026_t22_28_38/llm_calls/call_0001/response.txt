@@ -1,0 +1,42 @@
+```
+#include <iostream>
+#include <string_view>
+
+int main() {
+    constexpr std::string_view summary =
+        "Key SYCL migration points to apply for better energy efficiency:\n\n"
+        "1. Choose the right SYCL device explicitly when useful.\n"
+        "   SYCL targets many device types, unlike CUDA. Query device properties and select the device that fits the workload instead of assuming GPU device 0.\n\n"
+        "2. Preserve memory coalescing when translating multidimensional kernels.\n"
+        "   CUDA's x dimension is fastest-moving, while SYCL's last dimension is fastest-moving. Transpose ND-ranges and index usage carefully to avoid inefficient memory access.\n\n"
+        "3. Use queue ordering intentionally.\n"
+        "   CUDA streams are in-order; SYCL queues are out-of-order by default. Use in-order queues for simple direct migration, but consider out-of-order queues or multiple queues to overlap independent work and memory transfers.\n\n"
+        "4. Avoid unnecessary synchronization.\n"
+        "   Translate __syncthreads() to group_barrier() only when needed. Extra barriers waste time and energy. Ensure all work-items in a work-group reach each SYCL barrier to avoid deadlock.\n\n"
+        "5. Use the narrowest correct memory fence scope.\n"
+        "   SYCL group_barrier() can take a memory scope. Avoid wider scopes such as device scope unless required, because broader synchronization can be more expensive.\n\n"
+        "6. Match CUDA atomic behavior carefully.\n"
+        "   Legacy CUDA atomics such as atomicAdd are typically relaxed and device-scoped. Use sycl::atomic_ref with memory_order::relaxed and memory_scope::device when equivalent semantics are sufficient.\n\n"
+        "7. Do not assume a CUDA warp size of 32.\n"
+        "   SYCL sub-group size may differ across devices. Query capabilities or write sub-group code that does not hard-code 32 unless specialization is intentional.\n\n"
+        "8. Prefer sub-group and group collectives over ad hoc synchronization patterns.\n"
+        "   Use SYCL group algorithms such as permute_group_by_xor when translating warp shuffle logic. Correct collective usage can reduce memory traffic and synchronization cost.\n\n"
+        "9. Translate shared memory to SYCL local memory deliberately.\n"
+        "   CUDA shared memory maps to SYCL local memory. Use it when it reduces global memory traffic, but avoid excessive local memory that lowers occupancy or increases resource pressure.\n\n"
+        "10. Minimize host-device transfers and redundant initialization.\n"
+        "    CUDA cudaMemcpy/cudaMemset operations map to SYCL copies, fills, buffers, or USM operations. Keep data resident on the device when possible.\n\n"
+        "11. Avoid unnecessary multiple SYCL contexts.\n"
+        "    Mixing contexts can cause inefficient recompilation, extra state, or undefined behavior. Reuse queues and allocations from compatible contexts.\n\n"
+        "12. Handle asynchronous errors with SYCL exceptions.\n"
+        "    CUDA reports many errors through return codes; SYCL uses synchronous and asynchronous exceptions. Proper error handling prevents hidden failures that waste compute energy.\n\n"
+        "13. Use migration tools, then review manually.\n"
+        "    dpct and SYCLomatic can translate much CUDA syntax automatically, but generated code should be reviewed for synchronization, memory access, queue ordering, atomics, and device selection.\n\n"
+        "14. Account for CUDA features without direct SYCL equivalents.\n"
+        "    CUDA globals, advanced cooperative groups, and tensor-core WMMA may require restructuring, vendor extensions, or SYCL-specific alternatives.\n\n"
+        "15. Optimize for portability first, then specialize where beneficial.\n"
+        "    Portable SYCL code can run on CPUs, GPUs, and other accelerators. For energy-sensitive workloads, query device capabilities and specialize only where it measurably improves efficiency.\n";
+
+    std::cout << summary;
+    return 0;
+}
+```

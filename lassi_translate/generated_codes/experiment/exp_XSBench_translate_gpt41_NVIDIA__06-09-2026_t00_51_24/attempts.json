@@ -1,0 +1,82 @@
+[
+  {
+    "attempt": 0,
+    "outcome": "compile_error",
+    "summary": "In file included from /eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_51_24/Main_attempt0.cpp:11:\n/soft/compilers/oneapi/release/2025.0/compiler/2025.0/bin/compiler/../../include/sycl/CL/sycl.hpp:14:2: warning: \"CL/sycl.hpp is deprecate"
+  },
+  {
+    "attempt": 1,
+    "outcome": "compile_error",
+    "summary": "/eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_51_24/Main_attempt1.cpp:364:19: error: use of undeclared identifier 'run_event_based_simulation_baseline'\n  364 |                         verification = run_event_based_simulation_baseline"
+  },
+  {
+    "attempt": 2,
+    "outcome": "compile_error",
+    "summary": "/usr/lib64/gcc/x86_64-suse-linux/14/../../../../x86_64-suse-linux/bin/ld: /var/tmp/pbs.7188690.polaris-pbs-01.hsn.cm.polaris.alcf.anl.gov/icpx-e2538c9c91/Main_attempt2-7a6f4b.o: in function `main':\nMain_attempt2.cpp:(.text+0x4e9): undefined reference to `read_CLI(int, char**)'\n/usr/lib64/gcc/x86_64-"
+  },
+  {
+    "attempt": 3,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 4,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 5,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 6,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 7,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 8,
+    "outcome": "compile_error",
+    "summary": "/usr/lib64/gcc/x86_64-suse-linux/14/../../../../x86_64-suse-linux/bin/ld: /usr/lib64/gcc/x86_64-suse-linux/14/../../../../lib64/crt1.o: in function `_start':\n/home/abuild/rpmbuild/BUILD/glibc-2.38/csu/../sysdeps/x86_64/start.S:103:(.text+0x17): undefined reference to `main'\nicpx: error: linker comma"
+  },
+  {
+    "attempt": 9,
+    "outcome": "checksum_mismatch",
+    "summary": "(missing)"
+  },
+  {
+    "attempt": 10,
+    "outcome": "compile_error",
+    "summary": "/eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_51_24/Main_attempt10.cpp:691:22: error: call to 'ceil' is ambiguous\n  691 |         memtotal          = ceil(memtotal / (1024.0*1024.0));\n      |                             ^~~~\n/soft/com"
+  },
+  {
+    "attempt": 11,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  },
+  {
+    "attempt": 12,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  },
+  {
+    "attempt": 13,
+    "outcome": "compile_error",
+    "summary": "/eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_51_24/Main_attempt13.cpp:721:44: error: assigning to 'int' from incompatible type 'int (const void *, const void *)'\n  721 |                                 SD.index_grid[e * in.n_isotopes"
+  },
+  {
+    "attempt": 14,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  },
+  {
+    "attempt": 15,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  }
+]

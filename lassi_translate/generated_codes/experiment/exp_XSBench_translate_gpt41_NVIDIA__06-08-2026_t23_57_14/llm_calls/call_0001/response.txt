@@ -1,0 +1,45 @@
+```
+Key Relevant Points for Translating CUDA to SYCL for Improving Energy Efficiency:
+
+1. **Device Selection and Flexibility**:
+   - SYCL supports multiple device types (CPU, GPU, FPGA, etc.) from different vendors.
+   - Enumerate and choose the best device(s) for energy efficiency based on queried device properties (e.g. power ratings, compute capabilities).
+
+2. **Queue Management**:
+   - SYCL queues are out-of-order by default. In-order queues can be specified if optimal for simplicity.
+   - Consider using out-of-order queues or multiple in-order queues to overlap operations and potentially reduce idle device time, which can improve energy efficiency.
+
+3. **Memory Management**:
+   - Use memory models and allocate memory according to device capabilities for optimal access and minimal energy consumption.
+   - Prefer local memory (equivalent to CUDA shared memory) when possible to reduce global memory accesses.
+
+4. **Synchronization and Barriers**:
+   - Use barriers (`group_barrier`) judiciously as improper use may lead to deadlocks or wasted energy from idle threads.
+   - Avoid unnecessary synchronization; ensure all work-items consistently reach or skip barriers to prevent deadlocks and wasted energy.
+
+5. **Atomics and Memory Order**:
+   - Use `atomic_ref` with `memory_order::relaxed` and `memory_scope::device` to match CUDA relaxed atomics, providing faster operations and less energy usage if correct for the algorithm.
+
+6. **Optimal Indexing**:
+   - In SYCL, the last dimension is the contiguous/faster-moving one. Transpose the ND-range as needed for optimal data access patterns, minimizing cache misses and redundant memory access.
+
+7. **Sub-group/Work-group Usage**:
+   - Take advantage of sub-group operations (similar to CUDA warps) for collective operations—reduce synchronization costs and exploit hardware features for energy efficiency.
+
+8. **Device Capabilities Query**:
+   - Query device properties such as compute capability, supported atomic types, and local memory size. Select device/kernel configs that optimize performance per watt.
+
+9. **Manual Error Handling and Review**:
+   - Migration tools like dpct/SYCLomatic help but review migrated code for proper error handling, device selection, and optimal queue use, as automated tools may not optimize for energy.
+
+10. **Avoid Global Variables**:
+    - Since SYCL doesn't support device global variables yet, refactor code to avoid inefficient patterns that may increase memory traffic.
+
+11. **Context Management**:
+    - Avoid mixing contexts to prevent inefficient memory use and redundant kernel compilation, which can waste energy.
+
+12. **Vendor-Specific Features**:
+    - Consider vendor extensions for advanced features (e.g. matrix multiply hardware, cooperative group) to maximize energy efficiency on target hardware.
+
+Applying these points when translating CUDA to SYCL helps ensure code is portable, runs efficiently across a variety of devices, and is tuned for both performance and energy consumption.
+```

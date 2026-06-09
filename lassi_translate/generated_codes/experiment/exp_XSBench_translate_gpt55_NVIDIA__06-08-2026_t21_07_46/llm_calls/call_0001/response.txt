@@ -1,0 +1,81 @@
+```
+#include <iostream>
+
+int main() {
+  std::cout << R"(Key SYCL migration points relevant to improving energy efficiency:
+
+1. Choose devices deliberately
+   - SYCL targets many device types, unlike CUDA’s single-vendor model.
+   - Query device properties and select the most energy-efficient device for each workload instead of always using the default device.
+
+2. Use queues to expose useful concurrency
+   - CUDA streams are in-order; SYCL queues are out-of-order by default.
+   - Use out-of-order queues or multiple in-order queues to overlap independent kernels and memory transfers.
+   - Avoid unnecessary serialization, but preserve dependencies explicitly when required.
+
+3. Preserve correct indexing and memory locality
+   - CUDA’s fastest-moving dimension is x / dimension 0.
+   - SYCL’s fastest-moving dimension is the last dimension.
+   - When translating multidimensional kernels, transpose ranges carefully to preserve coalesced/unit-stride memory access.
+
+4. Map CUDA blocks, threads, warps, and shared memory correctly
+   - CUDA block -> SYCL work-group.
+   - CUDA thread -> SYCL work-item.
+   - CUDA warp -> SYCL sub-group.
+   - CUDA shared memory -> SYCL local memory.
+   - Correct mapping helps preserve locality and reduce expensive global memory traffic.
+
+5. Use sub-groups portably
+   - Do not assume CUDA’s fixed warp size of 32.
+   - SYCL sub-group sizes may vary by device.
+   - Query or specialize sub-group behavior when needed to avoid inefficient execution.
+
+6. Avoid unnecessary barriers
+   - CUDA __syncthreads maps to SYCL group_barrier on a work-group.
+   - CUDA __syncwarp maps to SYCL group_barrier on a sub-group.
+   - Barriers can reduce parallel efficiency and increase energy use.
+   - Use the narrowest correct synchronization scope.
+
+7. Ensure all work-items reach work-group barriers
+   - CUDA allows some threads to exit before __syncthreads.
+   - SYCL group_barrier requires all work-items in the work-group to participate.
+   - Restructure early-exit code to avoid deadlock and wasted execution.
+
+8. Match CUDA atomic semantics efficiently
+   - Legacy CUDA atomics such as atomicAdd are relaxed and device-scoped.
+   - Use sycl::atomic_ref with memory_order::relaxed and memory_scope::device when equivalent.
+   - Avoid stronger memory ordering or wider scope unless required, because they may cost more energy and performance.
+
+9. Be careful with memory scopes
+   - Wider synchronization or atomic scopes can be more expensive.
+   - Prefer local, work-group, sub-group, or device scope only when sufficient.
+   - Avoid system scope unless the algorithm requires host-device visibility.
+
+10. Avoid inefficient context usage
+    - Mixing SYCL objects across contexts can cause redundant compilation, extra overhead, or undefined behavior.
+    - Prefer a consistent context/queue design for related allocations, kernels, and copies.
+
+11. Replace CUDA-specific features thoughtfully
+    - CUDA global device variables, advanced cooperative groups, and tensor-core WMMA features may not have direct portable SYCL equivalents.
+    - Use SYCL local memory, group algorithms, sub-groups, vendor extensions, or library calls where appropriate.
+
+12. Review auto-migrated code
+    - Tools such as dpct/SYCLomatic can accelerate migration.
+    - Generated code is often correct but may not be optimal.
+    - Manually review memory movement, synchronization, atomics, queue dependencies, and device selection for energy-efficient execution.
+
+13. Prefer standard SYCL APIs for maintainability
+    - dpct helper APIs are useful during migration.
+    - For long-term portable and efficient code, replace helper abstractions with direct SYCL APIs where practical.
+
+14. Handle errors with SYCL exceptions
+    - CUDA uses error codes; SYCL uses synchronous and asynchronous exceptions.
+    - Correct error handling avoids hidden failures that can cause wasted computation or repeated work.
+
+15. Optimize for portability and efficiency together
+    - SYCL enables one codebase to run on CPUs, GPUs, and other accelerators.
+    - Energy efficiency depends on selecting the right device, preserving memory locality, minimizing synchronization, using appropriate atomic semantics, and avoiding unnecessary data movement.
+)";
+  return 0;
+}
+```

@@ -11,6 +11,6 @@ config = {
     "inference_model": "openai/gpt-oss-120b",
     "inference_cluster": "sophia",
     "min_energy_gain": 5.0,
-    "use_judge": True,
-    "ratchet_temperature": True,
+    "use_judge": False,
+    "ratchet_temperature": False,
 }

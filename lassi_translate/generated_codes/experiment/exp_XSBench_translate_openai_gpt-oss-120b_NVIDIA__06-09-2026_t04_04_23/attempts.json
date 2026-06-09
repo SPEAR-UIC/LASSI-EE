@@ -1,0 +1,32 @@
+[
+  {
+    "attempt": 0,
+    "outcome": "compile_error",
+    "summary": "In file included from /lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t04_04_23/Main_attempt0.cpp:5:\n/soft/compilers/oneapi/release/2025.0/compiler/2025.0/bin/compiler/../../include/sycl/CL/sycl.hpp:14:2: warning:"
+  },
+  {
+    "attempt": 1,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  },
+  {
+    "attempt": 2,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  },
+  {
+    "attempt": 3,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 952131"
+  },
+  {
+    "attempt": 4,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 952131"
+  },
+  {
+    "attempt": 5,
+    "outcome": "success",
+    "summary": "runtime 4.56s"
+  }
+]

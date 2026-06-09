@@ -1,0 +1,54 @@
+**Key Points for Energy‑Efficient CUDA‑to‑SYCL Migration**
+
+- **Device Selection & Heterogeneity**  
+  - Use SYCL selectors (default, gpu_selector, cpu_selector, custom) to pick the most energy‑efficient device at runtime.  
+  - Query `info::device::max_compute_units`, `info::device::global_mem_size`, and `info::device::energy_efficiency` (vendor‑specific) to guide decisions.
+
+- **Queue Characteristics**  
+  - Prefer **in‑order queues** (`property::queue::in_order`) when possible; they reduce scheduler overhead and prevent unnecessary synchronization, lowering power draw.  
+  - For overlapping work use **out‑of‑order queues** with explicit dependencies (`depends_on`) only when the performance gain outweighs the extra synchronization cost.
+
+- **Memory Layout & Contiguous Dimension**  
+  - Remember SYCL’s last dimension is the fastest‑moving; align data structures to this layout to avoid extra strided accesses that increase memory traffic and energy consumption.  
+  - Use `sycl::range`/`sycl::id` ordering that matches the hardware’s native memory coalescing pattern.
+
+- **Local (Shared) Memory Usage**  
+  - Replace `__shared__` with SYCL local accessors (`accessor<T, dims, access::mode::read_write, access::target::local>`).  
+  - Keep local buffers small enough to fit in the device’s on‑chip memory to avoid spilling, which raises energy usage.
+
+- **Barrier & Synchronization Cost**  
+  - Use `group_barrier(item.get_group())` (or sub‑group version) only when required; unnecessary barriers stall pipelines and waste energy.  
+  - Avoid early‑exit patterns that could deadlock and force idle hardware cycles.
+
+- **Atomics & Memory Ordering**  
+  - Map CUDA relaxed atomics (`atomicAdd`) to SYCL `atomic_ref` with `memory_order::relaxed` and `memory_scope::device` to minimize synchronization intensity.  
+  - Avoid stronger orders (`seq_cst`) unless correctness demands them, as they increase coherence traffic.
+
+- **Sub‑Group (Warp) Awareness**  
+  - Use `item.get_sub_group()` and sub‑group intrinsics (`permute_group_by_xor`, `shuffle`) to exploit hardware SIMD lanes efficiently, reducing instruction count and power.  
+  - Do not assume a fixed warp size; query `info::device::sub_group_sizes` and adapt kernels accordingly.
+
+- **Energy‑Aware Kernel Launch Configuration**  
+  - Choose work‑group sizes that maximize occupancy without oversubscribing resources; higher occupancy can hide latency but may increase dynamic power.  
+  - Profile with `info::device::max_work_group_size` and `info::device::max_compute_units` to find a sweet spot.
+
+- **Avoid Global Synchronization**  
+  - Prefer device‑side synchronization (`queue.wait_and_throw()`) over host‑side `cudaDeviceSynchronize` equivalents; unnecessary host‑device round‑trips keep the accelerator idle longer.
+
+- **Error Handling without Overhead**  
+  - Use SYCL exceptions (try/catch) rather than polling CUDA error codes; this removes extra API calls that can stall the device.
+
+- **Leverage Vendor Extensions (When Available)**  
+  - Some vendors expose energy‑monitoring or low‑power modes via extensions (e.g., Intel’s `intel::experimental::power`); integrate them to throttle clocks during low‑intensity phases.
+
+- **Tool‑Assisted Refactoring**  
+  - Run `dpct`/`SYCLomatic` to get a baseline, then manually:
+    - Replace generated `dpct::device_info` with standard SYCL queries.
+    - Consolidate multiple in‑order queues into a single out‑of‑order queue with proper dependencies if it reduces kernel launch overhead.
+
+- **Profiling & Tuning Loop**  
+  1. **Measure** power using SYCL’s profiling (`queue::get_profiling_info`) or external tools (e.g., `intel‑pmu‑tools`).  
+  2. **Identify** hot kernels with high execution time or memory traffic.  
+  3. **Iterate** on kernel launch parameters, memory access patterns, and barrier placement to lower both runtime and energy‑per‑operation.  
+
+Applying these guidelines during migration ensures that the resulting SYCL code not only runs correctly across heterogeneous devices but also operates with minimal energy consumption.

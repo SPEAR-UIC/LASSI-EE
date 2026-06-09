@@ -1,0 +1,65 @@
+**Key Points for Energy‑Efficient CUDA→SYCL Migration**
+
+- **Device Selection & Power‑Capping**
+  - Use SYCL selectors (`default_selector`, `gpu_selector`, `cpu_selector`) to target the most energy‑efficient device.
+  - Query device properties (`info::device::max_compute_units`, `info::device::max_clock_frequency`, `info::device::global_mem_size`) and choose a device with the best performance‑per‑watt ratio.
+  - Optional: read `info::device::queue_profiling` and runtime power metrics (vendor extensions) to tune frequency/voltage.
+
+- **Queue Ordering**
+  - **In‑order queues** (`property::queue::in_order`) serialize work, reducing scheduling overhead and idle power.
+  - **Out‑of‑order queues** can overlap kernels + copies, but may increase contention and power; use only when overlap yields a net energy win.
+
+- **Work‑Group / Sub‑Group Configuration**
+  - Match `local_range` to the device’s native sub‑group (warp) size to avoid under‑utilization and avoid extra synchronization.
+  - Prefer `nd_range` values that keep the **fastest‑moving dimension last** (SYCL) to maintain unit‑stride memory accesses → fewer cache misses & lower energy.
+
+- **Memory Hierarchy & Data Locality**
+  - Replace CUDA `__shared__` with SYCL **local accessor**; allocate just enough local memory to fit the work‑group.
+  - Use `malloc_host` / `malloc_device` wisely: host‑pinned memory (`malloc_host`) reduces PCIe traffic vs repeated copies.
+  - Align buffers to 128‑byte boundaries (`aligned_alloc`) to maximize burst transfers.
+
+- **Synchronization**
+  - Use `group_barrier(item.get_group())` (work‑group) or `group_barrier(item.get_sub_group())` (sub‑group) only when necessary.
+  - Avoid early‑exit patterns that can deadlock; restructure to ensure all work‑items hit the barrier → prevents idle cores waiting indefinitely.
+
+- **Atomic Operations & Memory Order**
+  - Default CUDA atomics are **relaxed** at device scope. Replicate this in SYCL:
+    ```cpp
+    sycl::atomic_ref<int,
+        sycl::memory_order::relaxed,
+        sycl::memory_scope::device,
+        sycl::access::address_space::global_space> aref(*ptr);
+    aref.fetch_add(1);
+    ```
+  - Using stronger orders (`seq_cst`) unnecessarily raises synchronization traffic and power.
+
+- **Sub‑Group (Warp) Size Flexibility**
+  - SYCL’s `sub_group` works for any size; query `item.get_sub_group().get_local_range().size()` and adapt algorithms (e.g., `permute_group_by_xor`) to the actual size → no wasted lanes.
+
+- **Forward‑Progress Guarantees**
+  - CUDA’s `*_sync` functions assume lockstep; SYCL devices may schedule threads independently.
+  - Prefer SYCL primitives (`group_barrier`, `sub_group::shuffle`) that do not rely on lockstep to avoid extra synchronization overhead.
+
+- **Avoid Unnecessary Data Movement**
+  - Keep data resident on the device across multiple kernel launches when possible (use `sycl::buffer`/`usm` with the same allocation).
+  - Merge small kernels into a single larger kernel to reduce kernel launch overhead.
+
+- **Profiling & Tuning**
+  - Enable SYCL queue profiling (`property::queue::enable_profiling`) to measure kernel execution time and power (via vendor extensions).
+  - Iterate: adjust work‑group size, memory layouts, and synchronization granularity to hit the lowest energy‑to‑solution metric.
+
+- **Error Handling**
+  - SYCL throws exceptions; catching them early prevents retry loops that waste power.
+  - Use `try { … } catch (sycl::exception const &e) { … }` around all SYCL calls.
+
+- **Portability Considerations**
+  - Stick to standard SYCL APIs (no vendor‑specific extensions) unless a clear energy benefit is demonstrated.
+  - When using extensions (e.g., for tensor‑core or matrix‑multiply intrinsics), guard them with compile‑time `#ifdef` checks and fallback to portable code.
+
+- **General Coding Practices for Energy Efficiency**
+  - **Minimize kernel launch count** – batch work.
+  - **Prefer compile‑time constants** over runtime decisions inside kernels.
+  - **Use `constexpr` and `inline`** to enable better compiler optimizations.
+  - **Avoid divergent control flow** within a work‑group/sub‑group.
+
+Applying these principles while converting CUDA kernels to SYCL will help maintain performance while reducing overall energy consumption across heterogeneous devices.

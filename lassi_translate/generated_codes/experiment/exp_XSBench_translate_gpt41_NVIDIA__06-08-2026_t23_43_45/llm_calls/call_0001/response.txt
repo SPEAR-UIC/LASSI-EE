@@ -1,0 +1,25 @@
+```
+Key points for improving energy efficiency when translating CUDA code to SYCL:
+
+1. Device Selection: SYCL supports multiple heterogeneous devices. Analyze available devices and select those with highest energy efficiency for kernel execution, instead of defaulting to a single GPU.
+
+2. Queue Management: SYCL queues can be in-order or out-of-order. Exploit out-of-order queues and queue properties to overlap computation and memory operations for better utilization and reduced idle power.
+
+3. Memory Model: Leverage SYCL's explicit memory scopes and relaxed atomic operations to minimize unnecessary synchronization and memory fences, thus reducing wasted energy.
+
+4. Synchronization: Avoid unnecessary group barriers and early exits that may cause deadlocks or excessive power usage. Structure kernels so all work-items reach synchronization points as efficiently as possible.
+
+5. Device Query: Use SYCL device queries to examine compute and power properties, allowing host-side scheduling decisions to favor energy-efficient devices and configurations.
+
+6. Local Memory: Replace CUDA shared memory usage with SYCL local memory only where necessary, minimizing usage to fit energy-efficient memory hierarchy.
+
+7. ND-range Alignment: Properly transpose multidimensional ranges for SYCL, ensuring contiguous (fastest) memory access pattern aligns with device architecture for energy-efficient memory usage.
+
+8. Portability: By keeping SYCL code standards compliant and avoiding vendor-specific extensions, run-time portability allows deployment on more energy-efficient hardware as it becomes available.
+
+9. Exception Handling: Replacing CUDA return-value error checks with SYCL exceptions can aid in robust handling and early detection/termination of erroneous or inefficient execution, avoiding wasted energy.
+
+10. Tools: Use migration tools (e.g., dpct/SYCLomatic) to automate translation but review migrated code for further energy efficiency improvements such as device selection, kernel structure, and synchronization.
+
+Summary: When migrating CUDA to SYCL for energy efficiency, enumerate and select energy-optimal devices, overlap operations with sophisticated queue management, fine-tune memory and synchronization usage, and probe device properties for energy-aware scheduling.
+```

@@ -1,0 +1,189 @@
+```cpp
+#include <CL/sycl.hpp>
+#include <vector>
+#include <numeric>
+#include <cstdint>
+
+using namespace sycl;
+
+// ------------------------------------------------------------------
+// Minimal placeholder definitions to enable compilation
+// ------------------------------------------------------------------
+struct Inputs {
+    int lookups;
+    int n_isotopes;
+    int n_gridpoints;
+    int grid_type;
+    int hash_bins;
+};
+
+struct SimulationData {
+    double* p_energy_samples = nullptr;
+    int*    mat_samples      = nullptr;
+    unsigned long* verification = nullptr;
+
+    // Members used by calculate_macro_xs (placeholders)
+    int*    num_nucs = nullptr;
+    double* concs    = nullptr;
+    double* unionized_energy_array = nullptr;
+    int*    index_grid = nullptr;
+    double* nuclide_grid = nullptr;
+    int*    mats = nullptr;
+    int     max_num_nucs = 0;
+};
+
+// Placeholder constants and helper functions
+constexpr uint64_t STARTING_SEED = 123456789ULL;
+
+inline uint64_t fast_forward_LCG(uint64_t seed, uint64_t steps) {
+    // Simple linear congruential generator fast‑forward (placeholder)
+    const uint64_t a = 6364136223846793005ULL;
+    const uint64_t c = 1442695040888963407ULL;
+    for (uint64_t i = 0; i < steps; ++i) seed = a * seed + c;
+    return seed;
+}
+
+inline double LCG_random_double(uint64_t* seed) {
+    *seed = fast_forward_LCG(*seed, 1);
+    return static_cast<double>(*seed) / static_cast<double>(UINT64_MAX);
+}
+
+inline int pick_mat(uint64_t* seed) {
+    // Return a material index (placeholder)
+    return static_cast<int>(LCG_random_double(seed) * 5.0);
+}
+
+// Stub for calculate_macro_xs – does nothing meaningful but satisfies the call signature
+inline void calculate_macro_xs(double /*energy*/, int /*mat*/,
+                               int /*n_isotopes*/, int /*n_gridpoints*/,
+                               int* /*num_nucs*/, double* /*concs*/,
+                               double* /*unionized_energy_array*/,
+                               int* /*index_grid*/, double* /*nuclide_grid*/,
+                               int* /*mats*/, double macro_xs[5],
+                               int /*grid_type*/, int /*hash_bins*/,
+                               int /*max_num_nucs*/) {
+    // Fill macro_xs with dummy values for demonstration
+    for (int i = 0; i < 5; ++i) macro_xs[i] = static_cast<double>(i);
+}
+
+// ------------------------------------------------------------------
+// Optimization 5 (fuel / non‑fuel partition)
+// ------------------------------------------------------------------
+struct is_fuel {
+    bool operator()(const int& v) const { return v == 0; }
+};
+
+unsigned long long run_event_based_simulation_optimization_5(const Inputs& in,
+                                                             SimulationData& GSD,
+                                                             queue& q) {
+    const int nthreads = 32;
+    const int nblocks  = (in.lookups + nthreads - 1) / nthreads;
+
+    GSD.p_energy_samples = static_cast<double*>(malloc_device(in.lookups * sizeof(double), q));
+    GSD.mat_samples      = static_cast<int*>(malloc_device(in.lookups * sizeof(int), q));
+    GSD.verification     = static_cast<unsigned long*>(malloc_device(in.lookups * sizeof(unsigned long), q));
+
+    q.submit([&](handler& h) {
+        h.parallel_for(nd_range<1>(range<1>(nblocks * nthreads), range<1>(nthreads)),
+                       [=](nd_item<1> it) {
+            int i = it.get_global_id(0);
+            if (i >= in.lookups) return;
+            uint64_t seed = STARTING_SEED;
+            seed = fast_forward_LCG(seed, 2ULL * i);
+            GSD.p_energy_samples[i] = LCG_random_double(&seed);
+            GSD.mat_samples[i]      = pick_mat(&seed);
+        });
+    }).wait();
+
+    // Copy data back to host for partitioning
+    std::vector<int>    host_mat(in.lookups);
+    std::vector<double> host_energy(in.lookups);
+    q.memcpy(host_mat.data(),    GSD.mat_samples,      in.lookups * sizeof(int)).wait();
+    q.memcpy(host_energy.data(), GSD.p_energy_samples, in.lookups * sizeof(double)).wait();
+
+    // Create paired vector, partition fuel (mat == 0) to front while preserving order
+    std::vector<std::pair<int, double>> pairs(in.lookups);
+    for (int i = 0; i < in.lookups; ++i) pairs[i] = {host_mat[i], host_energy[i]};
+    auto fuel_end = std::stable_partition(pairs.begin(), pairs.end(),
+                                          [](const auto& p) { return p.first == 0; });
+    int n_fuel = static_cast<int>(std::distance(pairs.begin(), fuel_end));
+
+    // Unzip back to separate arrays
+    for (int i = 0; i < in.lookups; ++i) {
+        host_mat[i]    = pairs[i].first;
+        host_energy[i] = pairs[i].second;
+    }
+
+    // Copy reordered data back to device
+    q.memcpy(GSD.mat_samples,      host_mat.data(),    in.lookups * sizeof(int)).wait();
+    q.memcpy(GSD.p_energy_samples, host_energy.data(), in.lookups * sizeof(double)).wait();
+
+    // Fuel kernel
+    int nb_fuel = (n_fuel + nthreads - 1) / nthreads;
+    q.submit([&](handler& h) {
+        h.parallel_for(nd_range<1>(range<1>(nb_fuel * nthreads), range<1>(nthreads)),
+                       [=](nd_item<1> it) {
+            int i = it.get_global_id(0);
+            if (i >= n_fuel) return;
+            double macro_xs[5] = {0};
+            calculate_macro_xs(GSD.p_energy_samples[i],
+                               0,
+                               in.n_isotopes, in.n_gridpoints,
+                               GSD.num_nucs, GSD.concs,
+                               GSD.unionized_energy_array,
+                               GSD.index_grid,
+                               GSD.nuclide_grid,
+                               GSD.mats,
+                               macro_xs,
+                               in.grid_type, in.hash_bins,
+                               GSD.max_num_nucs);
+            double maxv = -1.0;
+            int    max_idx = 0;
+            for (int j = 0; j < 5; ++j)
+                if (macro_xs[j] > maxv) {
+                    maxv = macro_xs[j];
+                    max_idx = j;
+                }
+            GSD.verification[i] = static_cast<unsigned long>(max_idx + 1);
+        });
+    });
+
+    // Non‑fuel kernel
+    int n_non = in.lookups - n_fuel;
+    int nb_non = (n_non + nthreads - 1) / nthreads;
+    q.submit([&](handler& h) {
+        h.parallel_for(nd_range<1>(range<1>(nb_non * nthreads), range<1>(nthreads)),
+                       [=](nd_item<1> it) {
+            int i = it.get_global_id(0);
+            if (i >= n_non) return;
+            int idx = i + n_fuel;
+            int mat = GSD.mat_samples[idx];
+            double macro_xs[5] = {0};
+            calculate_macro_xs(GSD.p_energy_samples[idx],
+                               mat,
+                               in.n_isotopes, in.n_gridpoints,
+                               GSD.num_nucs, GSD.concs,
+                               GSD.unionized_energy_array,
+                               GSD.index_grid,
+                               GSD.nuclide_grid,
+                               GSD.mats,
+                               macro_xs,
+                               in.grid_type, in.hash_bins,
+                               GSD.max_num_nucs);
+            double maxv = -1.0;
+            int    max_idx = 0;
+            for (int j = 0; j < 5; ++j)
+                if (macro_xs[j] > maxv) {
+                    maxv = macro_xs[j];
+                    max_idx = j;
+                }
+            GSD.verification[idx] = static_cast<unsigned long>(max_idx + 1);
+        });
+    }).wait();
+
+    std::vector<unsigned long> host_verif(in.lookups);
+    q.memcpy(host_verif.data(), GSD.verification, in.lookups * sizeof(unsigned long)).wait();
+    unsigned long result = std::accumulate(host_verif.begin(), host_verif.end(), 0UL);
+    return static_cast<unsigned long long>(result);
+}
+```

@@ -1,0 +1,57 @@
+```
+Key Relevant Points for Improving Energy Efficiency When Translating CUDA to SYCL:
+
+1. Device Selection Flexibility:
+   - SYCL inherently supports multiple device types (CPUs, GPUs, FPGAs, etc.), whereas CUDA is limited to NVIDIA GPUs.
+   - Enumerate and select the most energy efficient device(s) available for the workload.
+
+2. Queue and Execution Model:
+   - SYCL queues can be in-order or out-of-order, allowing for overlaps and more efficient scheduling.
+   - Consider out-of-order queues or multiple in-order queues to overlap computation and reduce idle time.
+   - Choosing queue properties can impact energy usage depending on the device and workload.
+
+3. Work-group and Sub-group Handling:
+   - Devices may have different optimal sub-group sizes; querying device properties allows tailoring parallelism for energy-efficient execution.
+   - Avoid hardcoding warp/sub-group sizes; use device queries.
+
+4. Multidimensional Indexing Differences:
+   - SYCL’s fastest-moving dimension is the last, CUDA’s is the first. Efficient memory access patterns (unit stride) must be preserved to avoid cache and memory inefficiencies.
+
+5. Barriers and Synchronization:
+   - Ensure all work-items reach barriers; improper barriers can cause inefficient execution or deadlocks (wasted energy).
+   - Review placements of barriers to maximize forward progress.
+
+6. Atomics:
+   - SYCL uses C++-style atomics and requires specifying memory order and scope.
+   - For maximum efficiency, use relaxed atomics and the narrowest possible scope (device, workgroup) when possible.
+   - Atomics that are too broad in scope or too strict in memory ordering can hamper energy efficiency.
+
+7. Memory Allocation and Management:
+   - Prefer allocation models (such as USM, buffer/accessors) that match device characteristics for minimal transfer/overhead.
+   - SYCL supports multiple allocation paradigms that allow you to optimize data movement and lifetime.
+
+8. Device Queries and Properties:
+   - Query device properties to choose the energy optimal configuration (e.g., work-group size, number of compute units).
+   - Use SYCL’s device info functions to adapt to hardware specifics, reducing unnecessary overhead.
+
+9. Avoiding Context Mistakes:
+   - Mixing context-specific objects can cause redundant computation and inefficient kernel compilation/use.
+   - Maintain consistent context usage for efficient resource utilization.
+
+10. Error Handling:
+    - SYCL uses exceptions, not error return codes; improper error handling can cause application stalls.
+    - Use correct error handling to avoid wasted cycles.
+
+11. Vendor-Specific Extensions:
+    - Some energy-saving features (matrix multiplication hardware, cooperative groups, global variables in device code) may require vendor extensions in SYCL.
+    - Prefer standard SYCL features for cross-device energy efficiency, use extensions only when necessary.
+
+12. Automated Migration Tools:
+    - Automated tools (dpct/SYCLomatic) help convert CUDA code, but review code for opportunities to improve maintainability, performance, and energy efficiency manually.
+
+Summary:
+- When translating CUDA to SYCL, adapt device selection, parallelism granularity, synchronization, and memory management to target hardware's energy efficiency.
+- Always query device capabilities to match SYCL program execution to the most efficient settings.
+- Use SYCL features that enable overlapping work, minimize synchronization overhead, and target optimal scope/order for atomics.
+- Avoid rigid assumptions rooted in CUDA; leverage SYCL’s hardware-agnostic programming model for portability, performance, and energy savings.
+```

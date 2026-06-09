@@ -1,0 +1,127 @@
+**Overall Purpose**
+
+The program implements the **XSBench** benchmark – a synthetic Monte‑Carlo neutron transport kernel that repeatedly looks up microscopic cross‑section data for many isotopes and assembles macroscopic cross‑sections for a set of materials.  
+It can run in *event‑based* mode (the only implemented mode) and supports several grid‑search strategies (unionized, nuclide, hash) and a series of GPU‑optimized kernel variants. The code is written for CUDA, uses thrust for reductions and sorts, and can optionally read/write all simulation data from a binary file.
+
+---
+
+## Major Data Structures (defined in `XSbench_header.cuh`)
+
+| Type | Members | Description |
+|------|---------|-------------|
+| **NuclideGridPoint** | `double energy, total_xs, elastic_xs, absorbtion_xs, fission_xs, nu_fission_xs` | Holds one energy grid point for a nuclide together with the five microscopic reaction cross‑sections. |
+| **Inputs** | `int nthreads; long n_isotopes; long n_gridpoints; int lookups; char *HM; int grid_type; int hash_bins; int particles; int simulation_method; int binary_mode; int kernel_id;` | Holds all command‑line options and derived parameters such as benchmark size, grid type, number of look‑ups, etc. |
+| **SimulationData** | Pointers to arrays storing material composition, concentrations, unionized energy grid, index grid, nuclide grid, plus lengths and helper fields (`max_num_nucs`, `verification`, `p_energy_samples`, `mat_samples`). | All simulation‑state data that lives on the host; a mirrored copy (`GSD`) is allocated and copied to device memory. |
+
+---
+
+## Functional Blocks
+
+### 1. **Command‑Line Interface & Input Handling**
+* Functions: `print_CLI_error`, `read_CLI`, `print_inputs`.
+* Parses options (`-m`, `-s`, `-g`, `-G`, `-p`, `-l`, `-h`, `-b`, `-k`), sets defaults, validates values, and translates benchmark size strings (`small`, `large`, `XL`, `XXL`) into concrete numbers of isotopes and grid points.
+
+### 2. **Logging & Presentation**
+* Functions: `logo`, `center_print`, `border_print`, `fancy_int`.
+* Generates a stylised header and formats numeric output with commas.
+
+### 3. **Memory‑Usage Estimation**
+* Function: `estimate_mem_usage`.
+* Computes an approximate megabyte footprint based on grid type and problem size.
+
+### 4. **Timing Utilities**
+* Function: `get_time`.
+* Returns wall‑clock time using MPI, OpenMP, or C++ `<chrono>`.
+
+### 5. **Binary I/O for Data Caching**
+* Functions: `binary_write`, `binary_read`.
+* Serialize/deserialize the whole `SimulationData` structure and its heap arrays to/from `XS_data.dat`, bypassing the expensive grid‑initialisation step.
+
+### 6. **Simulation Data Construction**
+* **Nuclide Grid Creation** (`grid_init_do_not_profile`):
+  * Allocates `SD.nuclide_grid` (size `n_isotopes * n_gridpoints`), fills each point with pseudo‑random numbers via `LCG_random_double`.
+  * Sorts each nuclide’s grid by energy (`qsort` + `NGP_compare`).
+
+* **Acceleration Structures**:
+  * **Unionized Grid** (`grid_type == UNIONIZED`): builds a global sorted energy array (`unionized_energy_array`) and a 2‑D index matrix (`index_grid`) that maps each unionized energy to the lower‑bound index inside each nuclide grid.
+  * **Hash Grid** (`grid_type == HASH`): creates a uniform energy hash with `hash_bins` entries; each entry stores the lower‑bound index for every nuclide (`grid_search_nuclide`).
+
+* **Material Definitions**:
+  * `load_num_nucs`: number of nuclides per material (12 materials, fuel size varies with benchmark).
+  * `load_mats`: flattened 2‑D array of nuclide IDs for each material (padded to `max_num_nucs`).
+  * `load_concs`: random concentrations for each material‑nuclide pair.
+
+* **Device Transfer** (`move_simulation_data_to_device`):
+  * Allocates device copies of all host arrays, copies data, creates a device‑side verification buffer (`GSD.verification`).
+
+* **Device Cleanup** (`release_device_memory`): frees all device allocations.
+
+### 7. **Random Number Generation**
+* LCG based functions (host/device):
+  * `LCG_random_double` – returns a double in `[0,1)`.
+  * `fast_forward_LCG` – advances the LCG state by `n` steps using exponentiation‑by‑squaring.
+* `pick_mat` – samples a material index according to a hard‑coded volume‑fraction distribution.
+
+### 8. **Lookup Core Routines**
+* **Binary Searches**:
+  * `grid_search` – binary search on the unionized energy array.
+  * `grid_search_nuclide` – binary search on a single nuclide’s grid (usable on host or device).
+
+* **Microscopic XS Calculation** (`calculate_micro_xs`):
+  * Determines the lower grid point (`low`) according to the chosen grid type (nuclide, unionized, hash), fetches the upper point (`high`), computes interpolation factor `f`, and linearly interpolates the five microscopic XS values.
+
+* **Macroscopic XS Assembly** (`calculate_macro_xs`):
+  * For a given particle energy and material, loops over all nuclides in that material, calls `calculate_micro_xs`, multiplies each microscopic vector by the nuclide concentration, and accumulates into `macro_xs_vector[5]`.
+
+### 9. **Verification Mechanism**
+* After each lookup, the kernel finds the index of the largest entry in `macro_xs_vector` (0‑4) and stores `max_idx+1` into the per‑lookup verification array (`GSD.verification`).  
+* After the kernel finishes, thrust’s `reduce` sums this array to a single 64‑bit checksum, which is reduced modulo `999983` and compared against a known reference (`large` vs `small` benchmark) to flag invalid results.
+
+### 10. **Kernels & Simulation Drivers**
+
+| Variant | Description | Key Functions |
+|--------|-------------|----------------|
+| **Baseline** | One kernel (`xs_lookup_kernel_baseline`) performs sampling, lookup, and verification in a single pass. | `run_event_based_simulation_baseline`, `xs_lookup_kernel_baseline` |
+| **Optimization 1** | Splits sampling (`sampling_kernel`) from lookup (`xs_lookup_kernel_optimization_1`). Stores sampled energies and materials in device arrays. | `run_event_based_simulation_optimization_1` |
+| **Optimization 2** | Same split as #1, but launches **12** material‑specific lookup kernels; each kernel discards lookups that belong to other materials. | `xs_lookup_kernel_optimization_2` |
+| **Optimization 3** | Reduces material kernels to **2** (fuel vs. non‑fuel) to lessen launch overhead. | `xs_lookup_kernel_optimization_3` |
+| **Optimization 4** | Adds a full sort of lookups by material (`thrust::sort_by_key`) before launching per‑material kernels, thereby grouping identical‑material work in warps. | `xs_lookup_kernel_optimization_4` |
+| **Optimization 5** | Partitions lookups into fuel vs. non‑fuel only (`thrust::partition`) and launches two kernels, avoiding the full 12‑way sort. | `xs_lookup_kernel_optimization_5` |
+| **Optimization 6** | Extends #4: after sorting by material, each material’s sub‑range is additionally sorted by energy, producing maximal locality for both material‑ and energy‑based grid accesses. Uses the same per‑material kernel as #4. | `run_event_based_simulation_optimization_6` (re‑uses `xs_lookup_kernel_optimization_4`) |
+
+All drivers:
+1. Allocate any extra device buffers required by the variant.
+2. Launch the sampling kernel (if needed) to fill `p_energy_samples` and `mat_samples`.
+3. Launch the lookup kernel(s) with `nthreads = 32` (or 256 for baseline) and enough blocks to cover all look‑ups.
+4. Reduce the verification array with `thrust::reduce`.
+5. Return the checksum.
+
+### 11. **Main Program Flow (`main`)**
+1. Parse CLI → `Inputs in`.
+2. Print input summary.
+3. Build simulation data (`grid_init_do_not_profile` or `binary_read`).
+4. Optional binary write.
+5. Transfer data to GPU (`move_simulation_data_to_device`).
+6. Start timer, dispatch chosen simulation driver based on `in.simulation_method` and `in.kernel_id`.
+7. End timer, free device memory, compute final checksum (`% 999983`), and print results/verification.
+
+---
+
+## Summary of Execution Path
+
+```
+main()
+ └─ read_CLI() → Inputs
+ └─ binary_read() / grid_init_do_not_profile()
+      ├─ build nuclide grids (random data + sort)
+      ├─ build acceleration structure (unionized or hash)
+      ├─ load material composition & concentrations
+ └─ move_simulation_data_to_device()   // host → device copies
+ └─ run_event_based_simulation_*()    // one of 7 driver functions
+      ├─ (optional) sampling_kernel()
+      ├─ xs_lookup_kernel_* (lookup & verification)
+      └─ thrust::reduce() → checksum
+ └─ print_results() (runtime, lookups/s, checksum validation)
+```
+
+The code is a **self‑contained CUDA benchmark** that measures how many cross‑section look‑ups per second can be performed on a GPU, while also demonstrating several common GPU optimisation techniques (kernel splitting, material‑specific kernels, sorting/partitioning, hash acceleration).

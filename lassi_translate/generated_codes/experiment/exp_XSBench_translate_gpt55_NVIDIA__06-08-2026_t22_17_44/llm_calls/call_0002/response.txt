@@ -1,0 +1,681 @@
+This code is a single-file CUDA implementation of an XSBench-style neutron cross-section lookup benchmark. It initializes synthetic nuclear cross-section data, material compositions, optional acceleration structures, transfers the simulation state to the GPU, runs an event-based GPU lookup simulation using one of several kernel variants, reduces a checksum for verification, reports performance, and exits.
+
+The benchmark models repeated macroscopic cross-section lookups for particles with randomly sampled energies and materials. For each lookup, it computes microscopic cross sections for all nuclides in the selected material, interpolates between energy grid points, weights by material concentrations, accumulates five reaction-channel macroscopic cross sections, and records a verification value based on the largest channel.
+
+---
+
+## High-Level Program Flow
+
+1. **Parse command-line inputs**
+   - Reads simulation method, benchmark size, grid type, number of lookups, particles, hash bins, binary mode, and kernel ID.
+
+2. **Print benchmark configuration**
+   - Displays CUDA device information, grid mode, memory estimate, total lookups, and other settings.
+
+3. **Initialize or load simulation data**
+   - Either generates synthetic nuclide grids/material data or reads them from a binary file.
+
+4. **Optionally write generated data**
+   - Writes initialized simulation arrays to `XS_data.dat` if requested.
+
+5. **Move data to GPU**
+   - Allocates CUDA device memory and copies simulation data structures to the GPU.
+
+6. **Run selected event-based simulation kernel**
+   - Supports baseline kernel and six optimized variants selected with `-k`.
+
+7. **Reduce verification output**
+   - Uses Thrust reduction over a per-lookup verification array.
+
+8. **Print timing and checksum**
+   - Reports runtime, lookups/sec, and validates checksum for small/large benchmark modes.
+
+9. **Free device memory**
+   - Releases allocated CUDA memory.
+
+---
+
+## Major Data Structures
+
+### `NuclideGridPoint`
+
+Represents one energy grid point for one nuclide.
+
+Fields:
+
+- `energy`
+- `total_xs`
+- `elastic_xs`
+- `absorbtion_xs`
+- `fission_xs`
+- `nu_fission_xs`
+
+Each grid point stores an energy value and five cross-section reaction channels.
+
+---
+
+### `Inputs`
+
+Stores all benchmark/runtime configuration.
+
+Fields include:
+
+- `nthreads`
+- `n_isotopes`
+- `n_gridpoints`
+- `lookups`
+- `HM`
+- `grid_type`
+- `hash_bins`
+- `particles`
+- `simulation_method`
+- `binary_mode`
+- `kernel_id`
+
+This structure is passed to host functions and CUDA kernels.
+
+---
+
+### `SimulationData`
+
+Holds all initialized simulation arrays and their lengths.
+
+Important fields:
+
+- `num_nucs`
+  - Number of nuclides in each material.
+- `concs`
+  - Flattened concentration array for nuclides in each material.
+- `mats`
+  - Flattened material-to-nuclide mapping.
+- `unionized_energy_array`
+  - Sorted global unionized energy grid.
+- `index_grid`
+  - Lookup acceleration table for unionized or hash mode.
+- `nuclide_grid`
+  - Flattened array of all nuclide grid points.
+- `verification`
+  - Device-side per-lookup checksum values.
+- `p_energy_samples`
+  - Sampled particle energies used by optimized kernels.
+- `mat_samples`
+  - Sampled material IDs used by optimized kernels.
+- Length fields for each dynamic array.
+- `max_num_nucs`
+  - Maximum number of nuclides in any material.
+
+---
+
+## Constants and Modes
+
+### Grid Types
+
+- `UNIONIZED`
+  - Uses a global sorted energy grid plus an index grid to accelerate lookups.
+- `NUCLIDE`
+  - Performs binary search directly on each nuclide grid.
+- `HASH`
+  - Uses a hash/bin acceleration structure to narrow the search range.
+
+### Simulation Types
+
+- `HISTORY_BASED`
+  - Defined but not implemented in the CUDA path.
+- `EVENT_BASED`
+  - The implemented simulation mode.
+
+### Binary Modes
+
+- `NONE`
+  - No binary file I/O.
+- `READ`
+  - Load simulation data from `XS_data.dat`.
+- `WRITE`
+  - Write generated simulation data to `XS_data.dat`.
+
+---
+
+## Main Functionality Blocks
+
+### `main`
+
+Coordinates the entire benchmark.
+
+Responsibilities:
+
+- Reads CLI arguments.
+- Prints input summary.
+- Initializes or reads simulation data.
+- Writes binary data if requested.
+- Copies data to the GPU.
+- Starts timing.
+- Dispatches selected event-based kernel variant.
+- Stops timing.
+- Frees GPU memory.
+- Reduces/finalizes verification checksum.
+- Prints final results.
+
+Only event-based CUDA simulation is supported. If history-based simulation is selected, the program exits with an error.
+
+---
+
+## Input, Output, and Reporting Functions
+
+### `logo`
+
+Prints an ASCII-art XSBench logo and version information.
+
+### `center_print`
+
+Prints centered section text in a fixed-width terminal layout.
+
+### `border_print`
+
+Prints a visual separator line.
+
+### `fancy_int`
+
+Prints integers with comma separators.
+
+### `print_CLI_error`
+
+Prints valid command-line usage and exits.
+
+### `read_CLI`
+
+Parses command-line options and fills an `Inputs` structure.
+
+Supported options include:
+
+- `-m history|event`
+- `-s small|large|XL|XXL`
+- `-g <gridpoints>`
+- `-G unionized|nuclide|hash`
+- `-p <particles>`
+- `-l <lookups>`
+- `-h <hash bins>`
+- `-b read|write`
+- `-k <kernel ID>`
+
+It also applies benchmark-size defaults:
+
+- `small` uses 68 isotopes.
+- `large` defaults to 355 isotopes and 11,303 grid points.
+- `XL` and `XXL` increase grid point counts unless overridden.
+
+### `print_inputs`
+
+Prints the parsed input summary, CUDA device name, estimated memory use, selected grid type, benchmark size, and simulation method.
+
+### `print_results`
+
+Computes and prints runtime, lookup rate, and checksum validity.
+
+Verification checksums are compared against hardcoded expected values for `small` and `large` event/history modes.
+
+---
+
+## Binary I/O Functions
+
+### `binary_write`
+
+Writes the `SimulationData` structure and its heap arrays to `XS_data.dat`.
+
+It writes:
+
+- The `SimulationData` object itself.
+- `num_nucs`
+- `concs`
+- `mats`
+- `nuclide_grid`
+- `index_grid`
+- `unionized_energy_array`
+
+### `binary_read`
+
+Reads `XS_data.dat`, reconstructs a `SimulationData` object, allocates host memory, and loads all serialized arrays.
+
+---
+
+## Simulation Data Initialization
+
+### `grid_init_do_not_profile`
+
+Generates all CPU-side simulation data.
+
+Major steps:
+
+1. Initializes synthetic nuclide grids using deterministic LCG random numbers.
+2. Sorts each nuclide’s grid by energy.
+3. Builds the selected acceleration structure:
+   - No acceleration for `NUCLIDE`.
+   - Full unionized energy grid and index grid for `UNIONIZED`.
+   - Hash-bin index grid for `HASH`.
+4. Loads hardcoded material composition data.
+5. Generates randomized nuclide concentrations.
+6. Returns a populated `SimulationData` structure.
+
+---
+
+## GPU Memory Management
+
+### `move_simulation_data_to_device`
+
+Creates a device-side copy of `SimulationData`.
+
+It allocates CUDA memory and copies:
+
+- `num_nucs`
+- `concs`
+- `mats`
+- `unionized_energy_array`
+- `index_grid`
+- `nuclide_grid`
+
+It also allocates the device-only `verification` array.
+
+### `release_device_memory`
+
+Frees major CUDA allocations in `SimulationData`.
+
+It frees:
+
+- `num_nucs`
+- `concs`
+- `mats`
+- `unionized_energy_array`
+- `nuclide_grid`
+- `verification`
+
+Notably, `index_grid`, `p_energy_samples`, and `mat_samples` are not freed here, although they may be allocated.
+
+---
+
+## Material Data Functions
+
+### `load_num_nucs`
+
+Returns the number of nuclides in each of the 12 materials.
+
+Material 0, fuel, depends on benchmark size:
+
+- Small: 34 nuclides.
+- Large/other: 321 nuclides.
+
+Other materials have fixed nuclide counts.
+
+### `load_mats`
+
+Creates a flattened material-to-nuclide mapping array.
+
+It hardcodes material composition for 12 materials:
+
+1. Fuel
+2. Cladding
+3. Cold borated water
+4. Hot borated water
+5. Reactor pressure vessel
+6. Lower radial reflector
+7. Upper reflector/top plate
+8. Bottom plate
+9. Bottom nozzle
+10. Top nozzle
+11. Top of fuel assemblies
+12. Bottom of fuel assemblies
+
+For large benchmark modes, additional fuel nuclides are appended.
+
+### `load_concs`
+
+Generates randomized nuclide concentrations for each material using the deterministic LCG RNG.
+
+---
+
+## Core Physics/Lookup Functions
+
+### `calculate_macro_xs`
+
+Device function that computes macroscopic cross sections for a sampled particle energy and material.
+
+Steps:
+
+1. Clears the output macro cross-section vector.
+2. Determines an acceleration-grid index if using unionized or hash mode.
+3. Loops over all nuclides in the selected material.
+4. Calls `calculate_micro_xs` for each nuclide.
+5. Multiplies microscopic cross sections by nuclide concentration.
+6. Accumulates five macroscopic reaction channels.
+
+The result is a five-element vector:
+
+- total
+- elastic
+- absorption
+- fission
+- nu-fission
+
+### `calculate_micro_xs`
+
+Device function that computes microscopic cross sections for one nuclide at one particle energy.
+
+It supports three search strategies:
+
+- `NUCLIDE`
+  - Binary search directly in the nuclide grid.
+- `UNIONIZED`
+  - Uses the precomputed unionized index grid.
+- `HASH`
+  - Uses hash bins to narrow the search range, then searches within bounds.
+
+After locating bounding grid points, it linearly interpolates five cross-section values.
+
+### `grid_search`
+
+Device binary search over a double energy array.
+
+Used for the unionized energy grid.
+
+Returns the lower bounding index.
+
+### `grid_search_nuclide`
+
+Host/device binary search over an array of `NuclideGridPoint`.
+
+Used for nuclide grids and hash-grid initialization.
+
+Returns the lower bounding index.
+
+---
+
+## Random Sampling Functions
+
+### `LCG_random_double`
+
+Host/device deterministic linear congruential generator.
+
+Returns a double in `[0, 1)`.
+
+Used for:
+
+- Nuclide grid initialization.
+- Concentration initialization.
+- Particle energy sampling.
+
+### `fast_forward_LCG`
+
+Device function that advances the LCG state by `n` steps efficiently.
+
+Used so each lookup can independently derive its deterministic random seed based on lookup ID.
+
+### `pick_mat`
+
+Device function that randomly chooses one of 12 materials according to a fixed probability distribution approximating material volume fractions.
+
+---
+
+## Baseline CUDA Simulation
+
+### `run_event_based_simulation_baseline`
+
+Host function that launches the baseline CUDA kernel.
+
+Steps:
+
+1. Launches `xs_lookup_kernel_baseline`.
+2. Synchronizes.
+3. Reduces `GSD.verification` with `thrust::reduce`.
+4. Returns the checksum sum.
+
+### `xs_lookup_kernel_baseline`
+
+CUDA kernel where each thread performs one complete lookup.
+
+Per thread:
+
+1. Computes global lookup ID.
+2. Initializes and fast-forwards RNG seed.
+3. Samples particle energy.
+4. Samples material.
+5. Calls `calculate_macro_xs`.
+6. Finds the index of the largest of five macro XS values.
+7. Stores `max_idx + 1` in `verification[i]`.
+
+This is the simplest implementation and has high warp divergence because different materials contain very different numbers of nuclides.
+
+---
+
+## Optimized Kernel Variants
+
+### Optimization 1: Sampling/Lookup Kernel Split
+
+#### `run_event_based_simulation_optimization_1`
+
+Allocates separate arrays for sampled energies and materials, then launches:
+
+1. `sampling_kernel`
+2. `xs_lookup_kernel_optimization_1`
+
+#### `sampling_kernel`
+
+Each thread samples energy and material and stores them in:
+
+- `p_energy_samples`
+- `mat_samples`
+
+#### `xs_lookup_kernel_optimization_1`
+
+Each thread reads precomputed sample data and performs a full macro XS lookup.
+
+This separates sampling from lookup but does not reduce divergence by itself.
+
+---
+
+### Optimization 2: Material-Specific Lookup Kernels
+
+#### `run_event_based_simulation_optimization_2`
+
+After sampling, launches one lookup kernel per material type.
+
+#### `xs_lookup_kernel_optimization_2`
+
+Each kernel instance is assigned a material ID `m`.
+
+Each thread only performs work if its sampled material equals `m`.
+
+Goal:
+
+- Improve warp coherence by grouping lookup work by material type, although without sorting many threads still return early.
+
+---
+
+### Optimization 3: Fuel vs Non-Fuel Kernels
+
+#### `run_event_based_simulation_optimization_3`
+
+After sampling, launches two kernels:
+
+1. Fuel lookup kernel.
+2. Non-fuel lookup kernel.
+
+#### `xs_lookup_kernel_optimization_3`
+
+Checks whether each lookup is fuel or non-fuel and performs work only in the matching kernel.
+
+Goal:
+
+- Separate expensive fuel lookups from cheaper non-fuel material lookups.
+
+---
+
+### Optimization 4: Full Material Sort + Material Kernels
+
+#### `run_event_based_simulation_optimization_4`
+
+After sampling:
+
+1. Counts lookups per material using `thrust::count`.
+2. Sorts samples by material using `thrust::sort_by_key`.
+3. Launches one compact kernel range per material.
+
+#### `xs_lookup_kernel_optimization_4`
+
+Processes a contiguous range of lookups belonging to one material.
+
+Goal:
+
+- Avoid threads returning early.
+- Improve warp coherence by ensuring nearby threads process the same material.
+
+---
+
+### Optimization 5: Fuel/Non-Fuel Partition
+
+#### `is_mat_fuel`
+
+A Thrust predicate/functor that returns true when material ID is 0.
+
+Used for partitioning fuel lookups.
+
+#### `run_event_based_simulation_optimization_5`
+
+After sampling:
+
+1. Counts fuel lookups.
+2. Partitions arrays into fuel and non-fuel groups using `thrust::partition`.
+3. Launches one kernel over fuel and one over non-fuel.
+
+#### `xs_lookup_kernel_optimization_5`
+
+Processes a contiguous range of lookups, without checking material type.
+
+Goal:
+
+- Lower overhead than full material sort while separating the most expensive material type.
+
+---
+
+### Optimization 6: Material Sort + Energy Sort
+
+#### `run_event_based_simulation_optimization_6`
+
+After sampling:
+
+1. Counts lookups per material.
+2. Sorts all samples by material.
+3. Sorts each material group by energy.
+4. Launches material-specific kernels using `xs_lookup_kernel_optimization_4`.
+
+Goal:
+
+- Improve both warp coherence and memory/cache locality.
+- Threads in a warp are more likely to access nearby or identical grid locations.
+
+This is described as the fastest variant but less realistic for full Monte Carlo applications because real particle state is expensive to sort.
+
+---
+
+## Utility Functions
+
+### `double_compare`
+
+Comparator for sorting double arrays with `qsort`.
+
+### `NGP_compare`
+
+Comparator for sorting `NuclideGridPoint` arrays by energy.
+
+### `rn_v`
+
+Standalone Park-Miller RNG with static seed.
+
+It appears to be retained for verification compatibility but is not central to the main simulation path.
+
+### `estimate_mem_usage`
+
+Estimates memory footprint based on:
+
+- Number of isotopes.
+- Number of grid points.
+- Grid type.
+- Hash bins.
+
+It includes nuclide grid and relevant acceleration structures.
+
+### `get_time`
+
+Returns wall-clock time.
+
+Uses:
+
+- `MPI_Wtime` if MPI is enabled.
+- `omp_get_wtime` if OpenMP is enabled.
+- C++ `std::chrono::high_resolution_clock` otherwise.
+
+---
+
+## External Libraries and APIs Used
+
+### CUDA Runtime
+
+Used for:
+
+- Device memory allocation.
+- Host-device copies.
+- Kernel launches.
+- Synchronization.
+- Device property queries.
+- Error checking.
+
+### Thrust
+
+Used for GPU-side:
+
+- Reduction.
+- Counting.
+- Sorting.
+- Partitioning.
+
+### Standard C/C++ Runtime
+
+Used for:
+
+- Memory allocation.
+- File I/O.
+- Sorting.
+- Assertions.
+- Timing.
+- String parsing.
+- Math utilities.
+
+---
+
+## Verification Mechanism
+
+Each lookup produces one integer verification contribution:
+
+1. Compute five macroscopic cross-section channels.
+2. Find the largest channel.
+3. Store `max_channel_index + 1`.
+
+After all lookups, the program sums the verification array using Thrust and then applies:
+
+```text
+verification % 999983
+```
+
+The final checksum is compared against hardcoded expected values for small and large benchmark modes.
+
+---
+
+## Notable Implementation Details
+
+- The file is monolithic and combines header declarations, host utilities, CUDA kernels, data initialization, material setup, and optimized variants.
+- The benchmark uses deterministic random number generation so results are reproducible.
+- The code supports multiple acceleration strategies for cross-section lookup.
+- The optimized kernels mainly attempt to reduce warp divergence and improve memory locality.
+- History-based simulation is declared but not implemented in the CUDA execution path.
+- Several allocated arrays in optimized paths are not released by `release_device_memory`.
+- `index_grid` is allocated on the device but not freed in `release_device_memory`.
+- The unionized grid can require very large memory because `index_grid` size scales as `n_isotopes * n_isotopes * n_gridpoints`.
+- Material selection uses a fixed probability distribution.
+- Material 0, fuel, dominates computational cost because it has many more nuclides than other materials.

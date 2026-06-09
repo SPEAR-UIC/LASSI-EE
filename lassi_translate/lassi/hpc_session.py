@@ -13,6 +13,7 @@ Uploads + downloads use rsync over SSH (amsc has no upload API; download is 501)
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -54,13 +55,22 @@ class HPCSession:
             raise RuntimeError("amsc filesystem resource is required (no SSH fallback).")
         self.host, self.user, self.fs_resource = host, user, fs_resource
         self._fs = fs_resource.fs
-        # Per-session ControlMaster socket → one SSH password prompt per run.
-        self._ssh_ctl = str(Path(tempfile.mkdtemp(prefix="lassi_ssh_")) / "ctl")
-        import atexit; atexit.register(self.close)
+        # ControlMaster socket: reuse the parent's (set by sweep.py) if
+        # LASSI_SSH_CTL is exported — otherwise create our own.  Sharing a
+        # socket across multiple Python processes means only ONE OTP prompt
+        # across an entire unattended sweep.
+        parent_ctl = os.environ.get("LASSI_SSH_CTL")
+        if parent_ctl:
+            self._ssh_ctl, self._owns_master = parent_ctl, False
+        else:
+            self._ssh_ctl = str(Path(tempfile.mkdtemp(prefix="lassi_ssh_")) / "ctl")
+            self._owns_master = True
+            import atexit; atexit.register(self.close)
 
     def close(self):
-        """Cleanly shut down the SSH ControlMaster connection (if any)."""
-        if not self._ssh_ctl: return
+        """Shut down the ControlMaster — only if we created it (don't close
+        a parent-owned socket, e.g. the sweep's shared master)."""
+        if not self._ssh_ctl or not self._owns_master: return
         try:
             subprocess.run(
                 ["ssh", "-o", f"ControlPath={self._ssh_ctl}",

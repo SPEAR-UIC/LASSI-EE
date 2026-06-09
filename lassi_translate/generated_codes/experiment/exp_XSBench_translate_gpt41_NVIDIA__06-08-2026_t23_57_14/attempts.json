@@ -1,0 +1,22 @@
+[
+  {
+    "attempt": 0,
+    "outcome": "compile_error",
+    "summary": "In file included from /eagle/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t23_57_14/Main_attempt0.cpp:9:\n/soft/compilers/oneapi/release/2025.0/compiler/2025.0/bin/compiler/../../include/sycl/CL/sycl.hpp:14:2: warning: \"CL/sycl.hpp is deprecated"
+  },
+  {
+    "attempt": 1,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 2,
+    "outcome": "runtime_error",
+    "summary": "<CUDA>[ERROR]: \nUR CUDA ERROR:\n\tValue:           700\n\tName:            CUDA_ERROR_ILLEGAL_ADDRESS\n\tDescription:     an illegal memory access was encountered\n\tFunction:        wait\n\tSource Location: /tmp/tmp.nlKu2FwFq5/intel-llvm-mirror/build/_deps/unified-runtime-src/source/adapters/cuda/event.cpp:1"
+  },
+  {
+    "attempt": 3,
+    "outcome": "success",
+    "summary": "runtime 4.35s"
+  }
+]

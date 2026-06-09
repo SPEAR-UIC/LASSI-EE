@@ -1,0 +1,1 @@
+{"energy_joules": 203.863, "avg_power_w": 50.75, "duration_s": 4.017, "num_samples": 4}

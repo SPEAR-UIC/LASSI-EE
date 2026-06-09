@@ -1,0 +1,57 @@
+```
+Key Relevant Points for Improving Energy Efficiency When Translating CUDA Code to SYCL:
+
+1. Device Selection & Enumeration:
+   - SYCL supports heterogeneous devices from multiple vendors.
+   - Efficiently choosing the best-suited device(s) based on properties (power, energy, capability) can improve energy usage.
+
+2. In-Order vs. Out-of-Order Queues:
+   - CUDA streams are always in-order; SYCL queues are out-of-order by default.
+   - Leveraging out-of-order queues enables overlapping kernel/memory operations, increasing efficiency and reducing idle time.
+   - Proper scheduling and dependency management can minimize unnecessary energy consumption through improved concurrency.
+
+3. Contiguous Dimension Convention:
+   - SYCL’s fastest-moving dimension is the last, matching C++ array conventions, while CUDA’s is the first.
+   - Ensuring correct mapping of multidimensional ranges avoids inefficient memory access patterns, improving both performance and energy.
+
+4. Sub-Group Sizes & Synchronization:
+   - SYCL sub-group sizes are device-dependent, unlike CUDA’s fixed warp size (32).
+   - Using SYCL’s permute_group_by_xor and group_barrier functions, which can adapt to device characteristics, offers potential for more efficient collective operations.
+
+5. Forward Progress/Synchronization:
+   - SYCL guarantees may differ from CUDA, especially with thread scheduling.
+   - Always ensure correct synchronization (group_barrier only when ALL work-items reach it) to avoid deadlocks or wasted cycles.
+
+6. Efficient Memory Model & Usage:
+   - Both SYCL and CUDA have weakly-ordered memory models, but SYCL allows more explicit scope control in atomic and synchronization operations.
+   - Use atomics with memory_order::relaxed and appropriate memory_scope to reduce unnecessary memory fencing and save energy.
+
+7. Local Memory (Shared Memory) Mapping:
+   - Replace CUDA’s __shared__ variables with SYCL local accessors.
+   - Correct usage of local memory can reduce global memory traffic, leading to lower power consumption.
+
+8. Avoid Global Variables in Device Code:
+   - SYCL does not support device global variables; prefer kernel arguments, buffers, or local accessors, leading to more portable and potentially more energy-efficient memory usage.
+
+9. Error Handling:
+   - Use SYCL exceptions for error handling instead of CUDA’s error codes, allowing quicker detection and correction of problems.
+
+10. Efficient Device Query and Context Management:
+    - Select devices and manage contexts wisely to avoid redundant compilation or suboptimal execution that can waste energy.
+
+11. Portability & Vendor Extensions:
+    - Leverage SYCL’s support for vendor-specific features or extensions that may expose hardware-level energy-efficient operations (e.g., matrix-multiply units, AI accelerators).
+
+12. Tool-Assisted Migration:
+    - Use migration tools like dpct/SYCLomatic to automate translation and identify inefficiencies in host/device code; manually optimize for energy after migration as needed.
+
+Summary Actions to Improve Energy Efficiency in SYCL Translation:
+ - Select the most energy-efficient device(s) through proper SYCL device enumeration.
+ - Exploit concurrency via out-of-order queues and appropriate scheduling/dependencies.
+ - Map memory access patterns carefully to favor data locality and cache behavior.
+ - Use relaxed atomics and correct synchronization with minimal scope.
+ - Replace CUDA shared/global memory constructs with SYCL local accessors and buffers.
+ - Ensure all work-items synchronize collectively (no early exits before barrier).
+ - Remove unused contexts and avoid duplicate kernel compilations.
+ - Consider vendor extensions for hardware acceleration features.
+```

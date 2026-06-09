@@ -1,0 +1,36 @@
+[Goal] Refactor the code below with a fix to eliminate the following stated error. [Key Requirements] Maintain Function Signatures & Kernel Logic: Keep all existing function and kernel names, class structures, parameters, and return types in your refactored code while fixing the error. Ensure Compilability: The corrected code must compile with icpx (Intel oneAPI DPC++/C++ compiler). Avoid describing the entire code flow. Do Not Repeat the Plan or Give Explanations Outside the Code: Only provide the updated source code. [Return Format] Output Only the Refactored Source Code wrapped in triple backticks. No additional commentary before or after. [Warnings] Preserve all original behavior. Avoid renaming or removing functions, classes, kernels. Do not include extra text describing the changes outside of code comments. Be sure to fix the stated error.
+
+[START OF CODE TO FIX]
+// ---------- Helper Reduction ----------
+static unsigned long long reduce_verification(sycl::queue &q, unsigned long *dev_ptr, size_t n) {
+    std::vector<unsigned long> host(n);
+    q.memcpy(host.data(), dev_ptr, n * sizeof(unsigned long)).wait();
+    unsigned long long sum = 0;
+    const unsigned long long MOD32 = 0x100000000ULL; // 2^32
+    for (auto v : host) {
+        sum = (sum + static_cast<unsigned long long>(v)) % MOD32; // emulate 32‑bit overflow
+    }
+    return sum;
+}
+
+[/END OF CODE TO FIX]
+ -- Compile error: 
+/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39/Main_attempt9.cpp:2:47: error: use of undeclared identifier 'sycl'
+    2 | static unsigned long long reduce_verification(sycl::queue &q, unsigned long *dev_ptr, size_t n) {
+      |                                               ^
+/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39/Main_attempt9.cpp:2:87: error: unknown type name 'size_t'
+    2 | static unsigned long long reduce_verification(sycl::queue &q, unsigned long *dev_ptr, size_t n) {
+      |                                                                                       ^
+/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39/Main_attempt9.cpp:3:5: error: use of undeclared identifier 'std'
+    3 |     std::vector<unsigned long> host(n);
+      |     ^
+/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39/Main_attempt9.cpp:3:26: error: expected '(' for function-style cast or type construction
+    3 |     std::vector<unsigned long> host(n);
+      |                 ~~~~~~~~ ^
+/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39/Main_attempt9.cpp:4:14: error: use of undeclared identifier 'host'
+    4 |     q.memcpy(host.data(), dev_ptr, n * sizeof(unsigned long)).wait();
+      |              ^
+/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39/Main_attempt9.cpp:7:19: error: use of undeclared identifier 'host'
+    7 |     for (auto v : host) {
+      |                   ^
+6 errors generated.

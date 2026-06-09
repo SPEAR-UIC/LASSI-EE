@@ -1,0 +1,29 @@
+```
+Key relevant points for improving energy efficiency when translating CUDA code to SYCL:
+
+1. **Device Selection & Enumeration**: SYCL supports a diverse set of heterogeneous devices, unlike CUDA's vendor-specific approach. Efficient translation should select the most suitable device based on properties (power, performance, etc.), potentially leveraging system-wide capabilities for energy savings.
+
+2. **Queue Management**: SYCL queues are out-of-order by default, which allows overlapping memory and kernel operations in a single queue. Efficient translation should use out-of-order queues and minimize in-order semantics unless required by the algorithm, thus allowing better concurrency and improving energy utilization.
+
+3. **Memory Model & Local Memory Use**: SYCL uses local memory accessors (mapped from CUDA’s shared memory) for collective operations within work-groups. Efficient memory usage (e.g., leveraging local memory for frequently accessed variables) can reduce global memory traffic, thereby improving energy efficiency.
+
+4. **Barriers & Synchronization**: Use SYCL group_barrier carefully to ensure all work-items consistently reach the barrier, avoiding deadlocks and wasted energy from thread starvation. Ensure synchronization scopes are minimal (local vs. device) to reduce energy-consuming stalls.
+
+5. **Atomics & Memory Ordering**: Prefer relaxed memory ordering and the most localized scope possible (e.g., memory_order::relaxed, memory_scope::device) when using atomics for operations. This reduces unnecessary system-wide synchronization, improving efficiency.
+
+6. **Work-Group and Sub-Group Operations**: Consider the underlying hardware's capabilities and sub-group sizes (which may be vendor/device-dependent) when mapping warps/cooperative groups. Efficiently utilize SYCL sub-groups to leverage lockstepped execution, minimizing divergent operations that increase energy consumption.
+
+7. **Forward Progress & Early Exit**: Avoid algorithms where early exit (returning before a group_barrier) may cause deadlocks and wasted energy. Ensure all work-items within a group participate fully in critical operations.
+
+8. **Data Layout & Access Patterns**: Match SYCL’s multidimensional array conventions (last dimension is contiguous) for memory access patterns, ensuring memory accesses are coalesced and aligned for the fastest-moving dimension, reducing memory transaction overhead and energy use.
+
+9. **Error Handling**: Use appropriate SYCL exception handling for both synchronous and asynchronous errors to catch and handle failures efficiently, preventing energy waste in failed or stalled operations.
+
+10. **Context Management**: Avoid cross-context operations and redundant context creation, which can cause inefficiency (e.g., redundant compilation or memory setup), negatively impacting energy use.
+
+11. **Vendor-Specific Extensions**: Where available, utilize vendor-specific SYCL extensions to leverage specialized hardware features (matrix multiplication units, tensor cores) for AI/ML workloads, leading to more energy-efficient execution.
+
+12. **Automated Migration**: Automated tooling (e.g., dpct/SYCLomatic) can handle many syntactic differences, but manual optimization for device selection, queue management, memory access, and synchronization is often required for energy efficiency.
+
+Apply these points to ensure translated SYCL code is portable, correct, and optimized for energy-efficient execution across a variety of devices and architectures.
+```

@@ -1,0 +1,82 @@
+[
+  {
+    "attempt": 0,
+    "outcome": "compile_error",
+    "summary": "In file included from /lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_28_52/Main_attempt0.cpp:5:\n/soft/compilers/oneapi/release/2025.0/compiler/2025.0/bin/compiler/../../include/sycl/CL/sycl.hpp:14:2: warning:"
+  },
+  {
+    "attempt": 1,
+    "outcome": "runtime_error",
+    "summary": "non-zero exit"
+  },
+  {
+    "attempt": 2,
+    "outcome": "checksum_mismatch",
+    "summary": "(missing)"
+  },
+  {
+    "attempt": 3,
+    "outcome": "checksum_mismatch",
+    "summary": "(missing)"
+  },
+  {
+    "attempt": 4,
+    "outcome": "checksum_mismatch",
+    "summary": "(missing)"
+  },
+  {
+    "attempt": 5,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 33 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 6,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 33 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 7,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 33 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 8,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 9,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 10,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 11,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 12,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 13,
+    "outcome": "compile_error",
+    "summary": "/lus/eagle/projects/EE-ECP/LASSI-EE/lassi_jobs/generated_codes/experiment/exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_28_52/Main_attempt13.cpp:569:28: error: no member named 'lookup' in 'Inputs'; did you mean 'lookups'?\n  569 |     for (int i = 0; i < in.lookup\n      |          "
+  },
+  {
+    "attempt": 14,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  },
+  {
+    "attempt": 15,
+    "outcome": "checksum_mismatch",
+    "summary": "Verification checksum: 211815 (WARNING - INVALID CHECKSUM!)"
+  }
+]

@@ -1,0 +1,50 @@
+```
+Key Relevant Points for Improving Energy Efficiency When Migrating CUDA Code to SYCL:
+
+1. Device Selection and Heterogeneity:
+   - SYCL supports a variety of devices (CPUs, GPUs, FPGAs from multiple vendors). Efficient energy usage can be improved by querying and selecting the best-suited device for the workload, potentially running energy-sensitive code on lower-power devices.
+   - Use SYCL's device selectors and property queries to match device capabilities with energy profiles of the workload.
+
+2. Queue Management:
+   - SYCL queues are out-of-order by default, allowing for overlap between memory and compute operations, potentially reducing idle times and improving energy efficiency.
+   - Consider using out-of-order queues or multiple in-order queues to maximize overlap and reduce device idle periods.
+
+3. Work-Group and Sub-Group Use:
+   - Tailor work-group and sub-group sizes to fit the target device's architecture (queryable in SYCL), which can reduce wasted cycles and improve efficiency.
+   - Use device queries to detect optimal subgroup sizes, avoiding hardcoded values that may cause inefficiency on non-NVIDIA devices.
+
+4. Memory Allocation and Data Movement:
+   - Minimize memory allocations and data transfers to/from devices. Use unified shared memory or buffer management techniques (SYCL's buffer/accessor model) to reduce redundant data movement.
+   - Take advantage of memory properties, such as device-local memory scopes, to minimize energy-consuming synchronization/fence operations.
+
+5. Synchronization and Barriers:
+   - Avoid unnecessary barriers or use the minimum required fence scope with `group_barrier`. Excess synchronization, especially at wider scopes (e.g., device), increases energy consumption.
+   - Ensure all work-items participate or skip barriers appropriately to avoid deadlocks and wasted cycles.
+
+6. Atomics and Memory Order:
+   - Use relaxed orders and device/local memory scopes with SYCL's atomic_ref where possible to reduce synchronization overhead and energy use.
+   - Avoid sequential consistency whenever possible, as it causes additional fences.
+
+7. Early Exits and Control Flow:
+   - Restructure kernel code to avoid divergent control flow, especially early exits before a group barrier. Divergence increases inefficiency and energy waste.
+
+8. Device Properties and Querying:
+   - Query device properties (`max_work_group_size`, `preferred_vector_width`, etc.) and adapt parallelism to the device's optimal energy/performance balance.
+   - Avoid assumptions based on CUDA's fixed properties; adjust for SYCL's flexible device universe.
+
+9. Cooperative Group Operations:
+   - Prefer SYCL's group/sub-group collective operations for synchronizations and reductions, aligning to device capabilities for efficient energy use.
+
+10. Error Handling and Asynchrony:
+   - Handle asynchronous errors and exceptions in SYCL to detect situations where excessive energy is being consumed (e.g., hanging kernels).
+
+11. Ported Kernel Structure:
+   - Kernel code should use SYCL's lambda, item, and nd_item constructs. Avoid global variables (not yet supported in SYCL device code); instead, pass local/shared memory via accessor or pointer.
+   - Leverage local memory for scratch pads to reduce global memory accesses, which cost more energy.
+
+12. Profiling and Tools:
+   - Use migration tools (dpct/SYCLomatic), but verify and review for energy efficiency post-migration.
+   - Profile migrated SYCL code for device utilization and energy consumption, then optimize work-group sizes, memory access patterns, and kernel structure.
+
+Apply these points in translation to ensure that the migrated SYCL code is energy efficient, adaptable, and optimal for a diverse set of hardware targets.
+```

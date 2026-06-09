@@ -1,0 +1,35 @@
+**Key Points from the SYCL‑CUDA Migration Guide that Impact Energy Efficiency**
+
+| Aspect | What to Remember When Translating CUDA → SYCL | Energy‑Efficiency Tips |
+|--------|-----------------------------------------------|------------------------|
+| **Device Selection** | Use SYCL selectors (`default_selector`, `gpu_selector`, `cpu_selector`, or custom) to pick the most power‑efficient device for a given workload. | Run on the device that offers the best performance‑per‑watt ratio; avoid forcing execution on a low‑efficiency accelerator. |
+| **Queue Type** | SYCL queues are *out‑of‑order* by default; in‑order queues (`property::queue::in_order`) mimic CUDA streams. | Prefer out‑of‑order queues when possible – they allow the runtime to overlap independent kernels and data transfers, reducing idle time and overall power. |
+| **Work‑group / Sub‑group Size** | Sub‑group size may differ from CUDA’s fixed warp size (32). Query `device.get_info<info::device::sub_group_sizes>()`. | Match kernel launch to the native sub‑group size to maximize SIMD utilization and avoid under‑utilized hardware, which wastes energy. |
+| **Contiguous Dimension** | SYCL’s last dimension is the fastest‑moving (unit‑stride); CUDA’s first dimension is. | Align data layouts to SYCL’s contiguous dimension to ensure coalesced memory accesses → fewer memory transactions → lower energy. |
+| **Memory Spaces** | `local_accessor` → SYCL local (shared) memory; `malloc_host`/`malloc_device` → host/device global memory. | Move reusable data into local memory (`local_accessor`) to cut global memory traffic; allocate host‑pinned memory only when needed. |
+| **Barriers & Synchronisation** | `group_barrier(item.get_group())` ↔ `__syncthreads()`.  Scope can be specified (`memory_scope::local`, `device`). | 1. Use the *minimal* barrier scope (local) → less synchronization overhead. <br>2. Avoid early‑exit patterns that can cause deadlocks; restructure kernels so **all** work‑items reach every barrier. |
+| **Atomics** | SYCL `atomic_ref<T, memory_order, memory_scope>` replaces CUDA `atomicAdd`. Default order is *relaxed* for CUDA; SYCL requires explicit scope. | Use `memory_order::relaxed` and the narrowest possible `memory_scope` (usually `device` or `sub_group`) to reduce ordering costs and power consumption. |
+| **Forward‑Progress Guarantees** | CUDA’s `_sync` primitives guarantee synchronization for independent‑thread‑scheduling devices; SYCL currently lacks explicit guarantees. | Design kernels assuming *full* synchronization (no independent scheduling) → eliminates hidden stalls and unnecessary retries, saving energy. |
+| **Error Handling** | CUDA returns error codes; SYCL throws exceptions. | Wrap SYCL calls in `try/catch` and abort early on failures to avoid wasted kernel launches and GPU idle time. |
+| **Memory Transfers** | CUDA `cudaMemcpy`; SYCL uses explicit `queue.memcpy` or `buffer/accessor` mechanisms. | Batch transfers, reuse device buffers, and overlap copies with computation (out‑of‑order queues) to reduce the time the device spends in high‑power transfer state. |
+| **Kernel Launch Syntax** | CUDA `<<<grid, block>>>` → SYCL `queue.parallel_for(nd_range<dim>{global, local}, ...)`. | Choose `local` (work‑group) sizes that evenly divide the `global` range to avoid partial groups that waste resources. |
+| **Local Memory Usage (Shared Memory)** | `__shared__` → `local_accessor`. | Exploit local memory to cache frequently accessed data, cutting global traffic and improving energy efficiency. |
+| **Sub‑group Operations** | `permute_group_by_xor` (SYCL) ↔ `__shfl_xor_sync` (CUDA). | Use sub‑group primitives instead of explicit shared‑memory shuffles for lower latency and lower power. |
+| **Context Management** | SYCL contexts group devices; creating multiple contexts can cause redundant kernel compilations. | Keep a single context per application when possible to avoid extra compile time and associated energy waste. |
+| **Profiling & Tuning** | Query device capabilities (`info::device::max_work_group_size`, `info::device::preferred_vector_width_*`, etc.). | Tune launch parameters to the device’s sweet spot; oversubscribing work‑groups can increase contention and power draw. |
+
+
+**Bottom‑Line Translation Guidelines for Energy‑Efficient SYCL Code**
+
+1. **Select the most power‑efficient device** with a proper selector.  
+2. **Prefer out‑of‑order queues** to let the runtime overlap kernels & transfers.  
+3. **Match work‑group/sub‑group sizes** to the hardware’s native SIMD width.  
+4. **Use local memory** (`local_accessor`) to reduce global memory traffic.  
+5. **Minimize synchronization** – use the smallest barrier scope and avoid early exits.  
+6. **Apply relaxed atomics** with the narrowest scope needed.  
+7. **Align data structures** to SYCL’s last‑dimension stride for coalesced accesses.  
+8. **Batch and overlap host‑device transfers**; keep data resident on the device when possible.  
+9. **Structure kernels** to avoid deadlocks and unnecessary stalls (forward‑progress safety).  
+10. **Profile** (`sycl::info::device::*`) and iteratively tune launch parameters for each target device.  
+
+Following these points while converting CUDA kernels to SYCL will help you produce code that runs correctly **and** consumes less energy on heterogeneous systems.

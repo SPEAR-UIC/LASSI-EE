@@ -1,0 +1,42 @@
+**Key points for energy‑efficient CUDA‑to‑SYCL migration**
+
+1. **Device selection**
+   - Use SYCL device selectors (or `queue{property::queue::in_order()}`) to target the most power‑efficient accelerator (e.g., integrated GPU, CPU) instead of the default device.
+   - Query device properties (`info::device::max_compute_units`, `info::device::global_mem_size`, `info::device::name`) and choose the platform that gives the best performance‑per‑watt for the workload.
+
+2. **Queue scheduling**
+   - **Out‑of‑order queues** (default) allow automatic overlap of memory transfers and kernel execution, reducing idle time and thus energy.
+   - If explicit ordering is needed, use **in‑order queues** only for simple kernels; otherwise prefer a single out‑of‑order queue with `depends_on` to avoid extra queues and synchronization overhead.
+
+3. **Contiguous dimension**
+   - SYCL’s last dimension is the fastest‑moving (unit‑stride) dimension. When porting multidimensional kernels, reorder `range`/`id` arguments to preserve memory‑access locality – this cuts cache misses and lowers memory‑energy cost.
+
+4. **Sub‑group (warp) usage**
+   - SYCL sub‑groups may differ from CUDA’s fixed 32‑thread warps. Query `sub_group.get_local_range()` and adapt shuffle/permute calls (`permute_group_by_xor`, `shuffle_xor`) to the actual sub‑group size to avoid under‑utilisation and wasted cycles.
+
+5. **Barriers & synchronization**
+   - Use `group_barrier(item.get_group())` (work‑group) or `group_barrier(item.get_sub_group())` (sub‑group) **only when needed**. Unnecessary barriers stall all work‑items, increasing execution time and energy.
+   - Avoid early‑exit patterns that can cause deadlock (`if (id >= N) return; group_barrier(...)`). Move range checks **after** the barrier or eliminate the barrier when possible.
+   - Prefer sub‑group barriers (`group_barrier(item.get_sub_group())`) over work‑group barriers when the operation is local to a sub‑group – they have lower latency and lower energy.
+
+6. **Atomics**
+   - Map CUDA’s relaxed atomics (`atomicAdd`) to SYCL `atomic_ref<T, memory_order::relaxed, memory_scope::device>`.
+   - Use the *most relaxed* memory order that still guarantees correctness (often `relaxed` or `acq_rel`). Stronger orders (`seq_cst`) incur extra fence traffic and higher power consumption.
+
+7. **Memory spaces**
+   - Convert CUDA `__shared__` to SYCL **local accessor** (e.g., `sycl::accessor<T, 1, sycl::access::mode::read_write, sycl::access::target::local>`). Proper use of local memory minimizes global memory traffic and saves energy.
+   - Align allocations (`malloc_host`, `malloc_device`) with device requirements to prevent extra paging or padding overhead.
+
+8. **Error handling**
+   - SYCL throws exceptions instead of returning error codes. Catch exceptions once per command‑group rather than after every API call to avoid interrupting the pipeline and increasing idle power.
+
+9. **Kernel launch configuration**
+   - Choose *minimal* work‑group sizes that still achieve occupancy. Oversized groups increase register pressure and may cause spilling, raising memory traffic and power draw.
+   - Use `nd_range` that matches the device’s native sub‑group size to improve SIMD efficiency.
+
+10. **Profiling & tuning**
+    - After migration, profile with SYCL tools (`sycl-prof`, Intel VTune, NVIDIA Nsight) to locate hotspots, synchronization stalls, or excessive memory traffic.
+    - Iterate: adjust `queue` properties, kernel launch dimensions, and memory placement based on measured energy/performance metrics.
+
+**Bottom‑line:**  
+When translating CUDA code to SYCL for better energy efficiency, **select the right device**, **prefer out‑of‑order queues with minimal synchronization**, **preserve memory‑access locality**, **use sub‑group primitives and relaxed atomics**, and **leverage local memory**. Verify correctness with profiling to ensure that each change truly reduces execution time and power consumption.

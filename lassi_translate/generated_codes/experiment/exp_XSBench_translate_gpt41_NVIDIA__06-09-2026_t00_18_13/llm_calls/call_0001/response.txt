@@ -1,0 +1,48 @@
+```
+Key relevant points to apply for improving energy efficiency when translating CUDA code to SYCL:
+
+1. **Device Selection and Enumeration**: 
+   - SYCL allows for selecting and enumerating devices, enabling you to target the most energy-efficient hardware available (CPU, GPU, FPGA, etc.). In migrated code, explicitly query device properties and select devices that match energy efficiency requirements.
+
+2. **Queue Management**: 
+   - SYCL supports out-of-order queues by default, providing opportunities for overlapping kernel execution and memory operations within a single queue.
+   - Efficient overlap of computation and communication can reduce idle times and save energy. Consider using out-of-order queues or submitting work across multiple in-order queues for increased concurrency and efficiency.
+   - Avoid unnecessary synchronization and structure queue operations to maximize device utilization.
+
+3. **Memory Model and Local Memory Usage**:
+   - Convert CUDA shared memory usages to SYCL local memory accessors. Use local memory carefully to exploit fast, low-energy accesses and minimize global memory transactions.
+   - Avoid excessive usage of global memory; instead, leverage local memory and memory access patterns that are cache-friendly and minimize energy-intensive global accesses.
+
+4. **Atomic Operations and Barriers**:
+   - Use relaxed atomic operations and proper memory scopes in SYCL (memory_order::relaxed, memory_scope::device) to minimize unnecessary synchronization, which can waste energy.
+   - When using group_barrier, ensure all work-items reach the barrier to avoid deadlocks and wasted device energy from stalled threads.
+   - Prefer smaller synchronization scopes (local/sub-group) over device-wide synchronization unless necessary.
+
+5. **Multidimensional Range Layout**:
+   - SYCL uses the last dimension as the contiguous (fastest-moving) dimension, which aligns with C++ conventions. When translating, transpose ranges as needed to ensure efficient memory and thread access patterns, reducing energy wasted on inefficient memory accesses.
+
+6. **Forward Progress and Early Exit Patterns**:
+   - SYCL requires all work-items to reach group_barrier. Structure control flow to avoid early exits before barriers, which can lead to deadlocks and wasted energy.
+
+7. **Context Management**:
+   - Avoid inefficient usage of multiple SYCL contexts and mixing context-specific objects. Proper context management prevents redundant kernel compilation and unnecessary resource consumption.
+
+8. **Error Handling and Tooling**:
+   - SYCL uses exceptions for error handling instead of error codes. Ensure robust error handling to detect and recover from asynchronous errors efficiently, avoiding wasted cycles from failed tasks.
+
+9. **Vendor Extensions and Optimal Hardware Usage**:
+   - Where available, utilize SYCL vendor extensions for device-specific energy-efficient features (e.g., tensor cores, systolic arrays). Always query device capabilities to match workloads to the most efficient hardware.
+
+10. **Avoid Unsupported Features and Manual Editing**:
+    - Some CUDA features are not yet in SYCL (global variables, advanced cooperative groups) – avoid or adapt such features to alternatives in SYCL, simplifying code and improving maintainability and portability.
+    - After automated migration, review and optimize the code for portability and energy efficiency, especially for memory access, synchronization, and device selection.
+
+When translating parallelized CUDA code to SYCL, apply these points to maximize energy efficiency:
+- Explicitly select energy-efficient devices and query device capabilities.
+- Manage queue and memory usage to maximize concurrency and avoid idle/blocked threads.
+- Adapt memory access patterns to exploit cache/local memory and minimize global accesses.
+- Optimize atomic and synchronization operations for minimal scope and relaxed ordering.
+- Ensure all work-items reach necessary synchronization points to avoid deadlocks.
+- Avoid inefficient context usage and vendor-unsupported features.
+- Review migrated code for maintainability, optimal device utilization, and portability.
+```

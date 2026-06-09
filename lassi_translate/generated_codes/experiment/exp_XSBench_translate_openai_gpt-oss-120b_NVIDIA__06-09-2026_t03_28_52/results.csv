@@ -1,0 +1,2 @@
+timestamp,app,model,gpu_vendor,success,attempts,runtime_min,baseline_runtime_s,baseline_throughput,translation_runtime_s,translation_throughput
+06-09-2026_t03_28_52,XSBench,openai/gpt-oss-120b,NVIDIA,False,16,33.88,4.018,"121,027,599",-1.0,"223,828,521"

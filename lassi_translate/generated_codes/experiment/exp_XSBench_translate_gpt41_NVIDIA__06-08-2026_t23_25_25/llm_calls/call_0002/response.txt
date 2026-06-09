@@ -1,0 +1,80 @@
+The provided unified code implements a cross-section lookup benchmark ("XSBench") for nuclear Monte Carlo simulations using CUDA for GPU parallelization. It is a monolithic implementation with support for event-based simulation with multiple kernel variants (baseline and optimizations). The code's main blocks, structures, and functional flow are summarized below:
+
+---
+
+**Major Data Structures / Types**
+
+- `NuclideGridPoint`
+  - Represents a single grid point of a nuclide; holds energy levels and multiple cross-section channels (total, elastic, absorbtion, fission, nu_fission).
+
+- `Inputs`
+  - Holds simulation configuration settings (number of threads, isotopes, lookups, grid types, simulation method, etc.).
+
+- `SimulationData`
+  - Contains pointers to all simulation arrays such as nuclide grid, materials, concentrations, unionized energy grid, index grids, verification array, and sampling arrays for energy/material.
+
+---
+
+**Major Functional Blocks**
+
+1. **Main Function and Input Handling**
+   - `main`: Orchestrates the simulation. Reads command-line, prints settings, initializes data structures, moves them to GPU, launches simulation kernels, handles timing, does verification and results printing.
+   - `read_CLI`: Parses command-line arguments to fill the `Inputs` structure, checks validity, applies defaults.
+   - `print_inputs`, `logo`, `center_print`, `border_print`, `fancy_int`, `print_CLI_error`: Various functions for formatted output and user feedback.
+
+2. **Binary Read/Write**
+   - `binary_write`, `binary_read`: Allow saving/loading all simulation data to/from file for fast reuse, skipping initialization.
+
+3. **Initialization**
+   - `grid_init_do_not_profile`: Initializes all arrays and structures (nuclide grids, unionized/grid index, materials, concentrations) on CPU.
+   - `move_simulation_data_to_device`: Allocates/copies simulation data to GPU device memory.
+   - `release_device_memory`: Frees GPU memory resources.
+
+4. **Material Data Setup**
+   - `load_num_nucs`, `load_mats`, `load_concs`: Functions to fill material composition arrays (nuclide counts, material lists, random concentrations).
+
+5. **Simulation Kernel Launching**
+   - Each `run_event_based_simulation_*` function configures and launches one or more CUDA kernels for the simulation’s event-based phase, depending on the optimization method chosen (`kernel_id`). Responsible for synchronizing, reducing, and returning verification result.
+   - The baseline and all optimization variants (1-6) are supported, each implementing improved sampling/lookup patterns, sorting, and workload partitioning.
+
+6. **CUDA Kernels**
+   - `xs_lookup_kernel_baseline`: Each thread performs a macroscopic cross section lookup for a randomly sampled energy/material; results written to verification array.
+   - `sampling_kernel`, `xs_lookup_kernel_optimization_*`: Variants for separated sampling and lookup, material-specific kernels, fuel/other partition kernels, and sorted kernels for improved SIMD efficiency.
+   - All kernels call `calculate_macro_xs`, which in turn calls `calculate_micro_xs`, binary search for energy and cross-section interpolation.
+
+7. **Cross Section Calculations & Search Utilities**
+   - `calculate_macro_xs`, `calculate_micro_xs`: Compute macroscopic and microscopic XS by interpolating across energy grids for the sampled nuclides/materials.
+   - `grid_search`, `grid_search_nuclide`: Perform binary search for energy lookups (either in flattened arrays or struct-based arrays).
+
+8. **Randomization & Sampling Utilities**
+   - `pick_mat`: Samples a material index probabalistically.
+   - `LCG_random_double`, `fast_forward_LCG`: Linear congruential generator for repeatable random numbers (with ability to fast-forward seed for parallel safety).
+
+9. **Verification and Results**
+   - Each kernel writes its result to an array entry (for reduction and verification). The maximum XS channel index is used as a verification value.
+   - `print_results`: Computes statistics and prints output. Checks verification hash against expected values.
+
+10. **Utils (Sorts, Memory Estimates, Time)**
+    - `double_compare`, `NGP_compare`: Comparison functions for sorting.
+    - `rn_v`: Alternate RNG for verification.
+    - `estimate_mem_usage`: Computes total memory used for reporting.
+    - `get_time`: Uses chrono for wall-clock timing.
+
+---
+
+**Summary of Optimizations**
+
+- **Optimization 1**: Splits sampling and lookup into two kernels, storing sampled energy/material for subsequent lookup.
+- **Optimization 2**: Kernel splitting per material type for improved SIMD utilization.
+- **Optimization 3**: Kernel splitting per fuel/non-fuel for bigger work packets.
+- **Optimization 4**: Full sort by material, per-material kernel launches.
+- **Optimization 5**: Partition by fuel/non-fuel instead of full material sort; launches two kernels.
+- **Optimization 6**: Sorts by material and within material by energy; per-material kernel launches with minimal divergence.
+
+---
+
+**Overall Functionality**
+
+- The code loads/initializes nuclear simulation data, transfers it to GPU, and runs a parallelized cross-section lookup simulation for random energies/materials reflecting realistic workloads.
+- Kernel results are reduced and verified. Multiple kernel strategies are supported for benchmarking and optimizing parallel hardware utilization.
+- The full implementation is self-contained; modification must be done in the context of the entire file due to unified design.

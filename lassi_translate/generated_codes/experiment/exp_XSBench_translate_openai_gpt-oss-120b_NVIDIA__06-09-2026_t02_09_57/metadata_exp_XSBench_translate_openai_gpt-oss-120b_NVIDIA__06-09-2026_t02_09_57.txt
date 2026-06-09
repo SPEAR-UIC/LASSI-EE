@@ -1,0 +1,54 @@
+
+
+----- METRICS -----
+Experiment date-time: 2026-06-09 07:24:29
+Time (sec): 848.71
+Self-correction iteration count: 7
+
+
+----- GENERATED: EXECUTION OUTPUT -----
+===================================================================
+                   __   __ ___________                 _                        
+                   \ \ / //  ___| ___ \               | |                       
+                    \ V / \ `--.| |_/ / ___ _ __   ___| |__                     
+                    /   \  `--. \ ___ \/ _ \ '_ \ / __| '_ \                    
+                   / /^\ \/\__/ / |_/ /  __/ | | | (__| | | |                   
+                   \/   \/\____/\____/ \___|_| |_|\___|_| |_|                   
+
+===================================================================
+                   Developed at Argonne National Laboratory
+                                  Version: 20
+===================================================================
+                                 INPUT SUMMARY
+===================================================================
+Programming Model:            SYCL
+Simulation Method:            Event Based
+Grid Type:                    Unionized Grid
+Materials:                    12
+H-M Benchmark Size:           large
+Total Nuclides:               355
+Gridpoints (per Nuclide):     11,303
+Unionized Energy Gridpoints:  4,012,565
+Total XS Lookups:             17,000,000
+Binary File Mode:             Off
+===================================================================
+                        INITIALIZATION - DO NOT PROFILE
+===================================================================
+
+===================================================================
+                                  SIMULATION
+===================================================================
+Running baseline event‑based simulation...
+
+Simulation complete.
+===================================================================
+                                    RESULTS
+===================================================================
+NOTE: Timings are estimated -- use nvprof/nsys/iprof/rocprof for formal analysis
+Runtime:     0.163 seconds
+Lookups:     17,000,000
+Lookups/s:   104,595,164
+Verification checksum: 952131 (Valid)
+===================================================================
+
+=== Execution OK ===

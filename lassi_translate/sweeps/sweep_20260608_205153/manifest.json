@@ -1,0 +1,462 @@
+[
+  {
+    "run": 1,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 894.2,
+    "started": "2026-06-08T20:52:11",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t20_52_29"
+    ],
+    "log": "run_01_remote-gpt55.log"
+  },
+  {
+    "run": 2,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 668.7,
+    "started": "2026-06-08T21:07:35",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t21_07_46"
+    ],
+    "log": "run_02_remote-gpt55.log"
+  },
+  {
+    "run": 3,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 495.2,
+    "started": "2026-06-08T21:19:14",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t21_19_31"
+    ],
+    "log": "run_03_remote-gpt55.log"
+  },
+  {
+    "run": 4,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 671.5,
+    "started": "2026-06-08T21:27:59",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t21_28_06"
+    ],
+    "log": "run_04_remote-gpt55.log"
+  },
+  {
+    "run": 5,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 506.6,
+    "started": "2026-06-08T21:39:40",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t21_39_57"
+    ],
+    "log": "run_05_remote-gpt55.log"
+  },
+  {
+    "run": 6,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 652.9,
+    "started": "2026-06-08T21:48:37",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t21_48_48"
+    ],
+    "log": "run_06_remote-gpt55.log"
+  },
+  {
+    "run": 7,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 496.2,
+    "started": "2026-06-08T22:00:00",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t22_00_16"
+    ],
+    "log": "run_07_remote-gpt55.log"
+  },
+  {
+    "run": 8,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 495.4,
+    "started": "2026-06-08T22:08:46",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t22_08_56"
+    ],
+    "log": "run_08_remote-gpt55.log"
+  },
+  {
+    "run": 9,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 626.8,
+    "started": "2026-06-08T22:17:32",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t22_17_44"
+    ],
+    "log": "run_09_remote-gpt55.log"
+  },
+  {
+    "run": 10,
+    "label": "remote-gpt55",
+    "args": [
+      "--argo-model",
+      "gpt55"
+    ],
+    "rc": 0,
+    "elapsed_s": 517.3,
+    "started": "2026-06-08T22:28:28",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt55_NVIDIA__06-08-2026_t22_28_38"
+    ],
+    "log": "run_10_remote-gpt55.log"
+  },
+  {
+    "run": 11,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 1,
+    "elapsed_s": 1425.9,
+    "started": "2026-06-08T22:37:36",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t22_37_48"
+    ],
+    "log": "run_11_remote-gpt41.log"
+  },
+  {
+    "run": 12,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 0,
+    "elapsed_s": 715.0,
+    "started": "2026-06-08T23:01:52",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t23_02_08"
+    ],
+    "log": "run_12_remote-gpt41.log"
+  },
+  {
+    "run": 13,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 0,
+    "elapsed_s": 621.7,
+    "started": "2026-06-08T23:14:17",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t23_14_33"
+    ],
+    "log": "run_13_remote-gpt41.log"
+  },
+  {
+    "run": 14,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 1,
+    "elapsed_s": 1080.4,
+    "started": "2026-06-08T23:25:08",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t23_25_25"
+    ],
+    "log": "run_14_remote-gpt41.log"
+  },
+  {
+    "run": 15,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 1,
+    "elapsed_s": 773.1,
+    "started": "2026-06-08T23:43:39",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t23_43_45"
+    ],
+    "log": "run_15_remote-gpt41.log"
+  },
+  {
+    "run": 16,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 0,
+    "elapsed_s": 697.7,
+    "started": "2026-06-08T23:57:02",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-08-2026_t23_57_14"
+    ],
+    "log": "run_16_remote-gpt41.log"
+  },
+  {
+    "run": 17,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 0,
+    "elapsed_s": 503.5,
+    "started": "2026-06-09T00:09:09",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_09_18"
+    ],
+    "log": "run_17_remote-gpt41.log"
+  },
+  {
+    "run": 18,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 0,
+    "elapsed_s": 726.2,
+    "started": "2026-06-09T00:18:03",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_18_13"
+    ],
+    "log": "run_18_remote-gpt41.log"
+  },
+  {
+    "run": 19,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 1,
+    "elapsed_s": 1200.2,
+    "started": "2026-06-09T00:30:39",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_30_49"
+    ],
+    "log": "run_19_remote-gpt41.log"
+  },
+  {
+    "run": 20,
+    "label": "remote-gpt41",
+    "args": [
+      "--argo-model",
+      "gpt41"
+    ],
+    "rc": 1,
+    "elapsed_s": 3248.7,
+    "started": "2026-06-09T00:51:09",
+    "exp_dirs": [
+      "exp_XSBench_translate_gpt41_NVIDIA__06-09-2026_t00_51_24"
+    ],
+    "log": "run_20_remote-gpt41.log"
+  },
+  {
+    "run": 21,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 1404.4,
+    "started": "2026-06-09T01:45:48",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t01_46_16"
+    ],
+    "log": "run_21_submit-oss120b.log"
+  },
+  {
+    "run": 22,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 1170.0,
+    "started": "2026-06-09T02:09:42",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t02_09_57"
+    ],
+    "log": "run_22_submit-oss120b.log"
+  },
+  {
+    "run": 23,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 1030.8,
+    "started": "2026-06-09T02:29:42",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t02_30_00"
+    ],
+    "log": "run_23_submit-oss120b.log"
+  },
+  {
+    "run": 24,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 990.2,
+    "started": "2026-06-09T02:47:23",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t02_47_42"
+    ],
+    "log": "run_24_submit-oss120b.log"
+  },
+  {
+    "run": 25,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 1423.5,
+    "started": "2026-06-09T03:04:23",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_04_39"
+    ],
+    "log": "run_25_submit-oss120b.log"
+  },
+  {
+    "run": 26,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 2097.8,
+    "started": "2026-06-09T03:28:37",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t03_28_52"
+    ],
+    "log": "run_26_submit-oss120b.log"
+  },
+  {
+    "run": 27,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 903.3,
+    "started": "2026-06-09T04:04:05",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t04_04_23"
+    ],
+    "log": "run_27_submit-oss120b.log"
+  },
+  {
+    "run": 28,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 1340.6,
+    "started": "2026-06-09T04:19:38",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t04_19_57"
+    ],
+    "log": "run_28_submit-oss120b.log"
+  },
+  {
+    "run": 29,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 2356.4,
+    "started": "2026-06-09T04:42:29",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t04_42_44"
+    ],
+    "log": "run_29_submit-oss120b.log"
+  },
+  {
+    "run": 30,
+    "label": "submit-oss120b",
+    "args": [
+      "--submit",
+      "--inference-model",
+      "openai/gpt-oss-120b"
+    ],
+    "rc": 0,
+    "elapsed_s": 1411.3,
+    "started": "2026-06-09T05:22:15",
+    "exp_dirs": [
+      "exp_XSBench_translate_openai_gpt-oss-120b_NVIDIA__06-09-2026_t05_22_34"
+    ],
+    "log": "run_30_submit-oss120b.log"
+  }
+]

@@ -141,19 +141,19 @@ def stream_chat(*, model, system_prompt, user_prompt, token,
     return out
 
 
-def list_endpoints(token):
+def list_endpoints(token, timeout=30):
     """GET the catalog of available models per cluster."""
     req = urllib.request.Request(
         "https://inference-api.alcf.anl.gov/resource_server/list-endpoints",
         headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
 def verify_token(token, timeout_s=15.0):
     """Pre-flight GET to catch 30-day high-assurance timeout; returns (ok, err_msg)."""
     try:
-        list_endpoints(token)
+        list_endpoints(token, timeout=timeout_s)
         return True, ""
     except urllib.error.HTTPError as exc:
         body = ""

@@ -1,0 +1,64 @@
+**Key Points for Energy‑Efficient CUDA‑to‑SYCL Migration**
+
+- **Device Selection & Power‑Awareness**  
+  - Use SYCL selectors (`default_selector`, `gpu_selector`, `cpu_selector`) or query device properties (`info::device::max_compute_units`, `info::device::global_mem_size`, `info::device::max_clock_frequency`) to pick the most power‑efficient device for a given workload.  
+  - Prefer devices with higher FLOPs/W or lower idle power when the algorithm is compute‑bound; prefer high‑bandwidth memory devices when memory‑bound.
+
+- **Queue Ordering & Overlap**  
+  - SYCL queues are *out‑of‑order* by default; they can overlap kernel execution with data transfers, reducing idle time and overall energy.  
+  - When precise ordering is required, create an *in‑order* queue (`property::queue::in_order()`) to avoid unnecessary barriers that waste power.  
+  - For independent tasks, submit to a **single out‑of‑order queue** rather than many in‑order queues – fewer queue objects reduce scheduling overhead.
+
+- **Work‑Group & Sub‑Group Sizes**  
+  - Match kernel launch dimensions to the hardware’s native sub‑group (warp) size; using the natural sub‑group reduces idle lanes and improves energy per operation.  
+  - Query `info::device::sub_group_sizes` and tune the local range accordingly.
+
+- **Contiguous Dimension Convention**  
+  - SYCL’s last dimension is the fastest‑moving (unit‑stride). Align data layouts and kernel indexing to this convention to avoid strided memory accesses that increase traffic and power consumption.  
+  - When porting, transpose multidimensional range specifications (`nd_range{ {fast_dim, slow_dim}, ... }`) to keep memory accesses coalesced.
+
+- **Local (Shared) Memory Usage**  
+  - Replace CUDA `__shared__` with SYCL *local memory accessors* (`accessor<T, 1, access::mode::read_write, access::target::local>`).  
+  - Properly sized local buffers reduce global memory traffic, decreasing memory‑bound power draw.
+
+- **Synchronization & Barriers**  
+  - Use `group_barrier(item.get_group())` (work‑group) or `group_barrier(item.get_sub_group())` (sub‑group) only when necessary; unnecessary barriers stall pipelines and waste energy.  
+  - Avoid early‑exit patterns that can deadlock (ensure all work‑items reach the barrier or restructure logic).  
+  - Prefer sub‑group barriers (`group_barrier(item.get_sub_group())`) when only a subset of threads need to sync—smaller scopes are cheaper.
+
+- **Atomic Operations & Memory Order**  
+  - SYCL atomics default to *sequentially consistent*; explicitly specify `memory_order::relaxed` with `memory_scope::device` to match CUDA’s `atomicAdd` when strong ordering isn’t required.  
+  - Relaxed atomics reduce synchronization traffic and energy. Example:  
+    ```cpp
+    sycl::atomic_ref<int,
+                     sycl::memory_order::relaxed,
+                     sycl::memory_scope::device,
+                     sycl::access::address_space::global_space> ref(*ptr);
+    ref.fetch_add(1);
+    ```
+
+- **Memory‑Scope Awareness**  
+  - Choose the narrowest valid scope (`sub_group`, `work_group`, `device`) for fences and atomics; broader scopes incur extra coherence traffic and higher power.
+
+- **Independent Thread Scheduling & Forward Progress**  
+  - Some devices (e.g., recent NVIDIA GPUs) allow independent thread progress; SYCL kernels should not rely on implicit synchronization beyond the explicit barriers.  
+  - Writing kernels that tolerate asynchronous progress improves utilization and reduces idle cycles.
+
+- **Error Handling Overhead**  
+  - SYCL uses exceptions; catching them only when necessary avoids extra control‑flow checks inside hot kernels.  
+  - Perform host‑side error checks after queue submission (`try { q.wait_and_throw(); } catch (exception &e) { … }`).
+
+- **Profiling & Power Measurement**  
+  - Use SYCL’s `queue::ext_oneapi_submit_task` with `property::queue::enable_profiling()` to get kernel execution times.  
+  - Combine with vendor‑specific power APIs (e.g., Intel RAPL, NVIDIA NVML) to compute energy = power × time and iteratively tune launch parameters.
+
+- **Portability vs. Vendor‑Specific Optimizations**  
+  - Keep core code portable; isolate vendor‑specific extensions (e.g., matrix‑core intrinsics, specialized sub‑group algorithms) behind compile‑time guards.  
+  - This allows easy fallback to a more power‑efficient generic implementation when specialized hardware is unavailable.
+
+- **Compilation Flags for Energy Efficiency**  
+  - Enable optimization levels (`-O3`) and device‑specific flags (`-fsycl-targets=spir64` for Intel, `-fsycl-targets=nvptx64-nvidia-cuda` for NVIDIA).  
+  - Consider `-fsycl-fusion` to fuse multiple kernels, reducing kernel launch overhead and device wake‑up energy.
+
+**Takeaway:**  
+When translating CUDA to SYCL, focus on selecting the right device, exploiting out‑of‑order queues for overlap, matching sub‑group sizes, coalescing memory accesses (contiguous dimension), minimizing synchronization, using relaxed atomics, and profiling energy. These practices preserve performance while reducing the total energy budget of the application.

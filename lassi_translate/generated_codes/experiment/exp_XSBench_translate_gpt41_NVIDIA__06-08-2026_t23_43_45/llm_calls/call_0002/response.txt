@@ -1,0 +1,105 @@
+The provided code is a unified implementation of XSBench (X-S Cross-section Bench), a benchmark for simulating nuclear reactor cross-section lookups in a realistic Monte Carlo neutron simulation scenario. The code is monolithic, containing both CPU and GPU components, and serves as an event-based simulation utilizing CUDA to accelerate lookup kernels. Below is a description and functional block breakdown:
+
+---
+
+**Major Functional Blocks, Classes, Functions, and Data Structures:**
+
+### 1. Data Structures
+
+**a. NuclideGridPoint**
+- Struct storing energy grid point and related cross-section values (total, elastic, absorption, fission, nu-fission).
+- Used as an Array of Structures (AOS) for all isotopes.
+
+**b. Inputs**
+- Struct holding simulation configuration, including number of threads, isotopes, gridpoints, lookups, benchmark size, grid type, hash bins, particles, simulation method, binary mode, and kernel ID.
+- Set from command-line arguments.
+
+**c. SimulationData**
+- Struct holding all simulation arrays: number of nuclides per material, concentrations, material composition, energy arrays, index grids, nuclide grids, verification array, sampled energies/materials, and their lengths.
+- Represents all necessary input and state for simulation.
+
+### 2. Command-Line Handling and I/O Utilities
+
+**Functions:**
+- `logo(int)`, `center_print(char*, int)`, `border_print()`, `fancy_int(long)`: Formatted printing utilities for output/logging.
+- `print_CLI_error()`: Prints usage and exits on bad input.
+- `print_inputs(Inputs, int, int)`: Prints simulation input summary and memory usage.
+- `Inputs read_CLI(int argc, char *argv[])`: Parses command-line arguments, performs validation and returns structured Inputs.
+- `int print_results(Inputs, int, double, int, unsigned long long)`: Prints runtime, lookups, checksum verification, warnings on validation failure.
+- `binary_write(Inputs, SimulationData)`: Dumps simulation data to binary file.
+- `SimulationData binary_read(Inputs)`: Reads simulation data back from binary file.
+
+### 3. Simulation Initialization and Data Preparation
+
+**Functions:**
+- `SimulationData grid_init_do_not_profile(Inputs, int)`: Initializes all simulation arrays, nuclide grids, unionized grid, hash grid, materials, concentrations.
+- `int * load_num_nucs(long)`: Returns hardcoded array describing number of nuclides per material (fuel vs non-fuel).
+- `int * load_mats(int*, long, int*)`: Hardcoded material->nuclide mapping, sets up composition arrays.
+- `double * load_concs(int*, int)`: Randomizes nuclide concentrations for each material.
+- `SimulationData move_simulation_data_to_device(Inputs, int, SimulationData)`: Allocates GPU memory and copies simulation data for GPU kernels.
+- `void release_device_memory(SimulationData)`: Frees GPU memory after simulation.
+
+### 4. Cross-section Lookup Kernels (CUDA)
+
+**a. Baseline Simulation**
+- `unsigned long long run_event_based_simulation_baseline(Inputs, SimulationData, int)`: Main simulation loop, launches baseline CUDA kernel.
+- `__global__ void xs_lookup_kernel_baseline(Inputs, SimulationData)`: Each thread performs a lookup and writes verification.
+- `__device__ void calculate_micro_xs(...)`: Performs interpolated lookup on nuclide grid, with binary search or index acceleration.
+- `__device__ void calculate_macro_xs(...)`: For each nuclide in material, sums weighted microsopic cross sections to produce macroscopic vector.
+- `__device__ long grid_search(...)`, `__host__ __device__ long grid_search_nuclide(...)`: Implements lower-bound binary search on energy arrays.
+
+**b. RNG and Sampling**
+- `__host__ __device__ double LCG_random_double(uint64_t*)`: Linear congruential RNG for energy/material sampling.
+- `__device__ int pick_mat(uint64_t*)`: Probabilistic selection of material based on fixed distribution.
+- `__device__ uint64_t fast_forward_LCG(uint64_t, uint64_t)`: Fast-forwards LCG for reproducible RNG per thread.
+
+### 5. Optimized Variant Kernels
+
+**Six optimization variants for parallel simulation efficiency, each launched via `run_event_based_simulation_optimization_X` and various CUDA kernels:**
+- **Optimization 1**: Splits sampling and lookup into separate kernels.
+- **Optimization 2**: Launches per-material specific kernels for lookup (minimizes thread divergence).
+- **Optimization 3**: Launches kernels for "fuel" vs "not fuel" materials.
+- **Optimization 4**: Sorts samples by material, launches per-material kernels, reduces divergence further.
+- **Optimization 5**: Uses partition (fuel / not fuel) and launches two kernels.
+- **Optimization 6**: Sorts by material and by energy within material, maximizing cache efficiency and SIMD utilization.
+
+### 6. Utility Functions
+
+- `int double_compare(const void*, const void*)`, `int NGP_compare(const void*, const void*)`: qsort comparators for arrays.
+- `double rn_v(void)`: Standalone RNG for verification.
+- `size_t estimate_mem_usage(Inputs)`: Calculates memory usage for configured simulation.
+- `double get_time(void)`: Returns elapsed time in seconds (cross-platform).
+
+---
+
+### Main Flow
+
+1. **Initialization**: Reads command-line, prints input summary.
+2. **Data Preparation**: Binary file IO or grid/material/concentration initialization (CPU).
+3. **GPU Transfer**: Copies prepared data to GPU memory.
+4. **Simulation Execution**:
+    - Selects kernel variant based on simulation method and optimization level.
+    - Launches CUDA kernels for sampling and lookup.
+    - Reduces verification result via Thrust.
+5. **Cleanup**: Frees GPU memory.
+6. **Result Reporting**: Verifies checksum, prints timing and output.
+
+---
+
+**Summary of Major Classes/Structs:**
+- `NuclideGridPoint`: Energy and cross-section data per nuclide grid point.
+- `Inputs`: Simulation configuration from CLI.
+- `SimulationData`: All arrays and fields required for simulation, both CPU and GPU.
+  
+**Summary of Major Functions:**
+- `main`: Orchestrates the overall workflow.
+- CLI and printing utilities (`logo`, `center_print`, etc.).
+- Data loading/initialization (`grid_init_do_not_profile`, `load_num_nucs`, etc.).
+- GPU data transfer/release (`move_simulation_data_to_device`, `release_device_memory`).
+- Simulation execution routines (baseline and optimizations).
+- RNG and sampling (`LCG`, `pick_mat`, `fast_forward_LCG`).
+- Cross-section calculation (microscopic and macroscopic).
+- Utility functions for memory, sorting, and timing.
+
+**Overall Functionality:**
+XSBench launches an event-based simulation, models neutron interaction cross-section lookups using parallel CUDA kernels, provides multiple optimization variants and benchmarking features, and handles all simulation setup, execution, and result validation in a single unified codebase.

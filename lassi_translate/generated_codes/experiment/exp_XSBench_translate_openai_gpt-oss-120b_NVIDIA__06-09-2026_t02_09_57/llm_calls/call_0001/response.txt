@@ -1,0 +1,52 @@
+**Key Points for Translating CUDA → SYCL with Energy‑Efficiency in Mind**
+
+1. **Device‑Select & Power‑Aware Scheduling**
+   - Use SYCL **device selectors** (e.g., `gpu_selector`, `cpu_selector`) to pick the most energy‑efficient device for a given workload.
+   - Query device power‑related properties (`info::device::max_clock_frequency`, `info::device::global_mem_size`, `info::device::energy_consumption`) and choose devices with lower power budgets when performance permits.
+
+2. **Queue Configuration**
+   - Prefer **in‑order queues** (`property::queue::in_order`) when possible – reduces scheduler overhead and can lower power draw.
+   - For overlapping compute & memory, leverage **out‑of‑order queues** only if the performance gain outweighs extra power cost.
+
+3. **Memory Management**
+   - Favor **USM (`malloc_host`, `malloc_shared`)** or **buffer/accessor** patterns that minimise data copies; fewer transfers ⇒ less energy.
+   - Use **`access::mode::discard_write`** or **`discard_read_write`** when overwriting buffers to avoid unnecessary memory traffic.
+   - Align data structures to device cache lines to reduce memory‑access energy.
+
+4. **Work‑Group & Sub‑Group Sizes**
+   - Match **sub‑group (warp) size** to hardware (query with `info::device::sub_group_sizes`) to avoid under‑utilisation that wastes energy.
+   - Choose **work‑group sizes** that give high occupancy without excessive register pressure – higher occupancy often improves energy per operation.
+
+5. **Barrier & Synchronization Usage**
+   - Use the minimal necessary barrier scope (`group_barrier(item.get_group())` vs. `memory_scope::device`) – narrower scopes are cheaper.
+   - Avoid conditional barriers that can cause dead‑locks or idle cycles; restructure kernels so all work‑items reach barriers.
+
+6. **Atomic Operations**
+   - Prefer **relaxed atomics** (`memory_order::relaxed, memory_scope::device`) when strict ordering isn’t required – lower synchronization overhead.
+   - Batch atomic updates (e.g., reduction in local memory) to cut down on costly atomic traffic.
+
+7. **Avoid Early Exits Before Barriers**
+   - Move range checks **after** barriers or eliminate unnecessary barriers to prevent idle threads that waste power.
+
+8. **Sub‑Group‑Level Primitives**
+   - Use **sub‑group shuffle/permutation** (`permute_group_by_xor`, `joint_any_of`, etc.) instead of explicit shared memory for data exchange – reduces memory traffic and latency.
+
+9. **Kernel Fusion & Compute‑Bound vs. Memory‑Bound**
+   - Fuse small kernels when possible to reduce kernel launch overhead and host‑device synchronization.
+   - Identify memory‑bound kernels and restructure data access patterns (coalesced loads, use of local memory) to lower memory‑access energy.
+
+10. **Profiling & Tuning Loop**
+    - Utilize SYCL profiling (`queue::enable_profiling`) to measure kernel execution time and energy (via device‑specific APIs) and iteratively tune launch parameters.
+    - Compare energy per operation across devices; select the most efficient configuration for each kernel.
+
+11. **Portability & Context Management**
+    - Keep a **single SYCL context** when possible to avoid recompilation overhead and extra memory allocations.
+    - Reuse queues and command groups to minimize runtime overhead.
+
+12. **Error Handling & Robustness**
+    - Replace CUDA error‑code checks with SYCL exception handling; catching exceptions early prevents wasted compute cycles on failing kernels.
+
+13. **Tool‑Assisted Migration**
+    - Use **dpct/SYCLomatic** to generate baseline SYCL code, then manually apply the above energy‑efficiency guidelines (memory layout, barrier scope, atomic ordering, etc.).
+
+Applying these practices during migration will help maintain or improve performance while reducing the overall power/energy consumption of the resulting SYCL application.

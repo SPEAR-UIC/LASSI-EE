@@ -1,0 +1,47 @@
+```
+Key points for improving energy efficiency when translating CUDA code to SYCL:
+
+1. Device Flexibility:
+   - SYCL is designed to target diverse heterogeneous devices (CPUs, GPUs, FPGAs, etc.) from multiple vendors.
+   - Migrated code can utilize device selection and enumeration to choose the most energy-efficient device at runtime.
+
+2. Queue Management:
+   - SYCL queues are out-of-order by default, allowing greater overlap of kernel execution and memory operations, which can improve throughput and energy utilization.
+   - Explicit use of multiple queues or out-of-order execution can help maximize device utilization and reduce idle energy.
+
+3. Memory Allocation and Locality:
+   - SYCL requires explicit management of memory (host, device, local); using local memory (analogous to CUDA shared memory) wisely can reduce global memory accesses and save energy.
+   - Avoid using global variables in device code (not supported in standard SYCL yet), rely instead on kernel arguments and accessor patterns.
+
+4. Synchronization:
+   - SYCL’s group_barrier() and memory_scope options allow precise control over synchronization and memory visibility, enabling minimal synchronization overhead.
+   - Avoid unnecessary barriers, and ensure all work-items reach synchronization points to prevent deadlocks and wasted computation.
+
+5. Atomics:
+   - Use SYCL atomic_ref with relaxed memory order and device scope to match CUDA’s atomicAdd and minimize memory and synchronization costs.
+
+6. Dimensional Mapping:
+   - Remember SYCL uses last dimension as the contiguous (unit-stride, fastest-moving) dimension; proper use of ranges can improve data access patterns and thus energy efficiency.
+
+7. Sub-group Operations:
+   - SYCL’s sub-group operations (permute_group_by_xor, etc.) can take advantage of hardware parallelism (e.g. SIMD, warp-level) for efficient collective operations.
+   - Leverage device query to select optimal sub-group sizes for energy-efficient execution.
+
+8. Context and Portability Awareness:
+   - Avoid mixing objects between SYCL contexts; ensure kernels and allocations reside in the same context to avoid redundant operations and energy waste.
+
+9. Error Handling:
+   - Use SYCL exceptions for error handling; catching errors early can prevent failure loops that waste energy.
+
+10. Tools and Final Review:
+    - Automated migration tools like dpct/SYCLomatic accelerate porting but require review for optimal device/queue selection, memory usage, and synchronization to ensure energy-efficient code.
+
+Application of these points:
+- Select and use the most appropriate device(s) for each workload, favoring energy-efficient hardware if available.
+- Use memory hierarchies and local allocations to minimize high-cost memory accesses.
+- Overlap execution and memory operations using out-of-order queues.
+- Leverage relaxed atomics and minimal synchronization.
+- Choose index ranges and access patterns that maximize cache and memory bandwidth utilization.
+- Review and refactor migrated code to ensure efficient mapping to SYCL’s multi-vendor, multi-device environment.
+
+```

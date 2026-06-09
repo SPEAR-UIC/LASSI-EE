@@ -1,0 +1,9 @@
+{
+  "timestamp_utc": "2026-06-09T10:41:45.404073+00:00",
+  "call_id": 16,
+  "intent": "code generation",
+  "model": "openai/gpt-oss-120b",
+  "system_chars": 233,
+  "user_chars": 114842,
+  "response_chars": 26091
+}

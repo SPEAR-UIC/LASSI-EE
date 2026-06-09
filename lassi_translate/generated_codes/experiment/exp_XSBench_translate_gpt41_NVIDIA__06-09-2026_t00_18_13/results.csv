@@ -1,0 +1,2 @@
+timestamp,app,model,gpu_vendor,success,attempts,runtime_min,baseline_runtime_s,baseline_throughput,translation_runtime_s,translation_throughput
+06-09-2026_t00_18_13,XSBench,gpt41,NVIDIA,True,5,8.46,4.024,"121,006,854",4.798,"105,310,759"

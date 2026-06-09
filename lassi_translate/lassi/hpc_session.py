@@ -155,10 +155,14 @@ class HPCSession:
 
     @property
     def _ssh_transport(self) -> str:
-        """ssh -e command for rsync; opens ControlMaster on first use, reused after."""
+        """ssh -e command for rsync; opens ControlMaster on first use, reused
+        after.  ControlPersist=yes (master survives idle gaps between rsync
+        calls, e.g. while a PBS job runs); ServerAliveInterval keeps the TCP
+        connection alive against server-side timeouts.  Cleanup via atexit."""
         return (f"ssh -o StrictHostKeyChecking=accept-new "
                 f"-o ControlMaster=auto -o ControlPath={self._ssh_ctl} "
-                f"-o ControlPersist=300")
+                f"-o ControlPersist=yes "
+                f"-o ServerAliveInterval=60 -o ServerAliveCountMax=10")
 
     def rsync(self, src, dst, is_dir: bool = False, dereference: bool = False) -> bool:
         """Upload (workstation → remote)."""

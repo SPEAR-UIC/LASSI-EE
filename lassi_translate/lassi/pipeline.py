@@ -284,7 +284,7 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
                  baseline_energy_j=-1.0, baseline_power_w=-1.0, baseline_stdout="",
                  min_energy_gain_pct=_DEFAULT_MIN_GAIN_PCT, has_energy=False,
                  use_judge=True, verification="none", measure_perf=False,
-                 baseline_metrics: dict | None = None):
+                 baseline_metrics: dict | None = None, ratchet_temperature=True):
     """Core loop: Stage 0 + 1, then up to _MAX_ATTEMPTS of Stage 2.  Each
     attempt: LLM generates code → upload → compile+run → parse → judge.
     Temperature ratchets up on stuck errors (cap 1.0 = terminate).
@@ -357,7 +357,10 @@ def run_pipeline(*, model, task, resource, input_code, session, runner: JobRunne
 
             # Temperature ratchet: energy-insufficient bumps every attempt;
             # code errors bump only after 3 consecutive of the same type.
-            if err_type == "energy improvement insufficient":
+            # Disabled via --no-temp-ratchet → always use the initial temp.
+            if not ratchet_temperature:
+                call_temp = code_gen_temp
+            elif err_type == "energy improvement insufficient":
                 energy_correction_cnt += 1
                 call_temp, code_gen_temp = code_gen_temp, round(min(code_gen_temp + 0.2, 1.0), 1)
                 if call_temp >= 1.0:

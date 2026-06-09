@@ -134,6 +134,12 @@ python run_lassi.py --submit --remote-python ~/.conda/envs/myenv/bin/python3
 python run_lassi.py --no-judge       # skip judge this run
 python run_lassi.py --judge          # force judge on this run
 
+# Toggle temperature ratchet (default from lassi_config.py "ratchet_temperature").
+# When on, the LLM call temp auto-bumps by +0.2 after 3 consecutive same-type
+# errors (cap 1.0); when off, temp stays at 0.2 for every attempt.
+python run_lassi.py --no-temp-ratchet   # hold temp at 0.2
+python run_lassi.py --temp-ratchet      # force ratchet on this run
+
 # Skip auto-fetch (--submit only); results stay on Eagle
 python run_lassi.py --submit --no-fetch-results
 

@@ -64,7 +64,9 @@ _resolve_icpx() {
 }
 
 # _setup_cuda <log_file>
-# Load CUDA via module and discover nvcc via fallback paths. Polaris-only.
+# Load CUDA via module + discover nvcc via fallback paths.  Also forces
+# gcc-native/12 because nvcc 12.2 can't parse gcc-14's C++ stdlib headers
+# (the auto-swap that happens when conda is loaded brings in gcc-14).
 _setup_cuda() {
     local _log="$1"
     if command -v module &>/dev/null; then
@@ -73,6 +75,8 @@ _setup_cuda() {
             || module load cudatoolkit     >> "$_log" 2>&1 \
             || module load cuda            >> "$_log" 2>&1 \
             || true
+        # Downgrade gcc-native to a version nvcc 12.2 can parse.
+        module load gcc-native/12 >> "$_log" 2>&1 || true
     fi
     command -v nvcc &>/dev/null && return 0
     for _bin in \

@@ -124,6 +124,10 @@ def _build_parser(defaults: dict) -> argparse.ArgumentParser:
     p.add_argument("--no-self-prompting", dest="self_prompting", action="store_false")
     # LLM-as-judge equivalence check (default from lassi_config.py "use_judge").
     p.add_argument("--judge", dest="use_judge", action=argparse.BooleanOptionalAction)
+    # Temperature ratchet — bump on stuck errors (default from lassi_config.py
+    # "ratchet_temperature").  --no-temp-ratchet holds the call temp at 0.2.
+    p.add_argument("--temp-ratchet", dest="ratchet_temperature",
+                   action=argparse.BooleanOptionalAction)
     p.add_argument("--min-energy-gain", type=float, default=_DEFAULT_MIN_GAIN_PCT)
     p.add_argument("--verifyprompt", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--debug", action="store_true", default=False)
@@ -136,7 +140,7 @@ def _build_parser(defaults: dict) -> argparse.ArgumentParser:
     p.add_argument("--cuda-flags",    default="")
     p.add_argument("--cuda-ldflags",  default="")
 
-    p.set_defaults(self_prompting=True, use_judge=True)
+    p.set_defaults(self_prompting=True, use_judge=True, ratchet_temperature=True)
     if defaults: p.set_defaults(**defaults)
     return p
 
@@ -172,6 +176,8 @@ def _banner(args, resource_cfg, remote_dir: str,
     print(f"  Remote dir : {remote_dir}")
     print(f"  Judge      : {B}{'enabled' if args.use_judge else 'disabled'}{E}"
           f"  (LLM-as-judge functional-equivalence check)")
+    print(f"  Temp ratchet: {B}{'on' if args.ratchet_temperature else 'off'}{E}"
+          f"  (auto-bump LLM temp on stuck errors)")
     if args.task == "energy":
         print(f"  Min gain   : {args.min_energy_gain:.1f}%")
     print(_SEP)
@@ -263,8 +269,9 @@ def _build_submit_pbs_script(*, args, resource_cfg, remote_dir, remote_expdir_ma
              "--app-category", args.app_category, "--app-name", args.app_name,
              "--model", args.model, "--inference-cluster", args.inference_cluster,
              "--min-energy-gain", str(args.min_energy_gain)]
-    if not args.self_prompting: inner += ["--no-self-prompting"]
-    if not args.use_judge:      inner += ["--no-judge"]
+    if not args.self_prompting:      inner += ["--no-self-prompting"]
+    if not args.use_judge:            inner += ["--no-judge"]
+    if not args.ratchet_temperature:  inner += ["--no-temp-ratchet"]
     if args.verifyprompt:       inner += ["--verifyprompt"]
     if args.debug:              inner += ["--debug"]
     if args.output_dir:         inner += ["--output-dir", args.output_dir]
@@ -558,7 +565,7 @@ def _on_resource_main(args, parser) -> int:
         use_self_prompting=args.self_prompting, verifyprompt=args.verifyprompt,
         verbose=args.debug, has_energy=False,
         use_judge=args.use_judge, verification=verification, measure_perf=True,
-        baseline_metrics=baseline_metrics)
+        baseline_metrics=baseline_metrics, ratchet_temperature=args.ratchet_temperature)
 
     if success:
         print_translate_summary(resource=args.resource,
@@ -709,7 +716,7 @@ def main() -> int:
             verbose=args.debug, baseline_energy_j=bej, baseline_power_w=bpw,
             baseline_stdout=bso, min_energy_gain_pct=args.min_energy_gain,
             has_energy=True, use_judge=args.use_judge, verification=verification,
-            baseline_metrics=baseline_metrics)
+            baseline_metrics=baseline_metrics, ratchet_temperature=args.ratchet_temperature)
 
     else:  # translate
         csv_path = exp_dir / "results.csv"

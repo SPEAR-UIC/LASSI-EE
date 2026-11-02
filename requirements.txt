@@ -8,4 +8,5 @@ matplotlib
 tiktoken
 aiohttp
 numba
+requests
 # jupyterlab

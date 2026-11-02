@@ -1,6 +1,6 @@
 from IPython.display import display, Markdown
 import re
-from lassi.llm_config import argo_llm, cerebras_llm, ollama_llm, ollama_llm_nostream
+from lassi.llm_config import argo_llm, cerebras_llm, ollama_llm, ollama_llm_nostream, openai_compatible_llm
 from lassi.format_colors import color
 
 
@@ -42,6 +42,8 @@ def llm_call(intent, llm_source, model, num_ctx, system_prompt, content_prompt, 
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "openai_compatible":
+        response_text = openai_compatible_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     else:
         print("Invalid LLM source")
 
@@ -103,6 +105,8 @@ def llm_judge(target_lang, llm_source, model, num_ctx, system_prompt, input_cont
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "openai_compatible":
+        response_text = openai_compatible_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     else:
         print("Invalid LLM source")
 
@@ -180,6 +184,8 @@ def code_knowledge_llm(llm_source, model, num_ctx, system_prompt, input_context,
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "openai_compatible":
+        response_text = openai_compatible_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     else:
         print("Invalid LLM source")
 
@@ -219,6 +225,8 @@ def code_description_llm(llm_source, model, num_ctx, system_prompt, input_contex
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "openai_compatible":
+        response_text = openai_compatible_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     else:
         print("Invalid LLM source")
 
@@ -261,6 +269,8 @@ def system_description_llm(llm_source, target_lang, model, num_ctx, system_promp
         response_text = ollama_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, 0.2, verifyprompt)
+    elif llm_source == "openai_compatible":
+        response_text = openai_compatible_llm(model, system_prompt, content_prompt, 0.2, verifyprompt)
     else:
         print("Invalid LLM source")
 
@@ -301,6 +311,8 @@ def code_generator_llm(llm_source, model, num_ctx, temp, system_prompt, content_
         response_text = ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
     elif llm_source == "cerebras":
         response_text = cerebras_llm(model, num_ctx, system_prompt, content_prompt, temp, verifyprompt)
+    elif llm_source == "openai_compatible":
+        response_text = openai_compatible_llm(model, system_prompt, content_prompt, temp, verifyprompt)
     else:
         print("Invalid LLM source")
         

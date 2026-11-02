@@ -2,6 +2,7 @@ import ollama
 from ollama import ResponseError
 from cerebras.cloud.sdk import Cerebras
 import json
+import os
 import requests
 import httpx
 import aiohttp
@@ -17,6 +18,12 @@ import warnings
 from urllib3.exceptions import InsecureRequestWarning
 
 warnings.simplefilter("ignore", InsecureRequestWarning)
+
+# OpenAI-compatible backend connection details (e.g., Argo Gateway's cost-tracked
+# OpenAI-compatible endpoint). api_key falls back to the OPENAI_API_KEY environment
+# variable at call time if left blank, so a key never has to live in a notebook or config file.
+openai_base_url = "https://apps-test.inside.anl.gov/argoapi/v1/"
+openai_api_key = ""
 
 """
 Local hosted LLM via OLLAMA API, GGUF quantized models
@@ -421,3 +428,109 @@ def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False,
     #             print(chunk_content.decode(errors="replace"), end="", flush=True)  # Print each chunk as it arrives
 
     return response
+
+
+"""
+Generic OpenAI-compatible chat-completions backend.
+
+Works against OpenAI itself, or any server implementing the same REST contract --
+including Argo Gateway's newer OpenAI-compatible endpoint, which tracks usage/cost
+per API key (unlike the older curl-based argo_llm() path above, which goes through
+an unauthenticated local tunnel). Connection details come from the module-level
+openai_base_url / openai_api_key globals.
+"""
+
+# Models (keyed by the exact model string passed in) that have already been found to
+# reject a custom "temperature" value (reasoning-class models that only accept the
+# default). Process-local cache so we only pay for the discovery 400 once per model
+# per run, not on every call.
+_models_without_temperature_support = set()
+
+
+def openai_compatible_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
+
+    if verifyprompt:
+        print("\n=====> VERIFY THE PROMPTING <=====\n")
+        print(f"TEMPERATURE: {round(temp, 1)}")
+        print(f"\nSYSTEM: {system_prompt}")
+        print(f"\nPROMPT: {content_prompt}")
+        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    else:
+        print("\n=====< LLM Prompt Not Shown >=====\n")
+
+    api_key = openai_api_key or os.environ.get("OPENAI_API_KEY", "")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_prompt},
+        ],
+    }
+    if model not in _models_without_temperature_support:
+        payload["temperature"] = round(temp, 1)
+
+    url = openai_base_url.rstrip("/") + "/chat/completions"
+    resp = requests.post(url, headers=headers, json=payload, timeout=600)
+
+    # First time we see this specific "model can't take a custom temperature" 400 for
+    # this model: record it so every later call (this run only) skips sending
+    # temperature up front instead of re-discovering the restriction every time.
+    if ("temperature" in payload and resp.status_code == 400
+            and "'param': 'temperature'" in resp.text and "unsupported_value" in resp.text):
+        print(f"\n[openai_compatible_llm] Model {model!r} rejected temperature="
+              f"{payload['temperature']} (reasoning-class model, default only) -- "
+              f"retrying without it, and will skip temperature for all further "
+              f"{model!r} calls this run.")
+        _models_without_temperature_support.add(model)
+        payload.pop("temperature")
+        resp = requests.post(url, headers=headers, json=payload, timeout=600)
+
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        raise requests.exceptions.HTTPError(f"{e} -- response body: {resp.text}", response=resp) from None
+
+    response_text = resp.json()["choices"][0]["message"]["content"]
+
+    print(response_text)
+
+    # Final cleaning of the complete response
+    # Conditional cleaning only if <think> tags exist
+    if re.search(r'<think>.*?</think>', response_text, flags=re.DOTALL):
+        cleaned_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
+    else:
+        cleaned_response = response_text.strip()
+
+    return cleaned_response
+
+
+def list_openai_compatible_models(base_url, api_key=""):
+    """
+    Query {base_url}/models (standard OpenAI-compatible model-list endpoint) and
+    return a sorted list of (usable_model_id, display_label) tuples.
+
+    Argo Gateway's OpenAI-compatible endpoint puts a human-readable display name in
+    the standard "id" field (e.g. "GPT-5.6 Luna") and the actual machine-usable model
+    slug in a non-standard "internal_id" field (e.g. "gpt56luna") -- passing "id" as
+    the chat-completions "model" gets rejected with HTTP 400. Plain OpenAI-compatible
+    servers (real OpenAI, vLLM, ...) have no "internal_id", so "id" IS the usable
+    value there, and usable_id == display_label.
+    """
+    api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = base_url.rstrip("/") + "/models"
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    models = resp.json()["data"]
+    return sorted(
+        ((m.get("internal_id") or m["id"]), m["id"]) for m in models
+    )

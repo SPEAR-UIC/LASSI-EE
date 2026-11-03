@@ -583,7 +583,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             # print("compile_result: ", compile_result)
             if app_name == "miniMDock":
                 execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
             elif app_name == "XSBench":
                 execute_file = "XSBench"  # HARD CODED FOR XSBENCH
                 exe_input_parameters = "-m event -l 1700000000".split()

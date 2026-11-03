@@ -47,8 +47,8 @@ The 20 HeCBench kernels used in the reported experiment (exec params are the pos
 | | murmurhash3 | 245 | `750000 500` | — |
 | Graph and tree | floydwarshall | 295 | `2048 100 256` | — |
 | Language and kernel features | layout | 197 | `2500` | — |
-| | threadfence | 139 | `100 250000000` | — |
-| Machine learning | dense-embedding | 193 | `100000 128 100` | — |
+| | threadfence | 142 | `100 250000000` | — |
+| Machine learning | dense-embedding § | 193 | `100000 128 100` | — |
 | Math | jacobi † | 235 | (none) | — |
 | | jaccard | 417 | `1024 512 1000` | — |
 | | stu-matrix-rotate ‡ | 67 | `30000 100` | — |
@@ -59,7 +59,10 @@ The 20 HeCBench kernels used in the reported experiment (exec params are the pos
 | | lid-driven-cavity | 1079 | (none) | — |
 
 † `jacobi` takes no runtime arguments; its compiled-in size constant `N` was raised to 16384 in the source (see the paper).
+
 ‡ This is the paper's `matrix-rotate`. The application has parallel and serial components, and the serial portion was removed (hence 67 lines). `source_apps.json` also keeps the original, longer `matrix-rotate` and `atomicCost`, which are not part of the reported set.
+
+§ **Erratum to the paper:** Table I prints this application's first argument as `10000`. That is a typographical error — with `10000` the program aborts on its own assertion (`nrows > batch_size * batch_size`). Use `100000`, as in `source_apps.json`.
 
 Kernels with a local header compile correctly via the `-I` flag described in [Adding a New Kernel](#adding-a-new-kernel). The header's contents are not part of the LLM's refactoring prompt — only the `.cu` file's own text is sent.
 
@@ -145,7 +148,7 @@ See the Citation section below for references to all three.
 
 If you use LASSI-EE in your research, please cite:
 
-> M. T. Dearing, Y. Tao, X. Wu, Z. Lan, and V. Taylor, "LASSI-EE: LLM-Based Automated Refactoring of Parallel Scientific Codes for Energy Efficiency," in *SC26 Workshops*, Chicago, IL, USA, Nov. 2026.
+> M. T. Dearing, Y. Tao, X. Wu, Z. Lan, and V. Taylor, "LASSI-EE: LLM-based automated refactoring of parallel scientific codes for energy efficiency," in *Proceedings of the 3rd International Workshop on Energy Efficiency with Sustainable Performance (EESP '26), held with SC26: The International Conference for High Performance Computing, Networking, Storage and Analysis*, Nov. 2026 (to appear).
 
 ### Related Publications
 

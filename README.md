@@ -16,12 +16,12 @@ LASSI-EE proceeds through five stages for each application:
 0. **Code profiling.** The source code is compiled, executed and power-profiled on the target GPU to establish the baseline for runtime, average power and net energy.
 1. **Baseline refactoring ("vanilla LLM").** A zero-shot prompt asks the LLM to refactor the code for energy efficiency, with no context and no self-correction. The result is compiled, executed once, power-profiled and screened by the Judge. This is the unassisted baseline that the later stages are compared against.
 2. **Context building and planning.** The LLM summarizes background knowledge (CUDA or HIP programming-guide excerpts, in `lassi/context/`), analyzes the code for inefficiencies, and writes a structured refactoring plan.
-3. **Iterative self-prompted refactoring with self-correction.** The LLM generates a candidate from the plan. Compiler and runtime errors are fed back until the code runs cleanly (the self-correction loop); the candidate is then power-profiled, screened by the Judge, and compared with the current best version. An improvement triggers a new plan from the latest code. When refactoring stalls, the LLM temperature is raised by 0.2 (default 0.2), and the pipeline stops once it reaches 1.0, or at the configured iteration caps.
+3. **Iterative self-prompted refactoring with self-correction.** The LLM generates a candidate from the plan. Compiler and runtime errors are fed back until the code runs cleanly (the self-correction loop); the candidate is then power-profiled, screened by the Judge, and compared with the current best version. An improvement triggers a new plan from the latest code. Consecutive non-improving iterations are tracked by a counter that starts at 0.2, rises by 0.2 as unsuccessful iterations accumulate, and resets when a new best version is found; Stage 3 ends when it reaches 1.0, or at the configured iteration caps. For models that accept a sampling temperature, the same value is used as the temperature.
 4. **Termination.** The best version is saved with all intermediate versions, power profiles, Judge verdicts, plans and iteration counts, plus an LLM-written comparison of the source and the best refactoring. If nothing passed screening and reduced energy, the source is kept and no improvement is reported.
 
 The **LLM-as-a-Judge** compares the source and refactored code together with their standard outputs and energy metrics, and returns `VALID` or `INVALID`. It is a practical screen for large-scale evaluation, not a substitute for formal verification. All prompt templates are in `lassi/prompt_dictionary.py`.
 
-**Power measurement.** Power is sampled every 0.01 s from NVML on NVIDIA GPUs and from `rocm-smi --showpower` on AMD GPUs. Idle power is estimated from readings taken before and after each execution (with 15 s of post-run capture) and subtracted from every sample to give net energy.
+**Power measurement.** Power is sampled every 0.01 s from NVML on NVIDIA GPUs and from `rocm-smi --showpower` on AMD GPUs. Idle power is estimated from readings taken before and after each execution (with 15 s of post-run capture) and subtracted from every sample to give net energy; negative net samples (measurement noise) are clamped to zero. Vendor counters update coarsely — on the A100, NVML repeats each reading across about ten 10 ms samples — so the paper's applications all run for at least a second, and results are averaged over 30 trials. Very short runs cannot be resolved.
 
 ## Repository Layout
 
@@ -39,7 +39,7 @@ The 20 HeCBench kernels used in the reported experiment (exec params are the pos
 |---|---|---|---|---|
 | Bandwidth | randomAccess | 158 | `10` | — |
 | Bioinformatics | all-pairs-distance | 328 | `10000` | — |
-| Computer vision and image processing | colorwheel | 154 | `10000 8 1` | — |
+| Computer vision and image processing | colorwheel | 154 | `10000 256 500000` | — |
 | | marchingCubes | 574 | `100` | `tables.h` |
 | Cryptography | chacha20 | 130 | `300000` | `chacha20.h` |
 | Data compression and reduction | segment-reduce | 95 | `16384 100` | — |
@@ -48,25 +48,24 @@ The 20 HeCBench kernels used in the reported experiment (exec params are the pos
 | Graph and tree | floydwarshall | 295 | `2048 100 256` | — |
 | Language and kernel features | layout | 197 | `2500` | — |
 | | threadfence | 139 | `100 250000000` | — |
-| Machine learning | dense-embedding | 193 | `10000 8 1` | — |
+| Machine learning | dense-embedding | 193 | `100000 128 100` | — |
 | Math | jacobi † | 235 | (none) | — |
 | | jaccard | 417 | `1024 512 1000` | — |
 | | stu-matrix-rotate ‡ | 67 | `30000 100` | — |
-| Search | bsearch | 279 | `10000 1` | — |
+| Search | bsearch | 279 | `8388608 1000` | — |
 | | keogh | 143 | `256 22500000 100` | `reference.h` |
 | Signal processing | extrema | 349 | `750` | `kernels.h`, `reference.h` |
-| Simulation | pathfinder | 286 | `10000 1000 1000` | — |
-| | lid-driven-cavity § | 1079 | (none) | — |
+| Simulation | pathfinder | 286 | `100000 10000 2500` | — |
+| | lid-driven-cavity | 1079 | (none) | — |
 
 † `jacobi` takes no runtime arguments; its compiled-in size constant `N` was raised to 16384 in the source (see the paper).
-‡ This is the paper's `matrix-rotate`. `source_apps.json` also keeps the original, longer `matrix-rotate` and `atomicCost`, which are not part of the reported set.
-§ `lid-driven-cavity` has parallel and serial components; the serial portion was removed.
+‡ This is the paper's `matrix-rotate`. The application has parallel and serial components, and the serial portion was removed (hence 67 lines). `source_apps.json` also keeps the original, longer `matrix-rotate` and `atomicCost`, which are not part of the reported set.
 
 Kernels with a local header compile correctly via the `-I` flag described in [Adding a New Kernel](#adding-a-new-kernel). The header's contents are not part of the LLM's refactoring prompt — only the `.cu` file's own text is sent.
 
-The two miniApps, XSBench (1,472 lines) and miniMDock (2,394 lines), are built from merged source files through their own make scripts.
+The two miniApps, XSBench (1,472 lines; `-m event -l 1700000000`) and miniMDock (2,394 lines; `-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250`), are built from merged source files through their own make scripts.
 
-> **TODO before release:** the merged miniApp sources are not yet in this repository. Add them (or document where to obtain them), and confirm the miniMDock `-nrun` value.
+> **TODO before release:** the merged miniApp sources are not yet in this repository. Add them, or document where to obtain them.
 
 ## Getting Started
 
@@ -112,6 +111,7 @@ Each run writes to `generated_codes/experiment/<label>__<timestamp>/`: every gen
 ## Reproducing the Paper's Setup
 
 - **Models:** `o4-mini` for context building and code generation on the HeCBench applications, `gpt-5` for code generation on the two miniApps, and `gpt-4.1` as the Judge. The notebook defaults to these OpenAI model IDs.
+- **Sampling temperature:** neither o4-mini nor GPT-5 accepts one, so in all reported experiments the 0.2-to-1.0 value served only as the stopping counter; LASSI-EE drops the parameters these models reject automatically.
 - **Trials:** 30 independent trials per application and device. The notebook defaults to `total_trials = 1` to avoid an accidental long run; set it to 30 to match the paper.
 - **Compile flags:** on the A100, `nvcc -std=c++14 -Xcompiler -Wall -arch=sm_80 -O3`; on the MI100, `hipcc -std=c++14 -Wall -O3 --amdgpu-target=gfx908`. The notebook detects the NVIDIA architecture flag automatically (`sm_80` on an A100).
 - **Input parameters:** use the values in `source_apps.json` unchanged.
@@ -145,7 +145,7 @@ See the Citation section below for references to all three.
 
 If you use LASSI-EE in your research, please cite:
 
-> [Author list TBD], "LASSI-EE: LLM-based Automated Refactoring of Parallel Scientific Codes for Energy Efficiency," in *IEEE International Conference on Cluster Computing (CLUSTER) 2026 Workshops* (accepted).
+> M. T. Dearing, Y. Tao, X. Wu, Z. Lan, and V. Taylor, "LASSI-EE: LLM-Based Automated Refactoring of Parallel Scientific Codes for Energy Efficiency," in *SC26 Workshops*, Chicago, IL, USA, Nov. 2026.
 
 ### Related Publications
 

@@ -402,7 +402,7 @@ def auto_code_llmgeneration_pipeline(prompts,
            
             # CALL THE LLM to generate the another base LLM code refactoring using the prior refactored code
             # Using the same prompting as in the compile_result == "start" condition.
-            if llm_source != "argo":
+            if llm_source == "ollama":
                 time.sleep(10)
             # report_gpu_memory()
 
@@ -575,10 +575,7 @@ def auto_code_llmgeneration_pipeline(prompts,
     
         # Compile the generated code, compile_result == "" if no error
         if build_script:
-            compile_result = lassi.code_manager.build_script_code("generated_codes", code_build_script)
-            # execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/bfs"
-            # execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level2/raytracing"
-            execute_file = "/home/cc/lassi/LASSI_dev/generated_codes/altis/build/bin/level1/" + file_name_save
+            raise NotImplementedError("build_script (Altis) mode is not included in this release; set build_script = False.")
         elif make_script:
             # run make command
             print("\n** RUN MAKE COMMAND TO COMPILE **")
@@ -586,7 +583,7 @@ def auto_code_llmgeneration_pipeline(prompts,
             # print("compile_result: ", compile_result)
             if app_name == "miniMDock":
                 execute_file = "bin/autodock_gpu_64wi"  # HARD CODED FOR MINIMDOCK
-                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 100".split()
+                exe_input_parameters = "-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250".split()
             elif app_name == "XSBench":
                 execute_file = "XSBench"  # HARD CODED FOR XSBENCH
                 exe_input_parameters = "-m event -l 1700000000".split()

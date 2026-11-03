@@ -54,7 +54,7 @@
         "threadfence": {
             "app_folder": "threadfence",
             "app_params": ["100", "250000000"],
-            "code_lines": 139
+            "code_lines": 142
         },
         "layout": {
             "app_folder": "layout",
@@ -102,7 +102,7 @@
             "code_lines": 154
         },
         "randomAccess": {
-            "app_folder": "randomAccess",
+            "app_folder": "randomaccess",
             "app_params": ["10"],
             "code_lines": 158
         },

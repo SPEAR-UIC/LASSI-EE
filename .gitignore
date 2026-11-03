@@ -169,3 +169,36 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# ---------------------------------------------------------------------------
+# LASSI-EE project-specific ignores
+# ---------------------------------------------------------------------------
+
+# Planning docs (local only, not for repo)
+planning/
+
+# Generated experiment outputs (generated codes, metadata, power profiles).
+# The .gitkeep keeps the directory present after a fresh clone.
+generated_codes/*
+!generated_codes/.gitkeep
+
+# Power-measurement and experiment CSVs are runtime-generated
+*.csv
+
+# Compiled binaries produced by the pipeline
+source_codes/**/*-cuda_main
+source_codes/**/*-hip_main
+test_codes/**/*-cuda_main
+test_codes/**/*_ee_refactorcode_*_v[0-9]
+test_codes/**/*_ee_refactorcode_*_t[0-9][0-9]_[0-9][0-9]_[0-9][0-9]
+test_codes/jacobi/main
+test_codes/heat/heat
+test_codes/segment-reduce/main
+test_codes/lid/OriginalCode
+test_codes/stu/Stu
+test_codes/stu/Stu-o3-Mini-High
+test_codes/stu/stu2-outofplacekernel
+
+# Runtime-generated benchmark output data files
+source_codes/**/*.dat
+test_codes/**/*.dat

@@ -1,7 +1,7 @@
 import ollama
 from ollama import ResponseError
-from cerebras.cloud.sdk import Cerebras
 import json
+import os
 import requests
 import httpx
 import aiohttp
@@ -17,6 +17,17 @@ import warnings
 from urllib3.exceptions import InsecureRequestWarning
 
 warnings.simplefilter("ignore", InsecureRequestWarning)
+
+# Argo Gateway username for the legacy "argo" backend (curl via a localhost tunnel) --
+# set via lassi.llm_config.argo_username = "your_username". Argo Gateway is reachable
+# only from within the Argonne National Laboratory network.
+argo_username = "enter-your-Argonne-domain-username"
+
+# OpenAI-compatible backend connection details -- set via the notebook's setup cell.
+# api_key falls back to the OPENAI_API_KEY environment variable at call time if left
+# blank, so a key never has to live in a notebook or config file.
+openai_base_url = "https://api.openai.com/v1"
+openai_api_key = ""
 
 """
 Local hosted LLM via OLLAMA API, GGUF quantized models
@@ -72,98 +83,6 @@ def ollama_llm_nostream(model, num_ctx, system_prompt, content_prompt, temp=0.2,
     return cleaned_response  # response_text
 
 
-def cerebras_llm(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
-    # Slow things down so we don't hit the per minute request count limit
-    time.sleep(10)
-    
-    # Create a HTML display object with a <pre> tag for formatted text
-    html_display = display(HTML(""), display_id=True)
-
-    if verifyprompt:
-        print("\n=====> VERIFY THE PROMPTING <=====\n")
-        print(f"TEMPERATURE: {round(temp, 1)}")
-        print(f"\nSYSTEM: {system_prompt}")
-        print(f"\nPROMPT: {content_prompt}")
-        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
-    else:
-        print("\n=====< LLM Prompt Not Shown >=====\n")
-            
-    response_text = ""
-
-    client = Cerebras(
-        # This is the default and can be omitted
-        api_key="csk-pt8c8yt4jc28jyvmn3fj36e4ty8tmr8xm5d6e52e4ht92698"  # os.environ.get("CEREBRAS_API_KEY")
-    )
-
-    stream = client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content_prompt}
-        ],
-        model=model,
-        stream=True,
-        max_completion_tokens=65536,
-        temperature=temp,
-        top_p=0.9,
-        # reasoning_effort="medium"
-    )
-
-    # Process each chunk in the stream
-    try:
-        for chunk in stream:
-            chunk_content = chunk.choices[0].delta.content or ""
-            response_text += chunk_content
-    
-            # Escape HTML and highlight <think> tags
-            escaped_text = html.escape(response_text)
-    
-            # Style opening tags
-            styled_text = re.sub(
-                r'&lt;think&gt;',
-                '<span style="color: #d32f2f; font-weight: bold;">&lt;think&gt;</span>',
-                escaped_text
-            )
-            # Style closing tags
-            styled_text = re.sub(
-                r'&lt;/think&gt;',
-                '<span style="color: #d32f2f; font-weight: bold;">&lt;/think&gt;</span>',
-                styled_text
-            )
-            
-            # Create typewriter effect with cursor
-            display_text = f"{styled_text}<span style='border-right:2px solid;animation:blink 1s infinite'> </span>"  
-            # Put everything on one line to avoid extra whitespace
-            html_content = (
-                f"<pre style='background:#f8f8f8;padding:10px;border-radius:5px;border:1px solid #ddd;"
-                f"white-space:pre-wrap;font-family:monospace;margin:0;'>{display_text}</pre>"
-                f"<style>"
-                f"@keyframes blink {{0%{{opacity:1}}50%{{opacity:0}}100%{{opacity:1}}}}"
-                f"</style>"
-            )
-        
-        # Update the display output with styled text
-        html_display.update(HTML(html_content))
-        
-    except ResponseError as e:
-        if "unexpected EOF" in str(e):
-            # Log the event, check if the output seems complete, and continue
-            print("Stream ended unexpectedly but continuing with received output.")
-        else:
-            raise
-    
-    # Clear the streaming display after completion
-    # clear_output(wait=True)
-
-    # Final cleaning of the complete response
-    # Conditional cleaning only if <think> tags exist
-    if re.search(r'<think>.*?</think>', response_text, flags=re.DOTALL):
-        cleaned_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
-    else:
-        cleaned_response = response_text.strip()
-    
-    return cleaned_response  # response_text
-
-    
 def ollama_llm(model, num_ctx, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
     # Create an HTML display object with a <pre> tag for formatted text
     html_display = display(HTML(""), display_id=True)
@@ -345,7 +264,7 @@ def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False,
     
     # Data to be sent as a POST in JSON format
     data = {
-        "user": "mdearing",
+        "user": argo_username,
         "model": model,   # gpt35, gpt4turbo
         "system": system_prompt,
         "prompt": [content_prompt],
@@ -421,3 +340,145 @@ def argo_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False,
     #             print(chunk_content.decode(errors="replace"), end="", flush=True)  # Print each chunk as it arrives
 
     return response
+
+
+"""
+Generic OpenAI-compatible chat-completions backend.
+
+Works against OpenAI itself, or any server implementing the same REST contract --
+including Argo Gateway's newer OpenAI-compatible endpoint, which tracks usage/cost
+per API key (unlike the older curl-based argo_llm() path above, which goes through
+an unauthenticated local tunnel). Connection details come from the module-level
+openai_base_url / openai_api_key globals.
+"""
+
+# Sampling parameters sent on every request, matching the other backends (temperature
+# comes from the caller; top_p is fixed at 0.9). Models and servers that don't accept one
+# of them -- e.g. OpenAI's reasoning models reject both -- get it dropped automatically:
+# the first rejection is detected from the 400 response, the request is retried without
+# that parameter, and the restriction is remembered per model for the rest of the run
+# (process-local) so the discovery cost is paid once per model, not on every call.
+_SAMPLING_PARAMS = ("temperature", "top_p")
+_unsupported_sampling_params = {}  # model string -> set of rejected parameter names
+
+
+def _rejected_sampling_param(resp):
+    """
+    If `resp` is a 400 saying one of our sampling parameters is unsupported for this
+    model, return that parameter's name; otherwise return None. Understands both error
+    shapes seen in practice: OpenAI's native JSON error object, and gateways (e.g. Argo)
+    that forward the upstream error as a Python-repr string.
+    """
+    if resp.status_code != 400:
+        return None
+    text = resp.text
+
+    try:
+        body = resp.json()
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict) and err.get("param") in _SAMPLING_PARAMS \
+                and err.get("code") in (None, "unsupported_value", "unsupported_parameter"):
+            return err["param"]
+    except ValueError:
+        pass
+
+    if "unsupported" in text.lower():
+        m = re.search(r"""param['"]?\s*:\s*['"](temperature|top_p)['"]""", text)
+        if m:
+            return m.group(1)
+        m = re.search(r"""unsupported[^.\n]{0,40}['"](temperature|top_p)['"]""", text, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+    return None
+
+
+def openai_compatible_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
+
+    if verifyprompt:
+        print("\n=====> VERIFY THE PROMPTING <=====\n")
+        print(f"TEMPERATURE: {round(temp, 1)}")
+        print(f"\nSYSTEM: {system_prompt}")
+        print(f"\nPROMPT: {content_prompt}")
+        print("\n=====^^^^^ END PROMPT REVIEW ^^^^^=====\n")
+    else:
+        print("\n=====< LLM Prompt Not Shown >=====\n")
+
+    api_key = openai_api_key or os.environ.get("OPENAI_API_KEY", "")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_prompt},
+        ],
+    }
+    unsupported = _unsupported_sampling_params.setdefault(model, set())
+    if "temperature" not in unsupported:
+        payload["temperature"] = round(temp, 1)
+    if "top_p" not in unsupported:
+        payload["top_p"] = 0.9
+
+    url = openai_base_url.rstrip("/") + "/chat/completions"
+    resp = requests.post(url, headers=headers, json=payload, timeout=600)
+
+    # At most one retry per sampling parameter: drop whichever one the model rejected,
+    # remember it for this model, and try again.
+    for _ in range(len(_SAMPLING_PARAMS)):
+        rejected = _rejected_sampling_param(resp)
+        if rejected is None or rejected not in payload:
+            break
+        print(f"\n[openai_compatible_llm] Model {model!r} does not accept {rejected}="
+              f"{payload[rejected]} -- retrying without it, and will skip {rejected} "
+              f"for all further {model!r} calls this run.")
+        unsupported.add(rejected)
+        payload.pop(rejected)
+        resp = requests.post(url, headers=headers, json=payload, timeout=600)
+
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        raise requests.exceptions.HTTPError(f"{e} -- response body: {resp.text}", response=resp) from None
+
+    response_text = resp.json()["choices"][0]["message"]["content"]
+
+    print(response_text)
+
+    # Final cleaning of the complete response
+    # Conditional cleaning only if <think> tags exist
+    if re.search(r'<think>.*?</think>', response_text, flags=re.DOTALL):
+        cleaned_response = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
+    else:
+        cleaned_response = response_text.strip()
+
+    return cleaned_response
+
+
+def list_openai_compatible_models(base_url, api_key=""):
+    """
+    Query {base_url}/models (standard OpenAI-compatible model-list endpoint) and
+    return a sorted list of (usable_model_id, display_label) tuples.
+
+    Argo Gateway's OpenAI-compatible endpoint puts a human-readable display name in
+    the standard "id" field (e.g. "GPT-5.6 Luna") and the actual machine-usable model
+    slug in a non-standard "internal_id" field (e.g. "gpt56luna") -- passing "id" as
+    the chat-completions "model" gets rejected with HTTP 400. Plain OpenAI-compatible
+    servers (real OpenAI, vLLM, ...) have no "internal_id", so "id" IS the usable
+    value there, and usable_id == display_label.
+    """
+    api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = base_url.rstrip("/") + "/models"
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    models = resp.json()["data"]
+    return sorted(
+        ((m.get("internal_id") or m["id"]), m["id"]) for m in models
+    )

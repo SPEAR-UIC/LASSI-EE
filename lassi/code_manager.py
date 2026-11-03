@@ -18,6 +18,22 @@ from lassi.amd_power import AMDPowerMonitor, amd_power_collection_thread, amd_re
 from lassi.gpu_detector import detect_gpu_vendors
 
 
+# --- Original kernel source directory (set once per run by the notebook) ---
+# A few HeCBench kernels (chacha20, entropy, extrema, keogh, marchingCubes) #include a
+# header (e.g. "kernels.h") that lives only in the kernel's own source_codes/<collection>/
+# <app>/ folder and is never copied or modified. Every generated variant is written to a
+# different directory (generated_codes/experiment/...), so compile_code() passes this
+# directory to the compiler via -I on every compile, letting the #include resolve back to
+# the one canonical header no matter where the compiled file lives. It's a no-op for
+# kernels with no local headers to include.
+_source_include_dir = None
+
+
+def set_source_include_dir(path):
+    """Called once per run with the original kernel source file's directory."""
+    global _source_include_dir
+    _source_include_dir = path
+
 
 def execute_code_selectvendor(experiment_data_directory, code_version, zero_shot, trial_number, 
                             directory, executable_file, exe_input_parameters, power_measure, 
@@ -140,6 +156,11 @@ def compile_code(source_file, lang, code_compiler, code_compiler_kwds):
        
     # Split the compile keywords into a list of arguments
     compile_kwds_list = shlex.split(code_compiler_kwds)
+
+    # Let the compiler also search the original kernel's own source directory for headers
+    # (see _source_include_dir above). Harmless no-op for kernels with no local headers.
+    if _source_include_dir:
+        compile_kwds_list += ['-I', _source_include_dir]
 
     if lang == "OMP":
         # The desired name of the compiled program

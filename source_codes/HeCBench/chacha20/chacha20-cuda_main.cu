@@ -3,7 +3,7 @@
 #include <string.h>
 #include <chrono>
 #include <cuda.h>
-#include "/home/cc/lassi/LASSI-EE/source_codes/HeCBench/chacha20/chacha20.h"
+#include "chacha20.h"
 
 __device__
 void hex_to_raw(const char* src, const int n /*src size*/, uint8_t* dst, const uint8_t* char_to_uint){

@@ -154,8 +154,7 @@ def test_source_code(app_name, experiment_data_directory,
     print("\n\n----- " + color.BLUE + "SOURCE CODE: Test compile and execute" + color.END + " -----")
     print("\nTest compile the original source code: " + str(source_file_path))
     if build_script:
-        compile_result = lassi.code_manager.build_script_code("source_codes", code_build_script)
-        execute_file = "/home/cc/lassi/LASSI_dev/source_codes/altis/build/bin/level1/" + file_nameexe_input_parameters
+        raise NotImplementedError("build_script (Altis) mode is not included in this release; set build_script = False.")
     elif make_script:
         compile_result = lassi.code_manager.make_script_code(directory, code_compiler_kwds, source_lang)
         if compile_result == "":

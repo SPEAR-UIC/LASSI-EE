@@ -352,11 +352,44 @@ an unauthenticated local tunnel). Connection details come from the module-level
 openai_base_url / openai_api_key globals.
 """
 
-# Models (keyed by the exact model string passed in) that have already been found to
-# reject a custom "temperature" value (reasoning-class models that only accept the
-# default). Process-local cache so we only pay for the discovery 400 once per model
-# per run, not on every call.
-_models_without_temperature_support = set()
+# Sampling parameters sent on every request, matching the other backends (temperature
+# comes from the caller; top_p is fixed at 0.9). Models and servers that don't accept one
+# of them -- e.g. OpenAI's reasoning models reject both -- get it dropped automatically:
+# the first rejection is detected from the 400 response, the request is retried without
+# that parameter, and the restriction is remembered per model for the rest of the run
+# (process-local) so the discovery cost is paid once per model, not on every call.
+_SAMPLING_PARAMS = ("temperature", "top_p")
+_unsupported_sampling_params = {}  # model string -> set of rejected parameter names
+
+
+def _rejected_sampling_param(resp):
+    """
+    If `resp` is a 400 saying one of our sampling parameters is unsupported for this
+    model, return that parameter's name; otherwise return None. Understands both error
+    shapes seen in practice: OpenAI's native JSON error object, and gateways (e.g. Argo)
+    that forward the upstream error as a Python-repr string.
+    """
+    if resp.status_code != 400:
+        return None
+    text = resp.text
+
+    try:
+        body = resp.json()
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict) and err.get("param") in _SAMPLING_PARAMS \
+                and err.get("code") in (None, "unsupported_value", "unsupported_parameter"):
+            return err["param"]
+    except ValueError:
+        pass
+
+    if "unsupported" in text.lower():
+        m = re.search(r"""param['"]?\s*:\s*['"](temperature|top_p)['"]""", text)
+        if m:
+            return m.group(1)
+        m = re.search(r"""unsupported[^.\n]{0,40}['"](temperature|top_p)['"]""", text, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+    return None
 
 
 def openai_compatible_llm(model, system_prompt, content_prompt, temp=0.2, verifyprompt=False):
@@ -383,23 +416,26 @@ def openai_compatible_llm(model, system_prompt, content_prompt, temp=0.2, verify
             {"role": "user", "content": content_prompt},
         ],
     }
-    if model not in _models_without_temperature_support:
+    unsupported = _unsupported_sampling_params.setdefault(model, set())
+    if "temperature" not in unsupported:
         payload["temperature"] = round(temp, 1)
+    if "top_p" not in unsupported:
+        payload["top_p"] = 0.9
 
     url = openai_base_url.rstrip("/") + "/chat/completions"
     resp = requests.post(url, headers=headers, json=payload, timeout=600)
 
-    # First time we see this specific "model can't take a custom temperature" 400 for
-    # this model: record it so every later call (this run only) skips sending
-    # temperature up front instead of re-discovering the restriction every time.
-    if ("temperature" in payload and resp.status_code == 400
-            and "'param': 'temperature'" in resp.text and "unsupported_value" in resp.text):
-        print(f"\n[openai_compatible_llm] Model {model!r} rejected temperature="
-              f"{payload['temperature']} (reasoning-class model, default only) -- "
-              f"retrying without it, and will skip temperature for all further "
-              f"{model!r} calls this run.")
-        _models_without_temperature_support.add(model)
-        payload.pop("temperature")
+    # At most one retry per sampling parameter: drop whichever one the model rejected,
+    # remember it for this model, and try again.
+    for _ in range(len(_SAMPLING_PARAMS)):
+        rejected = _rejected_sampling_param(resp)
+        if rejected is None or rejected not in payload:
+            break
+        print(f"\n[openai_compatible_llm] Model {model!r} does not accept {rejected}="
+              f"{payload[rejected]} -- retrying without it, and will skip {rejected} "
+              f"for all further {model!r} calls this run.")
+        unsupported.add(rejected)
+        payload.pop(rejected)
         resp = requests.post(url, headers=headers, json=payload, timeout=600)
 
     try:

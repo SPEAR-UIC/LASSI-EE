@@ -402,7 +402,7 @@ def auto_code_llmgeneration_pipeline(prompts,
            
             # CALL THE LLM to generate the another base LLM code refactoring using the prior refactored code
             # Using the same prompting as in the compile_result == "start" condition.
-            if llm_source != "argo":
+            if llm_source == "ollama":
                 time.sleep(10)
             # report_gpu_memory()
 

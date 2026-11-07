@@ -158,4 +158,4 @@ If you use LASSI-EE in your research, please cite:
 
 ## License
 
-TBD, pending institutional review.
+Licensed under the Apache License 2.0. Vendored third-party kernels in `source_codes/` retain their original licenses.

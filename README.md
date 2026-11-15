@@ -9,6 +9,17 @@ Energy-aware prompting, iterative self-correction and an LLM-as-a-Judge screenin
 
 The paper evaluates LASSI-EE on 22 applications on NVIDIA A100 and AMD MI100 GPUs, with 30 independent trials per application and device, and introduces **energy-reduction@*k***, the expected energy reduction when generating *k* candidates and keeping the most efficient one that passes screening.
 
+## Results at a Glance
+
+Across the 22 applications and both GPUs (1,320 trials, all compiled at `-O3`):
+
+- **Expected energy reduction:** 29.1% at *k* = 1, 48.2% at *k* = 3 and 54.6% at *k* = 5, averaged over the A100 and MI100. At *k* = 1 this is 2.8× the unassisted ("vanilla") LLM. These figures count every attempt, including failures; the refactorings that pass screening average 34% to 36% energy reduction.
+- **Runtime is preserved:** 93.2% of application-device pairs reduce both energy and runtime, and the other 6.8% reduce energy through lower power alone. Mean runtime reductions are 26.2% on the A100 and 29.6% on the MI100.
+- **No precision loss:** none of the roughly 3,500 optimizations reduced numerical precision.
+- **Hardware-specific code:** only 3.5% of optimizations are identical across the AMD and NVIDIA runs.
+
+See the paper cited below for the full methodology and per-application results.
+
 ## How It Works
 
 LASSI-EE proceeds through five stages for each application:
@@ -68,7 +79,7 @@ Kernels with a local header compile correctly via the `-I` flag described in [Ad
 
 The two miniApps, XSBench (1,472 lines; `-m event -l 1700000000`) and miniMDock (2,394 lines; `-lfile ./input/7cpa/7cpa_ligand.pdbqt -nrun 250`), are built from merged source files through their own make scripts.
 
-> **TODO before release:** the merged miniApp sources are not yet in this repository. Add them, or document where to obtain them.
+> **Not yet included:** the merged miniApp sources (XSBench, miniMDock) are not in this repository yet, so those two applications cannot be run from a fresh clone. The 20 HeCBench applications above are fully included.
 
 ## Getting Started
 
@@ -120,7 +131,7 @@ Each run writes to `generated_codes/experiment/<label>__<timestamp>/`: every gen
 - **Input parameters:** use the values in `source_apps.json` unchanged.
 - **Non-determinism:** because LLM inference is non-deterministic, a single run does not reproduce a table row. The paper's tables are averages over 30 trials per application and device.
 
-> **TODO before release:** add the per-trial records and the analysis script that computes the paper's pass@*k* and energy-reduction@*k* values, and point to them here.
+> **Not yet included:** the per-trial records and the analysis script that computes the paper's pass@*k* and energy-reduction@*k* values are not in this repository yet.
 
 ## Adding a New Kernel
 
@@ -158,4 +169,4 @@ If you use LASSI-EE in your research, please cite:
 
 ## License
 
-Licensed under the Apache License 2.0. Vendored third-party kernels in `source_codes/` retain their original licenses.
+Licensed under the Apache License 2.0; see [LICENSE](LICENSE). Vendored third-party kernels in `source_codes/` retain their original licenses.

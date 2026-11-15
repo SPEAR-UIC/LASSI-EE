@@ -1,0 +1,50 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+type: software
+title: "LASSI-EE"
+abstract: "LASSI-EE is an LLM-based automated self-correcting pipeline that refactors parallel scientific GPU codes for energy efficiency, guided by power measured on the target GPU."
+repository-code: "https://github.com/SPEAR-UIC/LASSI-EE"
+license: Apache-2.0
+authors:
+  - family-names: Dearing
+    given-names: "Matthew T."
+    affiliation: "University of Illinois Chicago"
+    email: mdear2@uic.edu
+  - family-names: Tao
+    given-names: Yiheng
+    affiliation: "University of Illinois Chicago"
+  - family-names: Wu
+    given-names: Xingfu
+    affiliation: "Argonne National Laboratory"
+  - family-names: Lan
+    given-names: Zhiling
+    affiliation: "University of Illinois Chicago"
+  - family-names: Taylor
+    given-names: Valerie
+    affiliation: "Argonne National Laboratory"
+preferred-citation:
+  type: conference-paper
+  title: "LASSI-EE: LLM-Based Automated Refactoring of Parallel Scientific Codes for Energy Efficiency"
+  authors:
+    - family-names: Dearing
+      given-names: "Matthew T."
+      affiliation: "University of Illinois Chicago"
+    - family-names: Tao
+      given-names: Yiheng
+      affiliation: "University of Illinois Chicago"
+    - family-names: Wu
+      given-names: Xingfu
+      affiliation: "Argonne National Laboratory"
+    - family-names: Lan
+      given-names: Zhiling
+      affiliation: "University of Illinois Chicago"
+    - family-names: Taylor
+      given-names: Valerie
+      affiliation: "Argonne National Laboratory"
+  collection-title: "Proceedings of the 3rd International Workshop on Energy Efficiency with Sustainable Performance (EESP '26), held with SC26"
+  conference:
+    name: "EESP '26 (SC26 Workshops)"
+  location: "Chicago, Illinois, USA"
+  year: 2026
+  month: 11
+  # DOI not yet assigned; proceedings are not indexed until around the conference date.
